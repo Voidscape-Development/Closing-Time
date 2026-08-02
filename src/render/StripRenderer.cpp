@@ -74,16 +74,21 @@ qreal alignOffset(HAlign align, qreal available, qreal used)
 }
 
 /*
- * Lays `text` out into `width` pixels, optionally painting it at (x, y), and returns the
- * height it occupies. Passing a null painter measures without rasterising, which is how
- * the two-pass layout keeps measurement and painting from drifting apart.
+ * Lays `text` out into `width` pixels with an already-prepared font, optionally painting it
+ * at (x, y), and returns the height it occupies. Passing a null painter measures without
+ * rasterising, which is how the two-pass layout keeps measurement and painting from
+ * drifting apart.
+ *
+ * `wrap` is off for the bridge of a Bridged section: a leader sized to the gap can round a
+ * fraction of a pixel over it, and overflowing by that hair reads far better than silently
+ * becoming two rows of dots.
  */
-int layoutText(QPainter *painter, const QString &text, const TextStyle &style, qreal x, qreal y, qreal width)
+int layoutPreparedText(QPainter *painter, const QString &text, const QFont &font, const QColor &color, HAlign align,
+		       double lineSpacing, qreal x, qreal y, qreal width, bool wrap = true)
 {
 	if (text.isEmpty() || width <= 0.0)
 		return 0;
 
-	const QFont font = makeFont(style);
 	const QFontMetricsF metrics(font);
 
 	/* QTextLayout only breaks on explicit line separators, not on plain newlines. */
@@ -92,7 +97,7 @@ int layoutText(QPainter *painter, const QString &text, const TextStyle &style, q
 
 	QTextLayout layout(content, font);
 	QTextOption option;
-	option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+	option.setWrapMode(wrap ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
 	/*
 	 * Alignment is deliberately left off the text option and applied per line below.
 	 * Setting both makes QTextLayout offset the line and then get offset again here,
@@ -100,7 +105,7 @@ int layoutText(QPainter *painter, const QString &text, const TextStyle &style, q
 	 */
 	layout.setTextOption(option);
 
-	const qreal step = metrics.lineSpacing() * style.lineSpacing;
+	const qreal step = metrics.lineSpacing() * lineSpacing;
 
 	qreal cursor = 0.0;
 	layout.beginLayout();
@@ -110,17 +115,47 @@ int layoutText(QPainter *painter, const QString &text, const TextStyle &style, q
 			break;
 
 		line.setLineWidth(width);
-		line.setPosition(QPointF(alignOffset(style.align, width, line.naturalTextWidth()), cursor));
+		line.setPosition(QPointF(alignOffset(align, width, line.naturalTextWidth()), cursor));
 		cursor += step;
 	}
 	layout.endLayout();
 
 	if (painter) {
-		painter->setPen(style.color);
+		painter->setPen(color);
 		layout.draw(painter, QPointF(x, y));
 	}
 
 	return qCeil(cursor);
+}
+
+int layoutText(QPainter *painter, const QString &text, const TextStyle &style, qreal x, qreal y, qreal width)
+{
+	return layoutPreparedText(painter, text, makeFont(style), style.color, style.align, style.lineSpacing, x, y,
+				  width);
+}
+
+/* Width the text wants on its widest line, before any wrapping is imposed on it. */
+qreal naturalTextWidth(const QString &text, const TextStyle &style)
+{
+	if (text.isEmpty())
+		return 0.0;
+
+	const QFontMetricsF metrics(makeFont(style));
+
+	qreal widest = 0.0;
+	for (const QString &line : text.split(QLatin1Char('\n')))
+		widest = std::max(widest, metrics.horizontalAdvance(line));
+
+	return widest;
+}
+
+/* Distance from the top of a run of this text down to its first baseline. */
+qreal firstBaseline(const QString &text, const TextStyle &style)
+{
+	if (text.isEmpty())
+		return 0.0;
+
+	return QFontMetricsF(makeFont(style)).ascent();
 }
 
 /* The size a logo will be drawn at once it is fitted into `available` pixels of width. */
@@ -157,6 +192,144 @@ void paintLogo(QPainter *painter, const QImage &image, const QRect &rect)
 	}
 
 	painter->drawImage(rect, image);
+}
+
+/* Where the three parts of one bridged row sit horizontally. */
+struct BridgedRow {
+	qreal leftX = 0.0;
+	qreal leftWidth = 0.0;
+	qreal bridgeX = 0.0;
+	qreal bridgeWidth = 0.0;
+	qreal rightX = 0.0;
+	qreal rightWidth = 0.0;
+};
+
+/*
+ * Divides one row's width between the two texts and the bridge.
+ *
+ * The two sizing modes differ only in how the text columns are measured; from there a
+ * single placement path covers every combination. Whatever the columns leave over becomes
+ * the bridge, and the row is then aligned within the section -- which only moves anything
+ * for a Fixed bridge with Natural sizing, since every other combination has already
+ * consumed the full width.
+ */
+BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, const TextStyle &rightStyle,
+			   const Entry &entry, qreal contentX, qreal contentWidth, qreal naturalBridge)
+{
+	qreal leftWidth = 0.0;
+	qreal rightWidth = 0.0;
+
+	if (section.bridgeSizing == BridgeSizing::Split) {
+		/*
+		 * The ratio divides the space the two texts share rather than the whole width,
+		 * so a Fixed bridge at the default 0.5 lands exactly where Bridged sections
+		 * have always drawn it. With a filling bridge there is nothing to reserve, and
+		 * the ratio becomes a plain tab stop for the leader to start at.
+		 */
+		const qreal reserved = section.bridgeFill == BridgeFill::Fixed ? naturalBridge : 0.0;
+		leftWidth = section.bridgeSplit * std::max(0.0, contentWidth - reserved);
+
+		if (section.bridgeFill == BridgeFill::Fixed)
+			rightWidth = std::max(0.0, contentWidth - leftWidth - naturalBridge);
+		else
+			rightWidth = std::min(naturalTextWidth(entry.secondaryText, rightStyle),
+					      std::max(0.0, contentWidth - leftWidth));
+	} else {
+		leftWidth = naturalTextWidth(entry.text, leftStyle);
+		rightWidth = naturalTextWidth(entry.secondaryText, rightStyle);
+
+		/*
+		 * Overlong rows shrink both sides in proportion rather than letting whichever
+		 * text comes first swallow the row and wrap the other one out of existence.
+		 */
+		const qreal wanted = leftWidth + rightWidth;
+		if (wanted > contentWidth && wanted > 0.0) {
+			leftWidth = contentWidth * (leftWidth / wanted);
+			rightWidth = contentWidth - leftWidth;
+		}
+	}
+
+	/*
+	 * A side with nothing on it hands its column to the bridge, when asked to. Confined to
+	 * a filling bridge: a fixed one has nothing to cover the freed space with, so all
+	 * collapsing the column would do there is shorten the row. Keeping it out of that case
+	 * is also what leaves Natural sizing with a Fixed bridge as the only way to get a row
+	 * narrower than the section -- which is exactly where the row placement control shows.
+	 */
+	if (section.bridgeFill != BridgeFill::Fixed) {
+		if (section.bridgeSpanEmpty && entry.text.isEmpty())
+			leftWidth = 0.0;
+		if (section.bridgeSpanEmpty && entry.secondaryText.isEmpty())
+			rightWidth = 0.0;
+	}
+
+	const qreal slack = std::max(0.0, contentWidth - leftWidth - rightWidth);
+
+	BridgedRow row;
+	row.leftWidth = leftWidth;
+	row.rightWidth = rightWidth;
+	row.bridgeWidth = section.bridgeFill == BridgeFill::Fixed ? std::min(naturalBridge, slack) : slack;
+
+	const qreal rowWidth = leftWidth + row.bridgeWidth + rightWidth;
+	row.leftX = contentX + alignOffset(section.bridgeRowAlign, contentWidth, rowWidth);
+	row.bridgeX = row.leftX + leftWidth;
+	row.rightX = row.bridgeX + row.bridgeWidth;
+
+	return row;
+}
+
+/* The bridge as it will actually be drawn, with the font that makes it span `width`. */
+struct PreparedBridge {
+	QString text;
+	QFont font;
+};
+
+PreparedBridge prepareBridge(const Section &section, const TextStyle &style, qreal width)
+{
+	PreparedBridge prepared;
+	prepared.font = makeFont(style);
+
+	if (section.bridge.isEmpty() || width <= 0.0)
+		return prepared;
+
+	const qreal unit = QFontMetricsF(prepared.font).horizontalAdvance(section.bridge);
+	if (unit <= 0.0)
+		return prepared;
+
+	switch (section.bridgeFill) {
+	case BridgeFill::Fixed:
+		prepared.text = section.bridge;
+		break;
+
+	case BridgeFill::Repeat: {
+		/*
+		 * Whole copies only, centred in the gap by the caller. A partial copy would cut
+		 * a leader mid-glyph, which reads as damage rather than design once the bridge
+		 * is a word instead of a run of dots. The leftover is at most one copy wide, so
+		 * a short bridge unit is what makes this look tight.
+		 */
+		const int copies = static_cast<int>(width / unit);
+		if (copies > 0)
+			prepared.text = section.bridge.repeated(copies);
+		break;
+	}
+
+	case BridgeFill::Stretch:
+		if (width < unit)
+			break;
+
+		prepared.text = section.bridge;
+		/*
+		 * Qt adds the spacing after every character including the last, so dividing by
+		 * the full length lands the run's advance on `width` exactly instead of
+		 * overshooting it by one gap.
+		 */
+		prepared.font.setLetterSpacing(QFont::AbsoluteSpacing,
+					       (width - unit) / static_cast<qreal>(section.bridge.size()));
+		break;
+	}
+
+	return prepared;
 }
 
 /*
@@ -221,26 +394,46 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::Bridged: {
 		const TextStyle &rightStyle = document.effectiveSecondaryStyle(section);
-
-		const QFontMetricsF bridgeMetrics(makeFont(style));
-		const int bridgeWidth = qCeil(bridgeMetrics.horizontalAdvance(section.bridge));
-		const int columnWidth = std::max(1, (contentWidth - bridgeWidth) / 2);
-		const int rightX = contentX + columnWidth + bridgeWidth;
+		const qreal naturalBridge = naturalTextWidth(section.bridge, style);
 
 		for (const Entry &entry : section.entries) {
-			const int leftHeight = layoutText(nullptr, entry.text, style, 0, 0, columnWidth);
-			const int rightHeight = layoutText(nullptr, entry.secondaryText, rightStyle, 0, 0, columnWidth);
-			const int rowHeight = std::max({leftHeight, rightHeight, 1});
+			const BridgedRow row = placeBridgedRow(section, style, rightStyle, entry, contentX,
+							       contentWidth, naturalBridge);
+			const PreparedBridge bridge = prepareBridge(section, style, row.bridgeWidth);
 
-			layoutText(painter, entry.text, style, contentX, y, columnWidth);
-			layoutText(painter, entry.secondaryText, rightStyle, rightX, y, columnWidth);
+			/*
+			 * The three parts share a baseline rather than a top edge, which is what
+			 * keeps a leader running through the middle of the text when the two
+			 * sides are set at different sizes. It is anchored on whichever part
+			 * reaches lowest, so nothing climbs above the row into the one before it.
+			 */
+			const qreal leftAscent = firstBaseline(entry.text, style);
+			const qreal rightAscent = firstBaseline(entry.secondaryText, rightStyle);
+			const qreal bridgeAscent = bridge.text.isEmpty() ? 0.0 : QFontMetricsF(bridge.font).ascent();
+			const qreal baseline = std::max({leftAscent, rightAscent, bridgeAscent});
 
-			if (!section.bridge.isEmpty()) {
-				TextStyle bridgeStyle = style;
-				bridgeStyle.align = HAlign::Center;
-				layoutText(painter, section.bridge, bridgeStyle, contentX + columnWidth, y,
-					   bridgeWidth);
-			}
+			const qreal leftTop = y + baseline - leftAscent;
+			const qreal rightTop = y + baseline - rightAscent;
+			const qreal bridgeTop = y + baseline - bridgeAscent;
+
+			const int leftHeight =
+				layoutText(painter, entry.text, style, row.leftX, leftTop, row.leftWidth);
+			const int rightHeight = layoutText(painter, entry.secondaryText, rightStyle, row.rightX,
+							   rightTop, row.rightWidth);
+			const int bridgeHeight = layoutPreparedText(painter, bridge.text, bridge.font, style.color,
+								    HAlign::Center, style.lineSpacing, row.bridgeX,
+								    bridgeTop, row.bridgeWidth, false);
+
+			int rowHeight = 1;
+			const auto extend = [&rowHeight, y](qreal top, int height) {
+				/* An empty part has no height and must not push the row down. */
+				if (height > 0)
+					rowHeight = std::max(rowHeight, qCeil(top - y) + height);
+			};
+
+			extend(leftTop, leftHeight);
+			extend(rightTop, rightHeight);
+			extend(bridgeTop, bridgeHeight);
 
 			y += rowHeight + section.entryGap;
 		}

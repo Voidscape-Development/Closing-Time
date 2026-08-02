@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QFileInfo>
 
+#include <algorithm>
 #include <cstring>
 #include <iterator>
 
@@ -178,6 +179,48 @@ LogoSide logoSideFromId(const char *id, LogoSide fallback)
 	return fallback;
 }
 
+const char *bridgeFillId(BridgeFill fill)
+{
+	switch (fill) {
+	case BridgeFill::Repeat:
+		return "repeat";
+	case BridgeFill::Stretch:
+		return "stretch";
+	case BridgeFill::Fixed:
+	default:
+		return "fixed";
+	}
+}
+
+BridgeFill bridgeFillFromId(const char *id, BridgeFill fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "repeat") == 0)
+		return BridgeFill::Repeat;
+	if (strcmp(id, "stretch") == 0)
+		return BridgeFill::Stretch;
+	if (strcmp(id, "fixed") == 0)
+		return BridgeFill::Fixed;
+	return fallback;
+}
+
+const char *bridgeSizingId(BridgeSizing sizing)
+{
+	return sizing == BridgeSizing::Natural ? "natural" : "split";
+}
+
+BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "natural") == 0)
+		return BridgeSizing::Natural;
+	if (strcmp(id, "split") == 0)
+		return BridgeSizing::Split;
+	return fallback;
+}
+
 void TextStyle::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "family", family.toUtf8().constData());
@@ -280,6 +323,11 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_string(data, "logo_side", logoSideId(logoSide));
 	obs_data_set_int(data, "logo_gap", logoGap);
 	obs_data_set_string(data, "bridge", bridge.toUtf8().constData());
+	obs_data_set_string(data, "bridge_fill", bridgeFillId(bridgeFill));
+	obs_data_set_string(data, "bridge_sizing", bridgeSizingId(bridgeSizing));
+	obs_data_set_double(data, "bridge_split", bridgeSplit);
+	obs_data_set_string(data, "bridge_row_align", hAlignId(bridgeRowAlign));
+	obs_data_set_bool(data, "bridge_span_empty", bridgeSpanEmpty);
 	obs_data_set_int(data, "columns", columns);
 	obs_data_set_int(data, "column_gap", columnGap);
 	obs_data_set_int(data, "entry_gap", entryGap);
@@ -321,6 +369,17 @@ void Section::load(obs_data_t *data)
 	logoSide = logoSideFromId(obs_data_get_string(data, "logo_side"), LogoSide::Left);
 	logoGap = static_cast<int>(obs_data_get_int(data, "logo_gap"));
 	bridge = QString::fromUtf8(obs_data_get_string(data, "bridge"));
+	bridgeFill = bridgeFillFromId(obs_data_get_string(data, "bridge_fill"), BridgeFill::Fixed);
+	bridgeSizing = bridgeSizingFromId(obs_data_get_string(data, "bridge_sizing"), BridgeSizing::Split);
+	bridgeRowAlign = hAlignFromId(obs_data_get_string(data, "bridge_row_align"), HAlign::Center);
+	bridgeSpanEmpty = obs_data_get_bool(data, "bridge_span_empty");
+
+	/*
+	 * 0.0 is a legitimate split -- everything to the right of the bridge -- so a missing
+	 * key has to be told apart from a stored zero rather than inferred from the value.
+	 */
+	bridgeSplit = obs_data_has_user_value(data, "bridge_split") ? obs_data_get_double(data, "bridge_split") : 0.5;
+	bridgeSplit = std::clamp(bridgeSplit, 0.0, 1.0);
 	columns = static_cast<int>(obs_data_get_int(data, "columns"));
 	columnGap = static_cast<int>(obs_data_get_int(data, "column_gap"));
 	entryGap = static_cast<int>(obs_data_get_int(data, "entry_gap"));

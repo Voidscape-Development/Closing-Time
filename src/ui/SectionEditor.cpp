@@ -359,6 +359,30 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	bridgeEdit = new QLineEdit(this);
 	form->addRow(moduleText("Designer.Bridge"), bridgeEdit);
 
+	bridgeFill = new QComboBox(this);
+	bridgeFill->addItem(moduleText("Designer.BridgeFill.Fixed"), static_cast<int>(BridgeFill::Fixed));
+	bridgeFill->addItem(moduleText("Designer.BridgeFill.Repeat"), static_cast<int>(BridgeFill::Repeat));
+	bridgeFill->addItem(moduleText("Designer.BridgeFill.Stretch"), static_cast<int>(BridgeFill::Stretch));
+	form->addRow(moduleText("Designer.BridgeFill"), bridgeFill);
+
+	bridgeSizing = new QComboBox(this);
+	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Split"), static_cast<int>(BridgeSizing::Split));
+	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Natural"), static_cast<int>(BridgeSizing::Natural));
+	form->addRow(moduleText("Designer.BridgeSizing"), bridgeSizing);
+
+	bridgeSplit = new QSpinBox(this);
+	bridgeSplit->setRange(0, 100);
+	bridgeSplit->setSuffix(QStringLiteral(" %"));
+	bridgeSplit->setToolTip(moduleText("Designer.BridgeSplit.Tip"));
+	form->addRow(moduleText("Designer.BridgeSplit"), bridgeSplit);
+
+	bridgeRowAlign = new QComboBox(this);
+	addAlignmentOptions(bridgeRowAlign);
+	form->addRow(moduleText("Designer.BridgeRowAlign"), bridgeRowAlign);
+
+	bridgeSpanEmpty = new QCheckBox(moduleText("Designer.BridgeSpanEmpty"), this);
+	form->addRow(QString(), bridgeSpanEmpty);
+
 	columns = new QSpinBox(this);
 	columns->setRange(1, 12);
 	form->addRow(moduleText("Designer.Columns"), columns);
@@ -457,6 +481,20 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(logoSide, &QComboBox::currentIndexChanged, this, notify);
 	connect(logoGap, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeEdit, &QLineEdit::textChanged, this, notify);
+	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
+	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
+	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
+
+	/* These two decide which of the other bridge rows are worth showing. */
+	for (QComboBox *box : {bridgeFill, bridgeSizing}) {
+		connect(box, &QComboBox::currentIndexChanged, this, [this] {
+			if (loading)
+				return;
+
+			applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+			emitChanged();
+		});
+	}
 	connect(columns, &QSpinBox::valueChanged, this, notify);
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
@@ -505,6 +543,11 @@ void SectionEditor::setSection(const Section &source)
 	selectByData(logoSide, static_cast<int>(source.logoSide));
 	logoGap->setValue(source.logoGap);
 	bridgeEdit->setText(source.bridge);
+	selectByData(bridgeFill, static_cast<int>(source.bridgeFill));
+	selectByData(bridgeSizing, static_cast<int>(source.bridgeSizing));
+	bridgeSplit->setValue(qRound(source.bridgeSplit * 100.0));
+	selectByData(bridgeRowAlign, static_cast<int>(source.bridgeRowAlign));
+	bridgeSpanEmpty->setChecked(source.bridgeSpanEmpty);
 	columns->setValue(source.columns);
 	columnGap->setValue(source.columnGap);
 	selectByData(fillOrder, source.fillAcross ? 1 : 0);
@@ -541,6 +584,11 @@ Section SectionEditor::section() const
 	result.logoSide = static_cast<LogoSide>(logoSide->currentData().toInt());
 	result.logoGap = logoGap->value();
 	result.bridge = bridgeEdit->text();
+	result.bridgeFill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
+	result.bridgeSizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
+	result.bridgeSplit = bridgeSplit->value() / 100.0;
+	result.bridgeRowAlign = static_cast<HAlign>(bridgeRowAlign->currentData().toInt());
+	result.bridgeSpanEmpty = bridgeSpanEmpty->isChecked();
 	result.columns = columns->value();
 	result.columnGap = columnGap->value();
 	result.fillAcross = fillOrder->currentData().toInt() == 1;
@@ -585,7 +633,22 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(logoHeight, sectionLogo);
 	form->setRowVisible(logoSide, logoBesideText);
 	form->setRowVisible(logoGap, logoBesideText);
-	form->setRowVisible(bridgeEdit, type == SectionType::Bridged);
+	const bool bridged = type == SectionType::Bridged;
+	const auto fill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
+	const auto sizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
+
+	form->setRowVisible(bridgeEdit, bridged);
+	form->setRowVisible(bridgeFill, bridged);
+	form->setRowVisible(bridgeSizing, bridged);
+	/* The split is the tab stop; with Natural sizing the text decides where things land. */
+	form->setRowVisible(bridgeSplit, bridged && sizing == BridgeSizing::Split);
+	/*
+	 * Only a fixed bridge with natural columns can leave a row narrower than the section.
+	 * Every other combination fills the width, so there is nothing left to align.
+	 */
+	form->setRowVisible(bridgeRowAlign, bridged && sizing == BridgeSizing::Natural && fill == BridgeFill::Fixed);
+	/* A fixed bridge has nothing to run into the space an empty column would free. */
+	form->setRowVisible(bridgeSpanEmpty, bridged && fill != BridgeFill::Fixed);
 	form->setRowVisible(columns, hasColumns);
 	form->setRowVisible(columnGap, hasColumns);
 	form->setRowVisible(fillOrder, hasColumns);

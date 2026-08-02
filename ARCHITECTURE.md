@@ -74,11 +74,61 @@ unused fields simply stop being read.
 | `Title`, `Header` | one text block | differ only in default size/padding |
 | `TitleWithLogo`, `HeaderWithLogo` | text + a logo beside it | `logoSide` picks the side, `logoGap` the spacing |
 | `LogoTitle`, `LogoHeader` | a logo, no text | for wordmarks used as the heading itself |
-| `Bridged` | entry list of left/right pairs | joined by `bridge`, e.g. `Director . . . . . . Jane Doe` |
+| `Bridged` | entry list of left/right pairs | joined by `bridge`, e.g. `Director . . . . . . Jane Doe`; see below |
 | `TextList` | entry list, one column | |
 | `LogoList` | entry list of logos, one column | |
 | `MultiTextList`, `MultiLogoList` | entry list over `columns` columns | `fillAcross` picks row-major vs column-major |
 | `Spacer` | nothing | a blank run of `spacerHeight` px |
+
+### Bridged rows
+
+A bridged row is three parts — left text, bridge, right text — and two settings decide how
+the width is carved up between them.
+
+**`bridgeFill`** is what the bridge does with a gap wider than the string itself:
+
+| | |
+|---|---|
+| `Fixed` | drawn once at its natural width |
+| `Repeat` | tiled as many *whole* times as fit, centred in the gap |
+| `Stretch` | drawn once, with letter spacing widened until it spans the gap exactly |
+
+`Repeat` deliberately refuses a partial copy: cutting a leader mid-glyph reads as damage
+once the bridge is a word rather than a run of dots. The cost is up to one unit of slack, so
+a short bridge (`" . "`) is what makes it look tight. `Stretch` divides the shortfall by the
+full character count rather than the gaps between characters, which lands the run's advance
+on the gap exactly instead of overshooting it by one gap.
+
+**`bridgeSizing`** is how the two text columns are measured:
+
+| | |
+|---|---|
+| `Split` | the left column is `bridgeSplit` of the shared space, so the bridge starts at the same x on every row — a tab stop. Long text wraps inside the column. |
+| `Natural` | each side takes only what its own text needs and the bridge absorbs the rest, so the row reaches both edges but the bridge starts wherever the text ends. |
+
+`bridgeSplit` divides the space the two texts *share* rather than the whole width, which is
+what makes `Split` + `Fixed` + `0.5` reproduce the old hard-coded 50/50 layout exactly.
+With a filling bridge there is nothing to reserve, so the same number reads as a plain tab
+stop. Under `Natural`, two texts that together overflow the row shrink in proportion rather
+than letting whichever comes first swallow the row and wrap the other out of existence.
+
+From there **one placement path covers every combination**: whatever the columns leave over
+becomes the bridge, and the row is aligned within the section by `bridgeRowAlign`. That
+alignment only moves anything for `Natural` + `Fixed`, because every other combination has
+already consumed the full width — an invariant worth keeping, since it is what the editor's
+field visibility is built on, and it is asserted across the whole mode matrix.
+
+`bridgeSpanEmpty` lets a side with no text give its column up to the bridge, for a heading
+row inside an otherwise bridged list. It is confined to a filling bridge: a fixed one has
+nothing to cover the freed space with, so collapsing the column there would only shorten the
+row — and would break the invariant above. Under `Natural` an empty side already measures
+zero, so the flag only really bites under `Split`, where the column is reserved whether or
+not anything is in it.
+
+Finally, the three parts share a **baseline** rather than a top edge, anchored on whichever
+reaches lowest so nothing climbs into the row above. That is what keeps a leader running
+through the middle of the text when the two sides are set at different sizes; when they
+match, every offset is zero and the result is what it always was.
 
 ### Style presets
 
@@ -288,8 +338,17 @@ harness covering the `obs_data` round trip for all twelve section types, measure
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
 
-`RenderThread` has no libobs or widget dependencies, so its queue can be exercised on its
-own against Qt Core alone — post ordering, posting from several threads at once, a job
-posting its own follow-up, and jobs posted after `stopRenderThread()` being dropped rather
-than run. That is the shape the rest of the harness should take too: promoting all of it
-into a real CTest target is the obvious next infrastructure step.
+Two pieces can already be tested without libobs at all, which is the shape the rest of the
+harness should take:
+
+- `RenderThread` needs only Qt Core — post ordering, posting from several threads at once, a
+  job posting its own follow-up, and jobs posted after `stopRenderThread()` being dropped.
+- Bridged row placement needs only Qt Gui, for real font metrics. Worth covering because the
+  geometry is where this section type's behaviour lives: that the defaults still reproduce
+  the old 50/50 layout, that the tab stop holds across rows of different lengths, that both
+  edges are met whenever the mode says they should be, that overlong rows shrink in
+  proportion, that a filled bridge covers the gap it was given, and — across the whole
+  fill × sizing × one-sided matrix — that only `Natural` + `Fixed` leaves a row short of the
+  full width.
+
+Promoting all of it into a real CTest target is the obvious next infrastructure step.

@@ -155,6 +155,11 @@ private:
 	QSpinBox *logoGap = nullptr;
 
 	QLineEdit *bridgeEdit = nullptr;
+	QComboBox *bridgeFill = nullptr;
+	QComboBox *bridgeSizing = nullptr;
+	QSpinBox *bridgeSplit = nullptr;
+	QComboBox *bridgeRowAlign = nullptr;
+	QCheckBox *bridgeSpanEmpty = nullptr;
 	QSpinBox *columns = nullptr;
 	QSpinBox *columnGap = nullptr;
 	QComboBox *fillOrder = nullptr;

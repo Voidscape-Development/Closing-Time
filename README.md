@@ -17,12 +17,18 @@ out of sections:
 | Title / Header | A heading, at two default sizes |
 | Title w/ Logo, Header w/ Logo | A heading with a logo beside it, on either side |
 | Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
-| Text to Text Bridged | `Director . . . . . . Jane Doe` role-to-person pairs |
+| Text to Text Bridged | `Director . . . . . . Jane Doe` role-to-person pairs, with leaders that can repeat or stretch to fill the row |
 | Text List | A single column of names |
 | Logo List | A single column of logos |
 | Multi-List of Text | Names across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
 | Spacer | A blank run, for pacing |
+
+Bridged rows are fully placeable: the bridge can be drawn once, repeated, or stretched to
+span whatever gap the two texts leave; the columns can be fixed (so the leader starts at the
+same place on every row) or sized to the text (so the row reaches both edges); a short row
+can hug either edge or sit centred; and a row with only one side filled in can run its
+leader out to the far edge, for a heading inside an otherwise bridged list.
 
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
 plus padding and side margins. Any style can instead be saved as a named **preset**: bind

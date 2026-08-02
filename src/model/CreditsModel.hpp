@@ -78,6 +78,34 @@ enum class LogoSide { Left, Right };
 const char *logoSideId(LogoSide side);
 LogoSide logoSideFromId(const char *id, LogoSide fallback = LogoSide::Left);
 
+/*
+ * How a Bridged section's bridge covers the space between its two texts.
+ *
+ *   Fixed   - drawn once at its natural width, wherever the two columns leave room.
+ *   Repeat  - tiled as many whole times as fit, so the leader reaches across the gap
+ *             however long the two texts turn out to be.
+ *   Stretch - drawn once, with the spacing between its characters widened until it spans
+ *             the gap exactly. Keeps the character count the user typed.
+ */
+enum class BridgeFill { Fixed, Repeat, Stretch };
+
+const char *bridgeFillId(BridgeFill fill);
+BridgeFill bridgeFillFromId(const char *id, BridgeFill fallback = BridgeFill::Fixed);
+
+/*
+ * How a Bridged section divides its width between the two texts.
+ *
+ *   Split   - the left column is a fixed share of the width (`bridgeSplit`), so the bridge
+ *             begins at the same x on every row -- a tab stop. Long text wraps inside it.
+ *   Natural - each side takes only the width its own text needs and the bridge absorbs
+ *             everything left over, so the row reaches both edges but the bridge starts
+ *             wherever the left text happens to end.
+ */
+enum class BridgeSizing { Split, Natural };
+
+const char *bridgeSizingId(BridgeSizing sizing);
+BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback = BridgeSizing::Split);
+
 struct TextStyle {
 	QString family = QStringLiteral("Sans Serif");
 	/*
@@ -162,6 +190,27 @@ struct Section {
 
 	/* Bridged sections only: the separator drawn between the two texts. */
 	QString bridge = QStringLiteral(" . . . . . . ");
+	BridgeFill bridgeFill = BridgeFill::Fixed;
+	BridgeSizing bridgeSizing = BridgeSizing::Split;
+	/*
+	 * Split sizing only: the left column's share of the space the two texts divide between
+	 * them, 0.0 to 1.0. At the default 0.5 with a Fixed bridge this is an even split with
+	 * the bridge centred -- the layout Bridged sections have always had.
+	 */
+	double bridgeSplit = 0.5;
+	/*
+	 * Where a row that does not span the full width sits. Only reachable with Natural
+	 * sizing and a Fixed bridge; every other combination fills the width by construction.
+	 */
+	HAlign bridgeRowAlign = HAlign::Center;
+	/*
+	 * When set, a side with no text gives its column up to the bridge, so a row carrying
+	 * only one of the two texts runs the leader out to the far edge -- a heading row in an
+	 * otherwise bridged list. Applies only to a filling bridge, since a fixed one has
+	 * nothing to cover the freed space with, and only bites under Split sizing, where the
+	 * column is reserved whether or not there is anything in it.
+	 */
+	bool bridgeSpanEmpty = false;
 
 	/* Multi-list sections only. */
 	int columns = 2;
