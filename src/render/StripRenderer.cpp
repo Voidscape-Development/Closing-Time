@@ -194,6 +194,70 @@ void paintLogo(QPainter *painter, const QImage &image, const QRect &rect)
 	painter->drawImage(rect, image);
 }
 
+/* Where the logo and text of a "... w/ Logo" row sit horizontally. */
+struct LogoRow {
+	qreal logoX = 0.0;
+	qreal textX = 0.0;
+	qreal textWidth = 0.0;
+	qreal bridgeX = 0.0;
+	qreal bridgeWidth = 0.0;
+};
+
+/*
+ * Divides a "... w/ Logo" row between its logo and its text.
+ *
+ * The three placements differ in what the text is allowed to be wide: everything left over
+ * (Edge), only what it needs (Hug), or only what it needs while parked against the far edge
+ * (Bridged). Hug is the one that makes `logoGap` mean what it looks like it means, because
+ * the pair is measured together and then aligned as a unit -- under Edge the text aligns
+ * inside the whole remaining column instead, and drifts away from the logo.
+ */
+LogoRow placeLogoRow(const Section &section, const TextStyle &style, qreal contentX, qreal contentWidth,
+		     qreal logoWidth)
+{
+	const bool onLeft = section.logoSide == LogoSide::Left;
+	/* Nothing to separate the logo from when there is no text. */
+	const qreal gap = section.text.isEmpty() ? 0.0 : section.logoGap;
+
+	LogoRow row;
+
+	switch (section.logoPlacement) {
+	case LogoPlacement::Edge:
+		row.textWidth = std::max(0.0, contentWidth - logoWidth - gap);
+		row.logoX = onLeft ? contentX : contentX + contentWidth - logoWidth;
+		row.textX = onLeft ? contentX + logoWidth + gap : contentX;
+		break;
+
+	case LogoPlacement::Hug: {
+		row.textWidth =
+			std::min(naturalTextWidth(section.text, style), std::max(0.0, contentWidth - logoWidth - gap));
+
+		const qreal groupWidth = logoWidth + gap + row.textWidth;
+		const qreal groupX = contentX + alignOffset(style.align, contentWidth, groupWidth);
+
+		row.logoX = onLeft ? groupX : groupX + row.textWidth + gap;
+		row.textX = onLeft ? groupX + logoWidth + gap : groupX;
+		break;
+	}
+
+	case LogoPlacement::Bridged: {
+		row.textWidth =
+			std::min(naturalTextWidth(section.text, style), std::max(0.0, contentWidth - logoWidth));
+
+		row.logoX = onLeft ? contentX : contentX + contentWidth - logoWidth;
+		row.textX = onLeft ? contentX + contentWidth - row.textWidth : contentX;
+
+		/* The gap becomes padding at each end, so the leader touches neither cap. */
+		const qreal span = std::max(0.0, contentWidth - logoWidth - row.textWidth);
+		row.bridgeWidth = std::max(0.0, span - gap * 2.0);
+		row.bridgeX = (onLeft ? contentX + logoWidth : contentX + row.textWidth) + gap;
+		break;
+	}
+	}
+
+	return row;
+}
+
 /* Where the three parts of one bridged row sit horizontally. */
 struct BridgedRow {
 	qreal leftX = 0.0;
@@ -375,18 +439,26 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const int logoBudget = std::max(1, contentWidth / 3);
 		const QSize logoSize = logoDrawSize(image, section.logo, logoBudget);
 
-		const int textWidth = std::max(1, contentWidth - logoSize.width() - section.logoGap);
-		const int textHeight = layoutText(nullptr, section.text, style, 0, 0, textWidth);
-		const int rowHeight = std::max(logoSize.height(), textHeight);
+		const LogoRow row = placeLogoRow(section, style, contentX, contentWidth, logoSize.width());
 
-		const int logoX = section.logoSide == LogoSide::Left ? contentX
-								     : contentX + contentWidth - logoSize.width();
-		const int textX = section.logoSide == LogoSide::Left ? contentX + logoSize.width() + section.logoGap
-								     : contentX;
+		const int textHeight = layoutText(nullptr, section.text, style, 0, 0, row.textWidth);
+		const int rowHeight = std::max(logoSize.height(), textHeight);
+		const qreal textTop = y + (rowHeight - textHeight) / 2.0;
 
 		/* The logo and the text are centred against each other within the row. */
-		paintLogo(painter, image, QRect(QPoint(logoX, y + (rowHeight - logoSize.height()) / 2), logoSize));
-		layoutText(painter, section.text, style, textX, y + (rowHeight - textHeight) / 2.0, textWidth);
+		paintLogo(painter, image,
+			  QRect(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize));
+		layoutText(painter, section.text, style, row.textX, textTop, row.textWidth);
+
+		if (section.logoPlacement == LogoPlacement::Bridged) {
+			const PreparedBridge bridge = prepareBridge(section, style, row.bridgeWidth);
+			/*
+			 * Drawn from the same top as the text and in the same font, so the leader
+			 * lands on the text's baseline without needing an offset of its own.
+			 */
+			layoutPreparedText(painter, bridge.text, bridge.font, style.color, HAlign::Center,
+					   style.lineSpacing, row.bridgeX, textTop, row.bridgeWidth, false);
+		}
 
 		y += rowHeight;
 		break;

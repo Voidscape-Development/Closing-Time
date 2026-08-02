@@ -151,6 +151,7 @@ private:
 	QLineEdit *logoPath = nullptr;
 	QToolButton *logoBrowse = nullptr;
 	QSpinBox *logoHeight = nullptr;
+	QComboBox *logoPlacement = nullptr;
 	QComboBox *logoSide = nullptr;
 	QSpinBox *logoGap = nullptr;
 

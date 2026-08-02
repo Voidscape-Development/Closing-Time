@@ -72,13 +72,40 @@ unused fields simply stop being read.
 | Type | Content | Notes |
 |---|---|---|
 | `Title`, `Header` | one text block | differ only in default size/padding |
-| `TitleWithLogo`, `HeaderWithLogo` | text + a logo beside it | `logoSide` picks the side, `logoGap` the spacing |
+| `TitleWithLogo`, `HeaderWithLogo` | text + a logo beside it | `logoSide` picks the side, `logoPlacement` how the two relate; see below |
 | `LogoTitle`, `LogoHeader` | a logo, no text | for wordmarks used as the heading itself |
 | `Bridged` | entry list of left/right pairs | joined by `bridge`, e.g. `Director . . . . . . Jane Doe`; see below |
 | `TextList` | entry list, one column | |
 | `LogoList` | entry list of logos, one column | |
 | `MultiTextList`, `MultiLogoList` | entry list over `columns` columns | `fillAcross` picks row-major vs column-major |
 | `Spacer` | nothing | a blank run of `spacerHeight` px |
+
+### Logo rows
+
+`TitleWithLogo` and `HeaderWithLogo` place a logo against a line of text, and
+**`logoPlacement`** decides what "against" means:
+
+| | |
+|---|---|
+| `Edge` | the logo is pinned to the section edge and the text is handed everything left over |
+| `Hug` | logo, gap and text are measured as one group and aligned as one |
+| `Bridged` | the logo caps one end and the text the other, with the bridge running between |
+
+`Edge` came first and has a trap in it that is worth naming, because it looks like a bug and
+is really a layout consequence: the text is given the *entire* remaining column and then
+aligns inside it, so a centred title ends up halfway across the frame from its own logo.
+`logoGap` cannot pull them together, because under `Edge` it only ever sets the minimum
+distance between two columns, never the distance drawn. `Hug` is the fix — measuring the
+pair together and aligning the group is what makes the gap the real separation — and it is
+what `Section::makeDefault` now hands out. `Edge` remains the *load-time* fallback, so
+documents written before the setting existed keep the layout they were built against.
+
+`Bridged` reuses the Bridged section's machinery outright: `bridge` and `bridgeFill` mean
+exactly what they mean there, and the leader is drawn from the same top and in the same font
+as the text, so it lands on the text's baseline without an offset of its own. `bridgeSizing`,
+`bridgeSplit` and `bridgeRowAlign` stay out of it — they describe two *texts* sharing a row,
+which is not the shape of this one. Here `logoGap` becomes padding at each end of the span,
+so the leader touches neither the logo nor the text.
 
 ### Bridged rows
 
@@ -343,12 +370,14 @@ harness should take:
 
 - `RenderThread` needs only Qt Core — post ordering, posting from several threads at once, a
   job posting its own follow-up, and jobs posted after `stopRenderThread()` being dropped.
-- Bridged row placement needs only Qt Gui, for real font metrics. Worth covering because the
-  geometry is where this section type's behaviour lives: that the defaults still reproduce
+- Row placement needs only Qt Gui, for real font metrics. Worth covering because the geometry
+  is where these section types' behaviour lives: that the Bridged defaults still reproduce
   the old 50/50 layout, that the tab stop holds across rows of different lengths, that both
   edges are met whenever the mode says they should be, that overlong rows shrink in
   proportion, that a filled bridge covers the gap it was given, and — across the whole
   fill × sizing × one-sided matrix — that only `Natural` + `Fixed` leaves a row short of the
-  full width.
+  full width. For logo rows: that `Hug` holds `logoGap` exactly across every alignment and
+  side while `Edge` demonstrably does not, and that a `Bridged` logo row caps both ends with
+  the leader padded off each.
 
 Promoting all of it into a real CTest target is the obvious next infrastructure step.

@@ -346,6 +346,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	logoHeight->setSuffix(QStringLiteral(" px"));
 	form->addRow(moduleText("Designer.LogoHeight"), logoHeight);
 
+	logoPlacement = new QComboBox(this);
+	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Hug"), static_cast<int>(LogoPlacement::Hug));
+	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Edge"), static_cast<int>(LogoPlacement::Edge));
+	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Bridged"), static_cast<int>(LogoPlacement::Bridged));
+	form->addRow(moduleText("Designer.LogoPlacement"), logoPlacement);
+
 	logoSide = new QComboBox(this);
 	logoSide->addItem(moduleText("Designer.LogoSide.Left"), static_cast<int>(LogoSide::Left));
 	logoSide->addItem(moduleText("Designer.LogoSide.Right"), static_cast<int>(LogoSide::Right));
@@ -485,8 +491,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
 
-	/* These two decide which of the other bridge rows are worth showing. */
-	for (QComboBox *box : {bridgeFill, bridgeSizing}) {
+	/* These decide which of the other bridge rows are worth showing. */
+	for (QComboBox *box : {bridgeFill, bridgeSizing, logoPlacement}) {
 		connect(box, &QComboBox::currentIndexChanged, this, [this] {
 			if (loading)
 				return;
@@ -540,6 +546,7 @@ void SectionEditor::setSection(const Section &source)
 	textEdit->setPlainText(source.text);
 	logoPath->setText(source.logo.path);
 	logoHeight->setValue(source.logo.maxHeight);
+	selectByData(logoPlacement, static_cast<int>(source.logoPlacement));
 	selectByData(logoSide, static_cast<int>(source.logoSide));
 	logoGap->setValue(source.logoGap);
 	bridgeEdit->setText(source.bridge);
@@ -581,6 +588,7 @@ Section SectionEditor::section() const
 	result.text = textEdit->toPlainText();
 	result.logo.path = logoPath->text();
 	result.logo.maxHeight = logoHeight->value();
+	result.logoPlacement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
 	result.logoSide = static_cast<LogoSide>(logoSide->currentData().toInt());
 	result.logoGap = logoGap->value();
 	result.bridge = bridgeEdit->text();
@@ -636,9 +644,15 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool bridged = type == SectionType::Bridged;
 	const auto fill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
 	const auto sizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
+	const auto placement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
 
-	form->setRowVisible(bridgeEdit, bridged);
-	form->setRowVisible(bridgeFill, bridged);
+	/* A logo row bridged across to its text uses the same bridge fields a Bridged section does. */
+	const bool usesBridge = bridged || (logoBesideText && placement == LogoPlacement::Bridged);
+
+	form->setRowVisible(logoPlacement, logoBesideText);
+	form->setRowVisible(bridgeEdit, usesBridge);
+	form->setRowVisible(bridgeFill, usesBridge);
+	/* Column sizing and row placement describe two texts, so they stay with that type. */
 	form->setRowVisible(bridgeSizing, bridged);
 	/* The split is the tab stop; with Natural sizing the text decides where things land. */
 	form->setRowVisible(bridgeSplit, bridged && sizing == BridgeSizing::Split);

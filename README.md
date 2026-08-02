@@ -15,7 +15,7 @@ out of sections:
 | Section type | What it is |
 |---|---|
 | Title / Header | A heading, at two default sizes |
-| Title w/ Logo, Header w/ Logo | A heading with a logo beside it, on either side |
+| Title w/ Logo, Header w/ Logo | A heading with a logo beside it, hugging the text, pinned to the edge, or bridged across to it |
 | Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
 | Text to Text Bridged | `Director . . . . . . Jane Doe` role-to-person pairs, with leaders that can repeat or stretch to fill the row |
 | Text List | A single column of names |

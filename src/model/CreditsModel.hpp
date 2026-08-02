@@ -79,6 +79,24 @@ const char *logoSideId(LogoSide side);
 LogoSide logoSideFromId(const char *id, LogoSide fallback = LogoSide::Left);
 
 /*
+ * How a "... w/ Logo" section arranges its logo against its text.
+ *
+ *   Edge    - the logo is pinned to the section's edge and the text is handed the whole of
+ *             what is left. The text then aligns inside that entire column, which is what
+ *             leaves a centred title stranded halfway across the frame from its own logo:
+ *             `logoGap` sets the minimum separation between the two columns, never the
+ *             distance actually drawn.
+ *   Hug     - logo, gap and text are measured as one group and aligned as one, so the logo
+ *             really does sit `logoGap` from the text wherever the pair ends up.
+ *   Bridged - the logo caps one end of the row and the text the other, with the bridge
+ *             running between them exactly as it does in a Bridged section.
+ */
+enum class LogoPlacement { Edge, Hug, Bridged };
+
+const char *logoPlacementId(LogoPlacement placement);
+LogoPlacement logoPlacementFromId(const char *id, LogoPlacement fallback = LogoPlacement::Edge);
+
+/*
  * How a Bridged section's bridge covers the space between its two texts.
  *
  *   Fixed   - drawn once at its natural width, wherever the two columns leave room.
@@ -180,7 +198,12 @@ struct Section {
 	QString text;
 	LogoRef logo;
 	LogoSide logoSide = LogoSide::Left;
-	/* Gap between the logo and the text for the "... w/ Logo" types, in pixels. */
+	LogoPlacement logoPlacement = LogoPlacement::Edge;
+	/*
+	 * Space between the logo and the text for the "... w/ Logo" types, in pixels. Under
+	 * Edge placement this is only a minimum between the two columns; under Hug it is the
+	 * distance drawn, and under Bridged it is the padding at each end of the bridge.
+	 */
 	int logoGap = 24;
 
 	/* List content. */

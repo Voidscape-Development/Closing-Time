@@ -179,6 +179,32 @@ LogoSide logoSideFromId(const char *id, LogoSide fallback)
 	return fallback;
 }
 
+const char *logoPlacementId(LogoPlacement placement)
+{
+	switch (placement) {
+	case LogoPlacement::Hug:
+		return "hug";
+	case LogoPlacement::Bridged:
+		return "bridged";
+	case LogoPlacement::Edge:
+	default:
+		return "edge";
+	}
+}
+
+LogoPlacement logoPlacementFromId(const char *id, LogoPlacement fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "hug") == 0)
+		return LogoPlacement::Hug;
+	if (strcmp(id, "bridged") == 0)
+		return LogoPlacement::Bridged;
+	if (strcmp(id, "edge") == 0)
+		return LogoPlacement::Edge;
+	return fallback;
+}
+
 const char *bridgeFillId(BridgeFill fill)
 {
 	switch (fill) {
@@ -321,6 +347,7 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_string(data, "label", label.toUtf8().constData());
 	obs_data_set_string(data, "text", text.toUtf8().constData());
 	obs_data_set_string(data, "logo_side", logoSideId(logoSide));
+	obs_data_set_string(data, "logo_placement", logoPlacementId(logoPlacement));
 	obs_data_set_int(data, "logo_gap", logoGap);
 	obs_data_set_string(data, "bridge", bridge.toUtf8().constData());
 	obs_data_set_string(data, "bridge_fill", bridgeFillId(bridgeFill));
@@ -367,6 +394,8 @@ void Section::load(obs_data_t *data)
 	label = QString::fromUtf8(obs_data_get_string(data, "label"));
 	text = QString::fromUtf8(obs_data_get_string(data, "text"));
 	logoSide = logoSideFromId(obs_data_get_string(data, "logo_side"), LogoSide::Left);
+	/* Documents written before this setting existed were laid out against Edge. */
+	logoPlacement = logoPlacementFromId(obs_data_get_string(data, "logo_placement"), LogoPlacement::Edge);
 	logoGap = static_cast<int>(obs_data_get_int(data, "logo_gap"));
 	bridge = QString::fromUtf8(obs_data_get_string(data, "bridge"));
 	bridgeFill = bridgeFillFromId(obs_data_get_string(data, "bridge_fill"), BridgeFill::Fixed);
@@ -503,6 +532,14 @@ Section Section::makeDefault(SectionType type)
 		section.paddingBottom = 0;
 		break;
 	}
+
+	/*
+	 * A section being added now gets the placement that actually honours logoGap. Edge
+	 * stays the load-time fallback, so documents predating the setting keep the layout they
+	 * were built against.
+	 */
+	if (sectionUsesLogos(type) && sectionUsesText(type))
+		section.logoPlacement = LogoPlacement::Hug;
 
 	return section;
 }
