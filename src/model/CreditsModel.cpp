@@ -220,6 +220,24 @@ void TextStyle::defaults(obs_data_t *data, int pixelSize, bool bold)
 	obs_data_set_default_double(data, "line_spacing", 1.0);
 }
 
+void StylePreset::save(obs_data_t *data) const
+{
+	obs_data_set_string(data, "name", name.toUtf8().constData());
+
+	OBSDataAutoRelease styleData = obs_data_create();
+	style.save(styleData);
+	obs_data_set_obj(data, "style", styleData);
+}
+
+void StylePreset::load(obs_data_t *data)
+{
+	name = QString::fromUtf8(obs_data_get_string(data, "name"));
+
+	OBSDataAutoRelease styleData = obs_data_get_obj(data, "style");
+	if (styleData)
+		style.load(styleData);
+}
+
 void LogoRef::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "path", path.toUtf8().constData());
@@ -272,6 +290,8 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_int(data, "spacer_height", spacerHeight);
 	obs_data_set_bool(data, "visible", visible);
 	obs_data_set_bool(data, "use_secondary_style", useSecondaryStyle);
+	obs_data_set_string(data, "style_preset", stylePresetName.toUtf8().constData());
+	obs_data_set_string(data, "secondary_style_preset", secondaryStylePresetName.toUtf8().constData());
 
 	OBSDataAutoRelease logoData = obs_data_create();
 	logo.save(logoData);
@@ -311,6 +331,8 @@ void Section::load(obs_data_t *data)
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
 	visible = obs_data_get_bool(data, "visible");
 	useSecondaryStyle = obs_data_get_bool(data, "use_secondary_style");
+	stylePresetName = QString::fromUtf8(obs_data_get_string(data, "style_preset"));
+	secondaryStylePresetName = QString::fromUtf8(obs_data_get_string(data, "secondary_style_preset"));
 
 	if (columns < 1)
 		columns = 1;
@@ -453,6 +475,73 @@ QString Section::displayLabel() const
 	return QStringLiteral("%1 (%2)").arg(QString::fromUtf8(sectionTypeName(type))).arg(entries.size());
 }
 
+const TextStyle *Document::findStylePreset(const QString &name) const
+{
+	if (name.isEmpty())
+		return nullptr;
+
+	for (const StylePreset &preset : stylePresets) {
+		if (preset.name == name)
+			return &preset.style;
+	}
+	return nullptr;
+}
+
+const TextStyle &Document::effectiveStyle(const Section &section) const
+{
+	const TextStyle *preset = findStylePreset(section.stylePresetName);
+	return preset ? *preset : section.style;
+}
+
+const TextStyle &Document::effectiveSecondaryStyle(const Section &section) const
+{
+	if (!section.useSecondaryStyle)
+		return effectiveStyle(section);
+
+	const TextStyle *preset = findStylePreset(section.secondaryStylePresetName);
+	return preset ? *preset : section.secondaryStyle;
+}
+
+void Document::setStylePreset(const QString &name, const TextStyle &style)
+{
+	if (name.isEmpty())
+		return;
+
+	for (StylePreset &preset : stylePresets) {
+		if (preset.name == name) {
+			preset.style = style;
+			return;
+		}
+	}
+
+	stylePresets.append(StylePreset{name, style});
+}
+
+void Document::removeStylePreset(const QString &name)
+{
+	if (name.isEmpty())
+		return;
+
+	for (int i = 0; i < stylePresets.size(); ++i) {
+		if (stylePresets.at(i).name == name) {
+			stylePresets.removeAt(i);
+			break;
+		}
+	}
+
+	/*
+	 * Bindings are cleared rather than left dangling. Resolution would fall back to the
+	 * section's own style either way, but clearing them means a later preset that happens
+	 * to reuse the name does not silently recapture sections the user had unbound.
+	 */
+	for (Section &section : sections) {
+		if (section.stylePresetName == name)
+			section.stylePresetName.clear();
+		if (section.secondaryStylePresetName == name)
+			section.secondaryStylePresetName.clear();
+	}
+}
+
 void Document::save(obs_data_t *data) const
 {
 	obs_data_set_int(data, "width", width);
@@ -466,6 +555,13 @@ void Document::save(obs_data_t *data) const
 	obs_data_set_double(data, "start_delay", startDelay);
 
 	endingAction.save(data);
+
+	saveArray(
+		data, "style_presets", stylePresets.size(),
+		[](obs_data_t *item, int index, const void *context) {
+			static_cast<const QVector<StylePreset> *>(context)->at(index).save(item);
+		},
+		&stylePresets);
 
 	saveArray(
 		data, "sections", sections.size(),
@@ -500,6 +596,21 @@ void Document::load(obs_data_t *data)
 		startDelay = 0.0;
 
 	endingAction.load(data);
+
+	stylePresets.clear();
+	OBSDataArrayAutoRelease presetArray = obs_data_get_array(data, "style_presets");
+	if (presetArray) {
+		const size_t count = obs_data_array_count(presetArray);
+		stylePresets.reserve(static_cast<int>(count));
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(presetArray, i);
+			StylePreset preset;
+			preset.load(item);
+			/* An unnamed preset can never be resolved, so it is dropped on load. */
+			if (!preset.name.isEmpty())
+				stylePresets.append(preset);
+		}
+	}
 
 	sections.clear();
 	OBSDataArrayAutoRelease array = obs_data_get_array(data, "sections");

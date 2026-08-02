@@ -21,13 +21,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.hpp>
 
 #include <QDialog>
+#include <QListWidget>
+
+#include <memory>
 
 #include "model/CreditsModel.hpp"
 #include "render/StripRenderer.hpp"
 
 class QDialogButtonBox;
 class QLabel;
-class QListWidget;
+class QPushButton;
 class QScrollArea;
 class QTimer;
 
@@ -35,6 +38,27 @@ namespace closingtime {
 
 class PreviewWidget;
 class SectionEditor;
+
+/*
+ * The section list, with drag-and-drop reordering.
+ *
+ * The drop is reported rather than carried out. The dialog owns the section order, and
+ * letting the view rearrange its own items too would leave two orders to keep in step --
+ * so the view stays a pure display of whatever the document currently says.
+ */
+class SectionListWidget : public QListWidget {
+	Q_OBJECT
+
+public:
+	explicit SectionListWidget(QWidget *parent = nullptr);
+
+signals:
+	/* `to` is where the dragged row lands, counted after it has been lifted out. */
+	void rowMoved(int from, int to);
+
+protected:
+	void dropEvent(QDropEvent *event) override;
+};
 
 /*
  * Opens the designer for `source`, raising the existing window if one is already open for
@@ -71,36 +95,114 @@ private:
 	void duplicateSection();
 	void removeSection();
 	void moveSection(int delta);
+	void moveSectionTo(int from, int to);
+
+	/* Style presets live on the document, so the editors route their edits through here. */
+	void savePreset(const QString &name, const TextStyle &style);
+	void deletePreset(const QString &name);
 
 	void importJson();
 	void exportJson();
 
-	/* Re-renders the preview strip and updates the duration readout. */
+	/*
+	 * Queues a re-render of the preview strip on the render thread. The result comes back
+	 * through applyPreview once it is ready; the previous strip stays on screen until then.
+	 */
 	void refreshPreview();
 	void schedulePreviewRefresh();
 
+	/*
+	 * Shows a finished strip along with the duration readout and font warning. Takes the
+	 * document the strip was rendered from rather than reading the live one, so the canvas
+	 * outline and the readouts always describe the pixels actually on screen.
+	 */
+	void applyPreview(const Document &rendered, const Strip &strip);
+
 	/* Commits the editor's current state into `document` at `currentIndex`. */
 	void commitCurrentSection();
+
+	/*
+	 * Undo covers exactly what the designer owns -- sections and style presets -- because
+	 * canvas and playback settings belong to the properties dialog and have their own
+	 * lifecycle. Whole-document snapshots rather than per-field commands: a document is a
+	 * handful of kilobytes of implicitly shared containers, and there is no edit here that
+	 * a command object would meaningfully compress.
+	 */
+	struct DocumentSnapshot {
+		QVector<Section> sections;
+		QVector<StylePreset> stylePresets;
+		int currentIndex = -1;
+	};
+
+	DocumentSnapshot snapshot() const;
+	void restore(const DocumentSnapshot &state);
+
+	/* Records the state to come back to. Call before anything that mutates content. */
+	void beginUndoStep();
+
+	/*
+	 * Opens an undo step covering a run of small edits, so typing a name is one undo step
+	 * rather than one per keystroke. The run closes on the next selection change, on any
+	 * structural edit, or after a period of quiet.
+	 */
+	void beginEditUndoStep();
+
+	void undo();
+	void redo();
+	void refreshUndoButtons();
+
+	/*
+	 * How a finished render finds its way back to a window that may since have closed.
+	 * Held by shared_ptr because the render thread needs something it can safely keep hold
+	 * of; the pointer inside is set in the constructor and cleared in the destructor, both
+	 * on the UI thread, and only ever read on the UI thread.
+	 */
+	struct PreviewSink {
+		DesignerDialog *dialog = nullptr;
+	};
 
 	OBSWeakSource weakSource;
 
 	Document document;
 	int currentIndex = -1;
 
-	/* Private to this dialog: the source keeps its own cache on the same thread. */
-	LogoCache logos;
+	/*
+	 * Private to this dialog: the source keeps its own cache. Shared ownership because a
+	 * render job in flight outlives the window that queued it.
+	 */
+	std::shared_ptr<LogoCache> logos = std::make_shared<LogoCache>();
+	std::shared_ptr<PreviewSink> sink = std::make_shared<PreviewSink>();
 
-	QListWidget *sectionList = nullptr;
+	QVector<DocumentSnapshot> undoStack;
+	QVector<DocumentSnapshot> redoStack;
+	bool editBurstOpen = false;
+
+	/*
+	 * Preview renders coalesce the same way the source's do: while one is out, further
+	 * edits set a flag instead of queueing another job, so a roll slow enough to rasterise
+	 * cannot build a backlog of stale frames behind the one the user is waiting for.
+	 * UI thread only.
+	 */
+	bool previewInFlight = false;
+	bool previewAgain = false;
+
+	SectionListWidget *sectionList = nullptr;
 	SectionEditor *editor = nullptr;
 	QScrollArea *editorScroll = nullptr;
 	PreviewWidget *preview = nullptr;
 	QLabel *durationLabel = nullptr;
+	/* Hidden unless the roll asks for a font this machine does not have. */
+	QLabel *fontWarningLabel = nullptr;
 	QDialogButtonBox *buttons = nullptr;
+	QPushButton *undoButton = nullptr;
+	QPushButton *redoButton = nullptr;
 	/*
 	 * Renders are debounced so that typing into a text field does not re-rasterise the
 	 * entire strip on every keystroke.
 	 */
 	QTimer *refreshTimer = nullptr;
+	/* Closes an open edit run once the user stops typing. */
+	QTimer *editBurstTimer = nullptr;
 };
 
 } // namespace closingtime

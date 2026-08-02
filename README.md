@@ -25,8 +25,11 @@ out of sections:
 | Spacer | A blank run, for pacing |
 
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
-plus padding and side margins. Lists can be typed in directly or imported from a CSV/TSV
-file with a column-mapping step.
+plus padding and side margins. Any style can instead be saved as a named **preset**: bind
+every header to one and editing it once restyles all of them. Sections reorder by dragging,
+edits are undoable (Ctrl+Z), and a font the machine does not have is called out under the
+preview rather than quietly substituted. Lists can be typed in directly or imported from a
+CSV/TSV file with a column-mapping step.
 
 The source properties cover canvas size, background colour, scroll speed, lead-in and
 lead-out padding, start behaviour, looping, and the ending action.
@@ -42,8 +45,8 @@ lead-out padding, start behaviour, looping, and the ending action.
 
 When the last pixel clears the top of the canvas, Closing Time can:
 
-- switch scene, stop recording, stop streaming, stop the virtual camera, hide itself, or
-  restart the roll;
+- switch scene, stop recording, stop streaming, stop the virtual camera, hide itself
+  (everywhere it appears, nested scenes and groups included), or restart the roll;
 - trigger any existing OBS hotkey by name;
 - enable, disable or toggle a filter on any source — handy for kicking off a stinger or a
   fade to black;

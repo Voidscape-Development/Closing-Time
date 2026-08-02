@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QImageReader>
 #include <QPainter>
@@ -169,6 +170,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	const int contentX = section.marginX;
 	const int contentWidth = std::max(1, document.width - section.marginX * 2);
 
+	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
+	const TextStyle &style = document.effectiveStyle(section);
+
 	int y = top + section.paddingTop;
 	const int contentTop = y;
 
@@ -179,14 +183,14 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::Title:
 	case SectionType::Header:
-		y += layoutText(painter, section.text, section.style, contentX, y, contentWidth);
+		y += layoutText(painter, section.text, style, contentX, y, contentWidth);
 		break;
 
 	case SectionType::LogoTitle:
 	case SectionType::LogoHeader: {
 		const QImage image = logos->get(section.logo.path, section.logo.maxHeight);
 		const QSize size = logoDrawSize(image, section.logo, contentWidth);
-		const int x = contentX + qRound(alignOffset(section.style.align, contentWidth, size.width()));
+		const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
 		paintLogo(painter, image, QRect(QPoint(x, y), size));
 		y += size.height();
 		break;
@@ -199,7 +203,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const QSize logoSize = logoDrawSize(image, section.logo, logoBudget);
 
 		const int textWidth = std::max(1, contentWidth - logoSize.width() - section.logoGap);
-		const int textHeight = layoutText(nullptr, section.text, section.style, 0, 0, textWidth);
+		const int textHeight = layoutText(nullptr, section.text, style, 0, 0, textWidth);
 		const int rowHeight = std::max(logoSize.height(), textHeight);
 
 		const int logoX = section.logoSide == LogoSide::Left ? contentX
@@ -209,30 +213,30 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		/* The logo and the text are centred against each other within the row. */
 		paintLogo(painter, image, QRect(QPoint(logoX, y + (rowHeight - logoSize.height()) / 2), logoSize));
-		layoutText(painter, section.text, section.style, textX, y + (rowHeight - textHeight) / 2.0, textWidth);
+		layoutText(painter, section.text, style, textX, y + (rowHeight - textHeight) / 2.0, textWidth);
 
 		y += rowHeight;
 		break;
 	}
 
 	case SectionType::Bridged: {
-		const TextStyle &rightStyle = section.useSecondaryStyle ? section.secondaryStyle : section.style;
+		const TextStyle &rightStyle = document.effectiveSecondaryStyle(section);
 
-		const QFontMetricsF bridgeMetrics(makeFont(section.style));
+		const QFontMetricsF bridgeMetrics(makeFont(style));
 		const int bridgeWidth = qCeil(bridgeMetrics.horizontalAdvance(section.bridge));
 		const int columnWidth = std::max(1, (contentWidth - bridgeWidth) / 2);
 		const int rightX = contentX + columnWidth + bridgeWidth;
 
 		for (const Entry &entry : section.entries) {
-			const int leftHeight = layoutText(nullptr, entry.text, section.style, 0, 0, columnWidth);
+			const int leftHeight = layoutText(nullptr, entry.text, style, 0, 0, columnWidth);
 			const int rightHeight = layoutText(nullptr, entry.secondaryText, rightStyle, 0, 0, columnWidth);
 			const int rowHeight = std::max({leftHeight, rightHeight, 1});
 
-			layoutText(painter, entry.text, section.style, contentX, y, columnWidth);
+			layoutText(painter, entry.text, style, contentX, y, columnWidth);
 			layoutText(painter, entry.secondaryText, rightStyle, rightX, y, columnWidth);
 
 			if (!section.bridge.isEmpty()) {
-				TextStyle bridgeStyle = section.style;
+				TextStyle bridgeStyle = style;
 				bridgeStyle.align = HAlign::Center;
 				layoutText(painter, section.bridge, bridgeStyle, contentX + columnWidth, y,
 					   bridgeWidth);
@@ -248,7 +252,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::TextList: {
 		for (const Entry &entry : section.entries) {
-			y += layoutText(painter, entry.text, section.style, contentX, y, contentWidth);
+			y += layoutText(painter, entry.text, style, contentX, y, contentWidth);
 			y += section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -260,7 +264,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		for (const Entry &entry : section.entries) {
 			const QImage image = logos->get(entry.logo.path, entry.logo.maxHeight);
 			const QSize size = logoDrawSize(image, entry.logo, contentWidth);
-			const int x = contentX + qRound(alignOffset(section.style.align, contentWidth, size.width()));
+			const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
 			paintLogo(painter, image, QRect(QPoint(x, y), size));
 			y += size.height() + section.entryGap;
 		}
@@ -300,12 +304,11 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					const QImage image = logos->get(entry.logo.path, entry.logo.maxHeight);
 					const QSize size = logoDrawSize(image, entry.logo, columnWidth);
 					const int logoX =
-						x + qRound(alignOffset(section.style.align, columnWidth, size.width()));
+						x + qRound(alignOffset(style.align, columnWidth, size.width()));
 					paintLogo(painter, image, QRect(QPoint(logoX, y), size));
 					rowHeight = std::max(rowHeight, size.height());
 				} else {
-					const int height =
-						layoutText(painter, entry.text, section.style, x, y, columnWidth);
+					const int height = layoutText(painter, entry.text, style, x, y, columnWidth);
 					rowHeight = std::max(rowHeight, height);
 				}
 			}
@@ -355,6 +358,50 @@ QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos,
 }
 
 } // namespace
+
+bool fontFamilyAvailable(const QString &family)
+{
+	if (family.isEmpty())
+		return true;
+
+	/*
+	 * Qt maps these onto whatever the platform's default is for the category, so they are
+	 * never a substitution there is anything to be done about.
+	 */
+	static const QStringList generics = {
+		QStringLiteral("Sans Serif"), QStringLiteral("Serif"),   QStringLiteral("Monospace"),
+		QStringLiteral("Cursive"),    QStringLiteral("Fantasy"), QStringLiteral("System"),
+	};
+
+	for (const QString &generic : generics) {
+		if (family.compare(generic, Qt::CaseInsensitive) == 0)
+			return true;
+	}
+
+	return QFontDatabase::hasFamily(family);
+}
+
+QStringList missingFontFamilies(const Document &document)
+{
+	QStringList missing;
+
+	const auto consider = [&missing](const QString &family) {
+		if (family.isEmpty() || missing.contains(family) || fontFamilyAvailable(family))
+			return;
+		missing.append(family);
+	};
+
+	for (const Section &section : document.sections) {
+		if (!section.visible || !sectionUsesText(section.type))
+			continue;
+
+		consider(document.effectiveStyle(section).family);
+		consider(document.effectiveSecondaryStyle(section).family);
+	}
+
+	missing.sort(Qt::CaseInsensitive);
+	return missing;
+}
 
 QImage LogoCache::get(const QString &path, int maxHeight)
 {

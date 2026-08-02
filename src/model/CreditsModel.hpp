@@ -98,6 +98,18 @@ struct TextStyle {
 };
 
 /*
+ * A named TextStyle stored on the document. Sections bind to a preset by name, so
+ * restyling every header in a roll is one edit rather than one edit per section.
+ */
+struct StylePreset {
+	QString name;
+	TextStyle style;
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+};
+
+/*
  * A logo reference. `path` is an absolute path to an image QImageReader can decode
  * (PNG/JPEG/SVG/etc). `maxHeight` bounds the drawn size; width follows from the aspect
  * ratio and is additionally clamped to the available column width at layout time.
@@ -165,6 +177,16 @@ struct Section {
 	TextStyle secondaryStyle;
 	bool useSecondaryStyle = false;
 
+	/*
+	 * Names of the document style presets this section follows, or empty to use the
+	 * section's own `style`/`secondaryStyle`. A name that no longer resolves falls back to
+	 * the section's own style as well, so deleting a preset degrades rather than breaks.
+	 * The section's own style is never overwritten by a binding, which keeps binding and
+	 * unbinding non-destructive in the same way changing a section's type is.
+	 */
+	QString stylePresetName;
+	QString secondaryStylePresetName;
+
 	/* Vertical padding above and below the section's content, in pixels. */
 	int paddingTop = 16;
 	int paddingBottom = 16;
@@ -187,6 +209,9 @@ struct Section {
 
 struct Document {
 	QVector<Section> sections;
+
+	/* Named styles sections can bind to. Ordered as the designer lists them. */
+	QVector<StylePreset> stylePresets;
 
 	/* Canvas geometry, in pixels. Also the source's reported width/height. */
 	int width = 1920;
@@ -211,6 +236,23 @@ struct Document {
 	double startDelay = 0.0;
 
 	EndingActionConfig endingAction;
+
+	/* Null when no preset carries that name, including for an empty name. */
+	const TextStyle *findStylePreset(const QString &name) const;
+
+	/*
+	 * The styles a section's text is actually drawn with, once preset bindings are
+	 * resolved. Everything that lays out or paints text goes through these rather than
+	 * reading Section::style directly.
+	 */
+	const TextStyle &effectiveStyle(const Section &section) const;
+	const TextStyle &effectiveSecondaryStyle(const Section &section) const;
+
+	/* Adds `name`, or replaces the style of the preset already carrying that name. */
+	void setStylePreset(const QString &name, const TextStyle &style);
+
+	/* Removes the preset and unbinds every section that referenced it. */
+	void removeStylePreset(const QString &name);
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);

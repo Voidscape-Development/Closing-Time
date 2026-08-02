@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.hpp>
 #include <plugin-support.h>
 
+#include <QSet>
 #include <QString>
 
 #include <algorithm>
@@ -32,6 +33,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 #include "model/CreditsModel.hpp"
+#include "render/RenderThread.hpp"
 #include "render/StripRenderer.hpp"
 #include "ui/DesignerDialog.hpp"
 
@@ -59,7 +61,7 @@ enum class Phase {
  *     graphics thread can therefore read it without a lock.
  *   - Playback state is mutated from hotkey and proc-handler callbacks on the UI thread as
  *     well as from video_tick, so it lives behind `stateMutex`.
- *   - The rendered strip crosses from the UI thread to the graphics thread through
+ *   - The rendered strip crosses from the render thread to the graphics thread through
  *     `pendingStrip` under `handoffMutex`; the GPU textures themselves are only ever
  *     touched by the graphics thread.
  */
@@ -67,8 +69,13 @@ struct CreditsSourceData {
 	obs_source_t *source = nullptr;
 
 	Document document;
-	/* Owned by the UI thread: only the rebuild task reads or writes it. */
+	/*
+	 * Owned by the render thread: only the rebuild job reads or writes it, and jobs run
+	 * one at a time, so neither of these needs a lock.
+	 */
 	LogoCache logos;
+	/* Families already reported, so a rebuild per keystroke does not spam the log. */
+	QSet<QString> warnedFonts;
 
 	std::mutex handoffMutex;
 	Strip pendingStrip;
@@ -106,9 +113,11 @@ struct RebuildTask {
 	OBSWeakSourceAutoRelease weak;
 	CreditsSourceData *data = nullptr;
 	Document document;
+	/* Copied rather than read back later, so the render thread never touches the source. */
+	QString sourceName;
 };
 
-void rebuildOnUiThread(void *param);
+void runRebuild(const std::shared_ptr<RebuildTask> &task);
 
 void queueRebuild(CreditsSourceData *data)
 {
@@ -121,27 +130,40 @@ void queueRebuild(CreditsSourceData *data)
 		data->rebuildInFlight = true;
 	}
 
-	auto *task = new RebuildTask();
+	auto task = std::make_shared<RebuildTask>();
 	task->weak = obs_source_get_weak_source(data->source);
 	task->data = data;
 	task->document = data->document;
+	task->sourceName = QString::fromUtf8(obs_source_get_name(data->source));
 
 	/*
-	 * QPainter and QFont want a thread with a Qt event loop behind them, and the designer
-	 * preview shares the same code path, so all rasterisation happens on the UI thread.
+	 * Rasterisation is long enough to be seen if it happens on the thread drawing OBS's
+	 * own window, so it goes to the shared render thread instead. The handoff below is
+	 * unchanged: the graphics thread still picks the finished tiles up in video_render.
 	 */
-	obs_queue_task(OBS_TASK_UI, rebuildOnUiThread, task, false);
+	postRenderJob([task] { runRebuild(task); });
 }
 
-void rebuildOnUiThread(void *param)
+void runRebuild(const std::shared_ptr<RebuildTask> &task)
 {
-	const std::unique_ptr<RebuildTask> task(static_cast<RebuildTask *>(param));
-
 	OBSSourceAutoRelease source = obs_weak_source_get_source(task->weak);
 	if (!source)
 		return;
 
 	CreditsSourceData *data = task->data;
+
+	/*
+	 * A missing font is not fatal -- Qt substitutes one -- but it silently changes what
+	 * goes to air, so each family is called out once per source in the OBS log.
+	 */
+	for (const QString &family : missingFontFamilies(task->document)) {
+		if (data->warnedFonts.contains(family))
+			continue;
+
+		data->warnedFonts.insert(family);
+		obs_log(LOG_WARNING, "font '%s' is not installed; '%s' will render with a substitute",
+			family.toUtf8().constData(), task->sourceName.toUtf8().constData());
+	}
 
 	StripRenderer renderer(&data->logos);
 	Strip strip = renderer.render(task->document);
