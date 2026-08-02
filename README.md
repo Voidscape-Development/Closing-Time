@@ -1,59 +1,72 @@
-# OBS Plugin Template
+# Closing Time
 
-## Introduction
+An OBS Studio plugin that adds a **Credits Marquee** source: a rolling credits sequence you
+design section by section, with logos, multi-column lists, and a configurable action that
+fires once the roll clears the screen.
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+> Status: early. The source renders, scrolls and triggers; the designer window is usable.
+> See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the list of known limitations.
 
-* Boilerplate plugin source code
-* A CMake project file
-* GitHub Actions workflows and repository actions
+## What it does
 
-## Supported Build Environments
+Add a **Credits Marquee** source to a scene, open **Credits Designer**, and build the roll
+out of sections:
 
-| Platform  | Tool   |
-|-----------|--------|
-| Windows   | Visual Studio 17 2022 |
-| macOS     | XCode 16.0 |
-| Windows, macOS  | CMake 3.30.5 |
-| Ubuntu 24.04 | CMake 3.28.3 |
-| Ubuntu 24.04 | `ninja-build` |
-| Ubuntu 24.04 | `pkg-config`
-| Ubuntu 24.04 | `build-essential` |
+| Section type | What it is |
+|---|---|
+| Title / Header | A heading, at two default sizes |
+| Title w/ Logo, Header w/ Logo | A heading with a logo beside it, on either side |
+| Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
+| Text to Text Bridged | `Director . . . . . . Jane Doe` role-to-person pairs |
+| Text List | A single column of names |
+| Logo List | A single column of logos |
+| Multi-List of Text | Names across a configurable number of columns |
+| Multi-List of Logos | Sponsor logos across a configurable number of columns |
+| Spacer | A blank run, for pacing |
 
-## Quick Start
+Each section carries its own font family, size, weight, colour, alignment and line spacing,
+plus padding and side margins. Lists can be typed in directly or imported from a CSV/TSV
+file with a column-mapping step.
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+The source properties cover canvas size, background colour, scroll speed, lead-in and
+lead-out padding, start behaviour, looping, and the ending action.
 
-## Documentation
+## Playback
 
-All documentation can be found in the [Plugin Template Wiki](https://github.com/obsproject/obs-plugintemplate/wiki).
+- Starts automatically when the source becomes visible (optional), after an optional delay.
+- Per-source hotkeys for **start/resume**, **pause**, and **restart**.
+- Optional looping, which wraps seamlessly.
+- Lead-in and lead-out padding so the roll eases on and fully clears the frame.
 
-Suggested reading to get up and running:
+## Ending actions
 
-* [Getting started](https://github.com/obsproject/obs-plugintemplate/wiki/Getting-Started)
-* [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
-* [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
+When the last pixel clears the top of the canvas, Closing Time can:
 
-## GitHub Actions & CI
+- switch scene, stop recording, stop streaming, stop the virtual camera, hide itself, or
+  restart the roll;
+- trigger any existing OBS hotkey by name;
+- enable, disable or toggle a filter on any source — handy for kicking off a stinger or a
+  fade to black;
+- with an optional delay before it fires.
 
-Default GitHub Actions workflows are available for the following repository actions:
+Regardless of the action chosen, the source emits a `credits_finished` signal, and a global
+`closing_time_finished` signal fires too, so scripts and other plugins can react. Looping
+and ending actions are mutually exclusive — a looping roll never ends.
 
-* `push`: Run for commits or tags pushed to `master` or `main` branches.
-* `pr-pull`: Run when a Pull Request has been pushed or synchronized.
-* `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
-* `build-project`: Builds the actual project and is triggered by other workflows.
-* `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
+## Building
 
-The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
+Requires CMake 3.28+, a C++17 compiler, Qt 6, and the OBS Studio sources/dependencies. The
+plugin needs both `ENABLE_QT` and `ENABLE_FRONTEND_API`, which are on by default.
 
-### Retrieving build artifacts
+```bash
+cmake --preset ubuntu-x86_64      # or windows-x64 / macos
+cmake --build --preset ubuntu-x86_64
+```
 
-Successful builds on GitHub Actions will produce build artifacts that can be downloaded for testing. These artifacts are commonly simple archives and will not contain package installers or installation programs.
+See the [OBS plugin template wiki](https://github.com/obsproject/obs-plugintemplate/wiki)
+for platform-specific build setup; this project keeps the template's CMake layout and CI
+workflows unchanged.
 
-### Building a Release
+## Licence
 
-To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
-
-## Signing and Notarizing on macOS
-
-Basic concepts of codesigning and notarization on macOS are explained in the correspodning [Wiki article](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS) which has a specific section for the [GitHub Actions setup](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS#setting-up-code-signing-for-github-actions).
+GPL-2.0-or-later. See [LICENSE](LICENSE).
