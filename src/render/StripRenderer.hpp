@@ -18,13 +18,23 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <QBrush>
 #include <QHash>
 #include <QImage>
+#include <QRectF>
 #include <QVector>
 
 #include "model/CreditsModel.hpp"
 
 namespace closingtime {
+
+/*
+ * The brush a style's glyphs are filled with over `box`, which for a gradient is the block of
+ * text the sweep is mapped across. Exposed so the designer's gradient preview is painted by
+ * the same code that paints the roll, rather than by a second implementation of the mapping
+ * that can drift away from it.
+ */
+QBrush textFillBrush(const TextStyle &style, const QRectF &box);
 
 /*
  * Styles name a font by family, so a scene collection carried to another machine can end up

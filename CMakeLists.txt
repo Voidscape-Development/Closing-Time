@@ -58,6 +58,8 @@ target_sources(
     src/ui/PreviewWidget.hpp
     src/ui/SectionEditor.cpp
     src/ui/SectionEditor.hpp
+    src/ui/StyleControls.cpp
+    src/ui/StyleControls.hpp
     src/util/CsvParser.cpp
     src/util/CsvParser.hpp
 )

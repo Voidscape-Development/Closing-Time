@@ -21,7 +21,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 
 #include <QCheckBox>
-#include <QColorDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -82,6 +81,7 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 {
 	auto *layout = new QFormLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
+	form = layout;
 
 	auto *presetRow = new QWidget(this);
 	auto *presetLayout = new QHBoxLayout(presetRow);
@@ -115,9 +115,6 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	weightLayout->addStretch();
 	layout->addRow(QString(), weightRow);
 
-	colourButton = new QPushButton(this);
-	layout->addRow(moduleText("Designer.FontColor"), colourButton);
-
 	alignment = new QComboBox(this);
 	addAlignmentOptions(alignment);
 	layout->addRow(moduleText("Designer.Alignment"), alignment);
@@ -127,6 +124,63 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	lineSpacing->setSingleStep(0.05);
 	lineSpacing->setDecimals(2);
 	layout->addRow(moduleText("Designer.LineSpacing"), lineSpacing);
+
+	fillBox = new QComboBox(this);
+	fillBox->addItem(moduleText("Designer.Fill.Solid"), static_cast<int>(TextFill::Solid));
+	fillBox->addItem(moduleText("Designer.Fill.Linear"), static_cast<int>(TextFill::LinearGradient));
+	fillBox->addItem(moduleText("Designer.Fill.Radial"), static_cast<int>(TextFill::RadialGradient));
+	layout->addRow(moduleText("Designer.Fill"), fillBox);
+
+	colourButton = new ColourButton(this);
+	colourButton->setDialogTitle(moduleText("Designer.FontColor"));
+	layout->addRow(moduleText("Designer.FontColor"), colourButton);
+
+	gradientEditor = new GradientEditor(this);
+	layout->addRow(moduleText("Designer.Gradient"), gradientEditor);
+
+	outlineGroup = new QGroupBox(moduleText("Designer.Outline"), this);
+	outlineGroup->setCheckable(true);
+	auto *outlineForm = new QFormLayout(outlineGroup);
+	outlineWidth = new QDoubleSpinBox(outlineGroup);
+	outlineWidth->setRange(0.0, 64.0);
+	outlineWidth->setDecimals(1);
+	outlineWidth->setSingleStep(0.5);
+	outlineWidth->setSuffix(QStringLiteral(" px"));
+	outlineForm->addRow(moduleText("Designer.OutlineWidth"), outlineWidth);
+	outlineColour = new ColourButton(outlineGroup);
+	outlineColour->setDialogTitle(moduleText("Designer.OutlineColor"));
+	outlineForm->addRow(moduleText("Designer.OutlineColor"), outlineColour);
+	layout->addRow(outlineGroup);
+
+	shadowGroup = new QGroupBox(moduleText("Designer.Shadow"), this);
+	shadowGroup->setCheckable(true);
+	auto *shadowForm = new QFormLayout(shadowGroup);
+
+	auto *offsetRow = new QWidget(shadowGroup);
+	auto *offsetLayout = new QHBoxLayout(offsetRow);
+	offsetLayout->setContentsMargins(0, 0, 0, 0);
+	shadowOffsetX = new QSpinBox(offsetRow);
+	shadowOffsetX->setRange(-2048, 2048);
+	shadowOffsetX->setPrefix(QStringLiteral("X "));
+	shadowOffsetX->setSuffix(QStringLiteral(" px"));
+	shadowOffsetY = new QSpinBox(offsetRow);
+	shadowOffsetY->setRange(-2048, 2048);
+	shadowOffsetY->setPrefix(QStringLiteral("Y "));
+	shadowOffsetY->setSuffix(QStringLiteral(" px"));
+	offsetLayout->addWidget(shadowOffsetX);
+	offsetLayout->addWidget(shadowOffsetY);
+	shadowForm->addRow(moduleText("Designer.ShadowOffset"), offsetRow);
+
+	shadowBlur = new QSpinBox(shadowGroup);
+	shadowBlur->setRange(0, 200);
+	shadowBlur->setSuffix(QStringLiteral(" px"));
+	shadowBlur->setToolTip(moduleText("Designer.ShadowBlur.Tip"));
+	shadowForm->addRow(moduleText("Designer.ShadowBlur"), shadowBlur);
+
+	shadowColour = new ColourButton(shadowGroup);
+	shadowColour->setDialogTitle(moduleText("Designer.ShadowColor"));
+	shadowForm->addRow(moduleText("Designer.ShadowColor"), shadowColour);
+	layout->addRow(shadowGroup);
 
 	const auto notify = [this] {
 		notifyEdited();
@@ -138,10 +192,25 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	connect(italic, &QCheckBox::toggled, this, notify);
 	connect(alignment, &QComboBox::currentIndexChanged, this, notify);
 	connect(lineSpacing, &QDoubleSpinBox::valueChanged, this, notify);
-	connect(colourButton, &QPushButton::clicked, this, &StyleEditor::pickColour);
+	connect(colourButton, &ColourButton::colourChanged, this, notify);
+	connect(fillBox, &QComboBox::currentIndexChanged, this, &StyleEditor::onFillChanged);
+	connect(gradientEditor, &GradientEditor::changed, this, [this] {
+		gradient = gradientEditor->gradient();
+		notifyEdited();
+	});
+	connect(outlineGroup, &QGroupBox::toggled, this, notify);
+	connect(outlineWidth, &QDoubleSpinBox::valueChanged, this, notify);
+	connect(outlineColour, &ColourButton::colourChanged, this, notify);
+	connect(shadowGroup, &QGroupBox::toggled, this, notify);
+	connect(shadowOffsetX, &QSpinBox::valueChanged, this, notify);
+	connect(shadowOffsetY, &QSpinBox::valueChanged, this, notify);
+	connect(shadowBlur, &QSpinBox::valueChanged, this, notify);
+	connect(shadowColour, &ColourButton::colourChanged, this, notify);
 	connect(presetBox, &QComboBox::currentIndexChanged, this, &StyleEditor::onPresetSelected);
 	connect(savePresetButton, &QPushButton::clicked, this, &StyleEditor::savePreset);
 	connect(deletePresetButton, &QPushButton::clicked, this, &StyleEditor::deletePreset);
+
+	applyFillVisibility();
 }
 
 void StyleEditor::writeFields(const TextStyle &style)
@@ -150,10 +219,26 @@ void StyleEditor::writeFields(const TextStyle &style)
 	pixelSize->setValue(style.pixelSize);
 	bold->setChecked(style.bold);
 	italic->setChecked(style.italic);
-	colour = style.color;
+	colourButton->setColour(style.color);
 	selectByData(alignment, static_cast<int>(style.align));
 	lineSpacing->setValue(style.lineSpacing);
-	refreshColourButton();
+
+	selectByData(fillBox, static_cast<int>(style.fill));
+	gradient = style.gradient;
+	gradientEditor->setGradient(gradient);
+	gradientEditor->setFill(style.fill);
+
+	outlineGroup->setChecked(style.outline.enabled);
+	outlineWidth->setValue(style.outline.width);
+	outlineColour->setColour(style.outline.color);
+
+	shadowGroup->setChecked(style.shadow.enabled);
+	shadowOffsetX->setValue(qRound(style.shadow.offsetX));
+	shadowOffsetY->setValue(qRound(style.shadow.offsetY));
+	shadowBlur->setValue(qRound(style.shadow.blur));
+	shadowColour->setColour(style.shadow.color);
+
+	applyFillVisibility();
 }
 
 void StyleEditor::setStyle(const TextStyle &style)
@@ -269,36 +354,61 @@ TextStyle StyleEditor::style() const
 	style.pixelSize = pixelSize->value();
 	style.bold = bold->isChecked();
 	style.italic = italic->isChecked();
-	style.color = colour;
+	style.color = colourButton->colour();
 	style.align = static_cast<HAlign>(alignment->currentData().toInt());
 	style.lineSpacing = lineSpacing->value();
+
+	style.fill = static_cast<TextFill>(fillBox->currentData().toInt());
+	/*
+	 * Carried whatever the fill is, so switching to a solid colour to see what the text
+	 * looks like underneath and switching back does not cost the stops that were set up.
+	 */
+	style.gradient = gradient;
+
+	style.outline.enabled = outlineGroup->isChecked();
+	style.outline.width = outlineWidth->value();
+	style.outline.color = outlineColour->colour();
+
+	style.shadow.enabled = shadowGroup->isChecked();
+	style.shadow.offsetX = shadowOffsetX->value();
+	style.shadow.offsetY = shadowOffsetY->value();
+	style.shadow.blur = shadowBlur->value();
+	style.shadow.color = shadowColour->colour();
+
 	return style;
 }
 
-void StyleEditor::pickColour()
+void StyleEditor::applyFillVisibility()
 {
-	const QColor picked =
-		QColorDialog::getColor(colour, this, moduleText("Designer.FontColor"), QColorDialog::ShowAlphaChannel);
-	if (!picked.isValid())
-		return;
+	const auto fill = static_cast<TextFill>(fillBox->currentData().toInt());
+	const bool gradientFill = fill != TextFill::Solid;
 
-	colour = picked;
-	refreshColourButton();
-
-	notifyEdited();
+	form->setRowVisible(colourButton, !gradientFill);
+	form->setRowVisible(gradientEditor, gradientFill);
+	gradientEditor->setFill(fill);
 }
 
-void StyleEditor::refreshColourButton()
+void StyleEditor::onFillChanged()
 {
-	colourButton->setText(colour.name(QColor::HexArgb));
+	const auto fill = static_cast<TextFill>(fillBox->currentData().toInt());
+
 	/*
-	 * The swatch is drawn as a stylesheet background rather than an icon so it stays
-	 * crisp at whatever DPI the user's OBS window is running at.
+	 * A gradient still on its factory stops is seeded from the solid colour the style was
+	 * already using, so switching to one starts from the text as it looks now rather than
+	 * from an unrelated white-to-grey ramp.
 	 */
-	colourButton->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
-					    .arg(colour.name(QColor::HexRgb), colour.lightness() > 127
-										      ? QStringLiteral("#000")
-										      : QStringLiteral("#fff")));
+	if (fill != TextFill::Solid && gradient.stops == GradientSpec().stops) {
+		const QColor base = colourButton->colour();
+		gradient.stops = {GradientStop{0.0, base}, GradientStop{1.0, base.darker(220)}};
+		gradientEditor->setGradient(gradient);
+	}
+
+	applyFillVisibility();
+
+	if (loading)
+		return;
+
+	notifyEdited();
 }
 
 /* -------------------------------------------------------------------- SectionEditor */

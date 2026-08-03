@@ -44,6 +44,7 @@ src/
   ui/
     DesignerDialog.{hpp,cpp} three-pane designer window
     SectionEditor.{hpp,cpp}  per-section editor + StyleEditor
+    StyleControls.{hpp,cpp}  colour button, gradient stop editor and its swatch
     PreviewWidget.{hpp,cpp}  scaled preview of the rendered strip
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
   util/
@@ -156,6 +157,46 @@ Finally, the three parts share a **baseline** rather than a top edge, anchored o
 reaches lowest so nothing climbs into the row above. That is what keeps a leader running
 through the middle of the text when the two sides are set at different sizes; when they
 match, every offset is zero and the result is what it always was.
+
+### Text fills, outlines and shadows
+
+A `TextStyle` says what the glyphs are *filled* with as well as what font they are set in.
+`TextFill` picks between the plain `color` and a linear or radial `GradientSpec`; on top of
+that a style may carry a `TextOutline` and a `TextShadow`.
+
+Three decisions are worth recording:
+
+**A gradient is mapped over the block of text being drawn** — one title, one list entry, one
+side of a bridged row — not over the canvas and not over the strip. Mapping over the strip
+would make a stop's colour depend on how long the roll happened to be, so adding a section at
+the bottom would restyle everything above it. Per block, a run of names all share the same
+sweep as each other. The block is the run's *laid-out* height and the horizontal extent its
+lines actually ink: laid-out height rather than ink bounds is what keeps a bridged row
+coherent, since a run of leader dots inks only a few pixels of height and mapping the sweep
+onto that would cram the whole gradient into the dots while the text beside them showed a
+sliver of it. `textFillBrush()` is exported from the renderer so the designer's gradient
+swatch is painted by the same mapping rather than a second copy of it that can drift.
+
+**Nothing here takes part in layout.** An outline or a shadow paints outside the text's box
+without growing it, the way a CSS `text-shadow` does — otherwise switching a preset's shadow
+on would reflow every section bound to it and change the roll's duration. The cost is that a
+section can paint outside its own box, which the tile loop has to know about: `effectBleed()`
+reports the furthest any style reaches and `render()` widens the range of sections it visits
+per tile by that much, so a shadow cast across a tile boundary is drawn into both tiles
+instead of being cut off at the seam.
+
+**Effects render through glyph paths, plain text does not.** `QTextLayout::draw()` can only
+put a pen colour through the glyphs, so a style with a fill, an outline or a shadow is
+converted to a `QPainterPath` by way of `QRawFont::pathForGlyph` — which keeps the shaping
+`QTextLayout` already did, unlike rebuilding the run from the source string. A style with
+none of the three keeps the original `layout.draw()` path, so documents that predate this
+rasterise exactly as they did before. Outlines are stroked at twice their width underneath
+the fill, which covers the inner half back up and leaves the outline growing outward only.
+Shadows are drawn into a scratch buffer and softened with three box passes; the buffer is
+bounded, and a blur too large to buffer falls back to a hard shadow with a log line.
+
+All of that cost lands on rasterisation, which happens once per document change on the render
+thread, not per frame — playback still draws the same tiles it always did.
 
 ### Style presets
 
@@ -356,6 +397,7 @@ those fields in order. Import replaces or appends, per a checkbox.
 - Per-document style presets, with editing a bound style editing the preset.
 - Undo/redo in the designer, over sections and presets.
 - Missing fonts are surfaced in the designer and the log instead of silently substituted.
+- Gradient fills, outlines and drop shadows on any style, preset or not.
 
 ## Verifying changes
 
@@ -364,6 +406,14 @@ target in the template yet; renderer and parser changes were validated with an o
 harness covering the `obs_data` round trip for all twelve section types, measure/render
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
+
+Fills were validated the same way: each of solid, linear, radial, outline, hard and soft
+shadow and all three together rendered offscreen and inspected; the `obs_data` round trip for
+the new fields; a document written before fills existed still loading as plain solid text
+with no effects and no bleed; a bridged row's leader picking up the same sweep and the same
+outline as the text either side of it; and a 30 px blur straddling the 2048 px tile seam,
+where the summed alpha of the rows either side of the boundary has to stay continuous rather
+than dropping to zero on one side.
 
 Two pieces can already be tested without libobs at all, which is the shape the rest of the
 harness should take:

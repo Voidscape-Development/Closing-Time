@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 
 #include "model/CreditsModel.hpp"
+#include "ui/StyleControls.hpp"
 
 class QCheckBox;
 class QComboBox;
@@ -37,7 +38,10 @@ class QToolButton;
 
 namespace closingtime {
 
-/* Font family, size, weight, colour and alignment for one TextStyle. */
+/*
+ * Everything one TextStyle carries: font, colour and alignment, plus how the glyphs are
+ * filled and what is drawn around them.
+ */
 class StyleEditor : public QWidget {
 	Q_OBJECT
 
@@ -70,17 +74,20 @@ signals:
 	void presetDeleteRequested(const QString &name);
 
 private:
-	void pickColour();
-	void refreshColourButton();
-
 	void writeFields(const TextStyle &style);
 	void onPresetSelected();
 	void applySelectedPreset(bool applySelectedStyle);
 	void savePreset();
 	void deletePreset();
 
+	/* Shows the fill rows that apply to the selected fill and hides the rest. */
+	void applyFillVisibility();
+	void onFillChanged();
+
 	/* Emits presetSaveRequested when a preset is bound and changed() when one is not. */
 	void notifyEdited();
+
+	QFormLayout *form = nullptr;
 
 	QComboBox *presetBox = nullptr;
 	QPushButton *savePresetButton = nullptr;
@@ -90,14 +97,29 @@ private:
 	QSpinBox *pixelSize = nullptr;
 	QCheckBox *bold = nullptr;
 	QCheckBox *italic = nullptr;
-	QPushButton *colourButton = nullptr;
+	ColourButton *colourButton = nullptr;
 	QComboBox *alignment = nullptr;
 	QDoubleSpinBox *lineSpacing = nullptr;
+
+	QComboBox *fillBox = nullptr;
+	GradientEditor *gradientEditor = nullptr;
+
+	QGroupBox *outlineGroup = nullptr;
+	QDoubleSpinBox *outlineWidth = nullptr;
+	ColourButton *outlineColour = nullptr;
+
+	QGroupBox *shadowGroup = nullptr;
+	QSpinBox *shadowOffsetX = nullptr;
+	QSpinBox *shadowOffsetY = nullptr;
+	QSpinBox *shadowBlur = nullptr;
+	ColourButton *shadowColour = nullptr;
 
 	QVector<StylePreset> presets;
 	QString selectedPreset;
 
-	QColor colour = QColor(255, 255, 255);
+	/* Kept alongside the widgets so a gradient's stops survive a trip through Solid. */
+	GradientSpec gradient;
+
 	bool loading = false;
 };
 
