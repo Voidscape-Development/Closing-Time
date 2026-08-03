@@ -30,7 +30,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -81,6 +83,20 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	auto *layout = new QFormLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
 
+	auto *presetRow = new QWidget(this);
+	auto *presetLayout = new QHBoxLayout(presetRow);
+	presetLayout->setContentsMargins(0, 0, 0, 0);
+	presetBox = new QComboBox(presetRow);
+	savePresetButton = new QPushButton(moduleText("Designer.StylePreset.Save"), presetRow);
+	deletePresetButton = new QPushButton(moduleText("Designer.StylePreset.Delete"), presetRow);
+	presetLayout->addWidget(presetBox, 1);
+	presetLayout->addWidget(savePresetButton);
+	presetLayout->addWidget(deletePresetButton);
+	layout->addRow(moduleText("Designer.StylePreset"), presetRow);
+
+	presetBox->addItem(moduleText("Designer.StylePreset.None"), QString());
+	deletePresetButton->setEnabled(false);
+
 	family = new QFontComboBox(this);
 	layout->addRow(moduleText("Designer.FontFamily"), family);
 
@@ -113,8 +129,7 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	layout->addRow(moduleText("Designer.LineSpacing"), lineSpacing);
 
 	const auto notify = [this] {
-		if (!loading)
-			emit changed();
+		notifyEdited();
 	};
 
 	connect(family, &QFontComboBox::currentFontChanged, this, notify);
@@ -124,12 +139,13 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	connect(alignment, &QComboBox::currentIndexChanged, this, notify);
 	connect(lineSpacing, &QDoubleSpinBox::valueChanged, this, notify);
 	connect(colourButton, &QPushButton::clicked, this, &StyleEditor::pickColour);
+	connect(presetBox, &QComboBox::currentIndexChanged, this, &StyleEditor::onPresetSelected);
+	connect(savePresetButton, &QPushButton::clicked, this, &StyleEditor::savePreset);
+	connect(deletePresetButton, &QPushButton::clicked, this, &StyleEditor::deletePreset);
 }
 
-void StyleEditor::setStyle(const TextStyle &style)
+void StyleEditor::writeFields(const TextStyle &style)
 {
-	loading = true;
-
 	family->setCurrentFont(QFont(style.family));
 	pixelSize->setValue(style.pixelSize);
 	bold->setChecked(style.bold);
@@ -138,8 +154,112 @@ void StyleEditor::setStyle(const TextStyle &style)
 	selectByData(alignment, static_cast<int>(style.align));
 	lineSpacing->setValue(style.lineSpacing);
 	refreshColourButton();
+}
 
+void StyleEditor::setStyle(const TextStyle &style)
+{
+	loading = true;
+	writeFields(style);
 	loading = false;
+}
+
+void StyleEditor::setPresets(const QVector<StylePreset> &newPresets, const QString &selected, bool applySelectedStyle)
+{
+	presets = newPresets;
+
+	const bool wasLoading = loading;
+	loading = true;
+
+	presetBox->clear();
+	presetBox->addItem(moduleText("Designer.StylePreset.None"), QString());
+	for (const StylePreset &preset : presets)
+		presetBox->addItem(preset.name, preset.name);
+
+	const int index = selected.isEmpty() ? 0 : presetBox->findData(selected);
+	selectedPreset = index > 0 ? selected : QString();
+	presetBox->setCurrentIndex(index > 0 ? index : 0);
+
+	applySelectedPreset(applySelectedStyle);
+
+	loading = wasLoading;
+}
+
+void StyleEditor::applySelectedPreset(bool applySelectedStyle)
+{
+	const bool bound = !selectedPreset.isEmpty();
+
+	if (bound && applySelectedStyle) {
+		for (const StylePreset &preset : presets) {
+			if (preset.name == selectedPreset) {
+				writeFields(preset.style);
+				break;
+			}
+		}
+	}
+
+	deletePresetButton->setEnabled(bound);
+}
+
+void StyleEditor::onPresetSelected()
+{
+	if (loading)
+		return;
+
+	selectedPreset = presetBox->currentData().toString();
+	/*
+	 * Unbinding leaves the preset's values in the fields as a starting point rather than
+	 * snapping back to whatever the section carried before it was bound.
+	 */
+	applySelectedPreset(true);
+
+	emit changed();
+}
+
+void StyleEditor::notifyEdited()
+{
+	if (loading)
+		return;
+
+	/*
+	 * Fields stay editable while a preset is bound: an edit there is an edit to the
+	 * preset, which is what makes "restyle every header" a single change.
+	 */
+	if (!selectedPreset.isEmpty()) {
+		emit presetSaveRequested(selectedPreset, style());
+		return;
+	}
+
+	emit changed();
+}
+
+void StyleEditor::savePreset()
+{
+	bool accepted = false;
+	const QString name = QInputDialog::getText(this, moduleText("Designer.StylePreset.Save"),
+						   moduleText("Designer.StylePreset.NamePrompt"), QLineEdit::Normal,
+						   selectedPreset, &accepted)
+				     .trimmed();
+	if (!accepted || name.isEmpty())
+		return;
+
+	/* Bound optimistically; the owner calls back through setPresets() with the new list. */
+	selectedPreset = name;
+	emit presetSaveRequested(name, style());
+}
+
+void StyleEditor::deletePreset()
+{
+	const QString name = selectedPreset;
+	if (name.isEmpty())
+		return;
+
+	const auto answer = QMessageBox::question(this, moduleText("Designer.StylePreset.Delete"),
+						  moduleText("Designer.StylePreset.DeleteConfirm").arg(name));
+	if (answer != QMessageBox::Yes)
+		return;
+
+	selectedPreset.clear();
+	emit presetDeleteRequested(name);
 }
 
 TextStyle StyleEditor::style() const
@@ -165,8 +285,7 @@ void StyleEditor::pickColour()
 	colour = picked;
 	refreshColourButton();
 
-	if (!loading)
-		emit changed();
+	notifyEdited();
 }
 
 void StyleEditor::refreshColourButton()
@@ -227,6 +346,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	logoHeight->setSuffix(QStringLiteral(" px"));
 	form->addRow(moduleText("Designer.LogoHeight"), logoHeight);
 
+	logoPlacement = new QComboBox(this);
+	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Hug"), static_cast<int>(LogoPlacement::Hug));
+	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Edge"), static_cast<int>(LogoPlacement::Edge));
+	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Bridged"), static_cast<int>(LogoPlacement::Bridged));
+	form->addRow(moduleText("Designer.LogoPlacement"), logoPlacement);
+
 	logoSide = new QComboBox(this);
 	logoSide->addItem(moduleText("Designer.LogoSide.Left"), static_cast<int>(LogoSide::Left));
 	logoSide->addItem(moduleText("Designer.LogoSide.Right"), static_cast<int>(LogoSide::Right));
@@ -239,6 +364,30 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	bridgeEdit = new QLineEdit(this);
 	form->addRow(moduleText("Designer.Bridge"), bridgeEdit);
+
+	bridgeFill = new QComboBox(this);
+	bridgeFill->addItem(moduleText("Designer.BridgeFill.Fixed"), static_cast<int>(BridgeFill::Fixed));
+	bridgeFill->addItem(moduleText("Designer.BridgeFill.Repeat"), static_cast<int>(BridgeFill::Repeat));
+	bridgeFill->addItem(moduleText("Designer.BridgeFill.Stretch"), static_cast<int>(BridgeFill::Stretch));
+	form->addRow(moduleText("Designer.BridgeFill"), bridgeFill);
+
+	bridgeSizing = new QComboBox(this);
+	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Split"), static_cast<int>(BridgeSizing::Split));
+	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Natural"), static_cast<int>(BridgeSizing::Natural));
+	form->addRow(moduleText("Designer.BridgeSizing"), bridgeSizing);
+
+	bridgeSplit = new QSpinBox(this);
+	bridgeSplit->setRange(0, 100);
+	bridgeSplit->setSuffix(QStringLiteral(" %"));
+	bridgeSplit->setToolTip(moduleText("Designer.BridgeSplit.Tip"));
+	form->addRow(moduleText("Designer.BridgeSplit"), bridgeSplit);
+
+	bridgeRowAlign = new QComboBox(this);
+	addAlignmentOptions(bridgeRowAlign);
+	form->addRow(moduleText("Designer.BridgeRowAlign"), bridgeRowAlign);
+
+	bridgeSpanEmpty = new QCheckBox(moduleText("Designer.BridgeSpanEmpty"), this);
+	form->addRow(QString(), bridgeSpanEmpty);
 
 	columns = new QSpinBox(this);
 	columns->setRange(1, 12);
@@ -338,6 +487,20 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(logoSide, &QComboBox::currentIndexChanged, this, notify);
 	connect(logoGap, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeEdit, &QLineEdit::textChanged, this, notify);
+	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
+	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
+	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
+
+	/* These decide which of the other bridge rows are worth showing. */
+	for (QComboBox *box : {bridgeFill, bridgeSizing, logoPlacement}) {
+		connect(box, &QComboBox::currentIndexChanged, this, [this] {
+			if (loading)
+				return;
+
+			applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+			emitChanged();
+		});
+	}
 	connect(columns, &QSpinBox::valueChanged, this, notify);
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
@@ -348,6 +511,25 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(marginX, &QSpinBox::valueChanged, this, notify);
 	connect(primaryStyle, &StyleEditor::changed, this, notify);
 	connect(secondaryStyle, &StyleEditor::changed, this, notify);
+
+	/*
+	 * Preset edits are routed up to the designer, which owns the document the presets live
+	 * on. `presetOrigin` marks the editor mid-signal so the synchronous round trip back
+	 * through setPresets() leaves the fields being typed into alone.
+	 */
+	for (StyleEditor *editor : {primaryStyle, secondaryStyle}) {
+		connect(editor, &StyleEditor::presetSaveRequested, this,
+			[this, editor](const QString &name, const TextStyle &style) {
+				presetOrigin = editor;
+				emit presetSaveRequested(name, style);
+				presetOrigin = nullptr;
+			});
+		connect(editor, &StyleEditor::presetDeleteRequested, this, [this, editor](const QString &name) {
+			presetOrigin = editor;
+			emit presetDeleteRequested(name);
+			presetOrigin = nullptr;
+		});
+	}
 	connect(secondaryGroup, &QGroupBox::toggled, this, notify);
 	connect(entryTable, &QTableWidget::cellChanged, this, notify);
 	connect(logoBrowse, &QToolButton::clicked, this, &SectionEditor::browseForSectionLogo);
@@ -364,9 +546,15 @@ void SectionEditor::setSection(const Section &source)
 	textEdit->setPlainText(source.text);
 	logoPath->setText(source.logo.path);
 	logoHeight->setValue(source.logo.maxHeight);
+	selectByData(logoPlacement, static_cast<int>(source.logoPlacement));
 	selectByData(logoSide, static_cast<int>(source.logoSide));
 	logoGap->setValue(source.logoGap);
 	bridgeEdit->setText(source.bridge);
+	selectByData(bridgeFill, static_cast<int>(source.bridgeFill));
+	selectByData(bridgeSizing, static_cast<int>(source.bridgeSizing));
+	bridgeSplit->setValue(qRound(source.bridgeSplit * 100.0));
+	selectByData(bridgeRowAlign, static_cast<int>(source.bridgeRowAlign));
+	bridgeSpanEmpty->setChecked(source.bridgeSpanEmpty);
 	columns->setValue(source.columns);
 	columnGap->setValue(source.columnGap);
 	selectByData(fillOrder, source.fillAcross ? 1 : 0);
@@ -378,6 +566,9 @@ void SectionEditor::setSection(const Section &source)
 
 	primaryStyle->setStyle(source.style);
 	secondaryStyle->setStyle(source.secondaryStyle);
+	/* After setStyle, so a bound preset's values win over the section's own copy. */
+	primaryStyle->setPresets(presets, source.stylePresetName);
+	secondaryStyle->setPresets(presets, source.secondaryStylePresetName);
 	secondaryGroup->setChecked(source.useSecondaryStyle);
 
 	applyTypeVisibility(source.type);
@@ -397,9 +588,15 @@ Section SectionEditor::section() const
 	result.text = textEdit->toPlainText();
 	result.logo.path = logoPath->text();
 	result.logo.maxHeight = logoHeight->value();
+	result.logoPlacement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
 	result.logoSide = static_cast<LogoSide>(logoSide->currentData().toInt());
 	result.logoGap = logoGap->value();
 	result.bridge = bridgeEdit->text();
+	result.bridgeFill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
+	result.bridgeSizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
+	result.bridgeSplit = bridgeSplit->value() / 100.0;
+	result.bridgeRowAlign = static_cast<HAlign>(bridgeRowAlign->currentData().toInt());
+	result.bridgeSpanEmpty = bridgeSpanEmpty->isChecked();
 	result.columns = columns->value();
 	result.columnGap = columnGap->value();
 	result.fillAcross = fillOrder->currentData().toInt() == 1;
@@ -411,9 +608,19 @@ Section SectionEditor::section() const
 	result.style = primaryStyle->style();
 	result.secondaryStyle = secondaryStyle->style();
 	result.useSecondaryStyle = secondaryGroup->isChecked();
+	result.stylePresetName = primaryStyle->presetName();
+	result.secondaryStylePresetName = secondaryStyle->presetName();
 
 	readEntriesFromTable(&result);
 	return result;
+}
+
+void SectionEditor::setPresets(const QVector<StylePreset> &newPresets)
+{
+	presets = newPresets;
+
+	for (StyleEditor *editor : {primaryStyle, secondaryStyle})
+		editor->setPresets(presets, editor->presetName(), editor != presetOrigin);
 }
 
 void SectionEditor::applyTypeVisibility(SectionType type)
@@ -434,7 +641,28 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(logoHeight, sectionLogo);
 	form->setRowVisible(logoSide, logoBesideText);
 	form->setRowVisible(logoGap, logoBesideText);
-	form->setRowVisible(bridgeEdit, type == SectionType::Bridged);
+	const bool bridged = type == SectionType::Bridged;
+	const auto fill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
+	const auto sizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
+	const auto placement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
+
+	/* A logo row bridged across to its text uses the same bridge fields a Bridged section does. */
+	const bool usesBridge = bridged || (logoBesideText && placement == LogoPlacement::Bridged);
+
+	form->setRowVisible(logoPlacement, logoBesideText);
+	form->setRowVisible(bridgeEdit, usesBridge);
+	form->setRowVisible(bridgeFill, usesBridge);
+	/* Column sizing and row placement describe two texts, so they stay with that type. */
+	form->setRowVisible(bridgeSizing, bridged);
+	/* The split is the tab stop; with Natural sizing the text decides where things land. */
+	form->setRowVisible(bridgeSplit, bridged && sizing == BridgeSizing::Split);
+	/*
+	 * Only a fixed bridge with natural columns can leave a row narrower than the section.
+	 * Every other combination fills the width, so there is nothing left to align.
+	 */
+	form->setRowVisible(bridgeRowAlign, bridged && sizing == BridgeSizing::Natural && fill == BridgeFill::Fixed);
+	/* A fixed bridge has nothing to run into the space an empty column would free. */
+	form->setRowVisible(bridgeSpanEmpty, bridged && fill != BridgeFill::Fixed);
 	form->setRowVisible(columns, hasColumns);
 	form->setRowVisible(columnGap, hasColumns);
 	form->setRowVisible(fillOrder, hasColumns);

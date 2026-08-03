@@ -78,6 +78,52 @@ enum class LogoSide { Left, Right };
 const char *logoSideId(LogoSide side);
 LogoSide logoSideFromId(const char *id, LogoSide fallback = LogoSide::Left);
 
+/*
+ * How a "... w/ Logo" section arranges its logo against its text.
+ *
+ *   Edge    - the logo is pinned to the section's edge and the text is handed the whole of
+ *             what is left. The text then aligns inside that entire column, which is what
+ *             leaves a centred title stranded halfway across the frame from its own logo:
+ *             `logoGap` sets the minimum separation between the two columns, never the
+ *             distance actually drawn.
+ *   Hug     - logo, gap and text are measured as one group and aligned as one, so the logo
+ *             really does sit `logoGap` from the text wherever the pair ends up.
+ *   Bridged - the logo caps one end of the row and the text the other, with the bridge
+ *             running between them exactly as it does in a Bridged section.
+ */
+enum class LogoPlacement { Edge, Hug, Bridged };
+
+const char *logoPlacementId(LogoPlacement placement);
+LogoPlacement logoPlacementFromId(const char *id, LogoPlacement fallback = LogoPlacement::Edge);
+
+/*
+ * How a Bridged section's bridge covers the space between its two texts.
+ *
+ *   Fixed   - drawn once at its natural width, wherever the two columns leave room.
+ *   Repeat  - tiled as many whole times as fit, so the leader reaches across the gap
+ *             however long the two texts turn out to be.
+ *   Stretch - drawn once, with the spacing between its characters widened until it spans
+ *             the gap exactly. Keeps the character count the user typed.
+ */
+enum class BridgeFill { Fixed, Repeat, Stretch };
+
+const char *bridgeFillId(BridgeFill fill);
+BridgeFill bridgeFillFromId(const char *id, BridgeFill fallback = BridgeFill::Fixed);
+
+/*
+ * How a Bridged section divides its width between the two texts.
+ *
+ *   Split   - the left column is a fixed share of the width (`bridgeSplit`), so the bridge
+ *             begins at the same x on every row -- a tab stop. Long text wraps inside it.
+ *   Natural - each side takes only the width its own text needs and the bridge absorbs
+ *             everything left over, so the row reaches both edges but the bridge starts
+ *             wherever the left text happens to end.
+ */
+enum class BridgeSizing { Split, Natural };
+
+const char *bridgeSizingId(BridgeSizing sizing);
+BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback = BridgeSizing::Split);
+
 struct TextStyle {
 	QString family = QStringLiteral("Sans Serif");
 	/*
@@ -95,6 +141,18 @@ struct TextStyle {
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
 	static void defaults(obs_data_t *data, int pixelSize, bool bold);
+};
+
+/*
+ * A named TextStyle stored on the document. Sections bind to a preset by name, so
+ * restyling every header in a roll is one edit rather than one edit per section.
+ */
+struct StylePreset {
+	QString name;
+	TextStyle style;
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
 };
 
 /*
@@ -140,7 +198,12 @@ struct Section {
 	QString text;
 	LogoRef logo;
 	LogoSide logoSide = LogoSide::Left;
-	/* Gap between the logo and the text for the "... w/ Logo" types, in pixels. */
+	LogoPlacement logoPlacement = LogoPlacement::Edge;
+	/*
+	 * Space between the logo and the text for the "... w/ Logo" types, in pixels. Under
+	 * Edge placement this is only a minimum between the two columns; under Hug it is the
+	 * distance drawn, and under Bridged it is the padding at each end of the bridge.
+	 */
 	int logoGap = 24;
 
 	/* List content. */
@@ -150,6 +213,27 @@ struct Section {
 
 	/* Bridged sections only: the separator drawn between the two texts. */
 	QString bridge = QStringLiteral(" . . . . . . ");
+	BridgeFill bridgeFill = BridgeFill::Fixed;
+	BridgeSizing bridgeSizing = BridgeSizing::Split;
+	/*
+	 * Split sizing only: the left column's share of the space the two texts divide between
+	 * them, 0.0 to 1.0. At the default 0.5 with a Fixed bridge this is an even split with
+	 * the bridge centred -- the layout Bridged sections have always had.
+	 */
+	double bridgeSplit = 0.5;
+	/*
+	 * Where a row that does not span the full width sits. Only reachable with Natural
+	 * sizing and a Fixed bridge; every other combination fills the width by construction.
+	 */
+	HAlign bridgeRowAlign = HAlign::Center;
+	/*
+	 * When set, a side with no text gives its column up to the bridge, so a row carrying
+	 * only one of the two texts runs the leader out to the far edge -- a heading row in an
+	 * otherwise bridged list. Applies only to a filling bridge, since a fixed one has
+	 * nothing to cover the freed space with, and only bites under Split sizing, where the
+	 * column is reserved whether or not there is anything in it.
+	 */
+	bool bridgeSpanEmpty = false;
 
 	/* Multi-list sections only. */
 	int columns = 2;
@@ -164,6 +248,16 @@ struct Section {
 	TextStyle style;
 	TextStyle secondaryStyle;
 	bool useSecondaryStyle = false;
+
+	/*
+	 * Names of the document style presets this section follows, or empty to use the
+	 * section's own `style`/`secondaryStyle`. A name that no longer resolves falls back to
+	 * the section's own style as well, so deleting a preset degrades rather than breaks.
+	 * The section's own style is never overwritten by a binding, which keeps binding and
+	 * unbinding non-destructive in the same way changing a section's type is.
+	 */
+	QString stylePresetName;
+	QString secondaryStylePresetName;
 
 	/* Vertical padding above and below the section's content, in pixels. */
 	int paddingTop = 16;
@@ -188,6 +282,9 @@ struct Section {
 struct Document {
 	QVector<Section> sections;
 
+	/* Named styles sections can bind to. Ordered as the designer lists them. */
+	QVector<StylePreset> stylePresets;
+
 	/* Canvas geometry, in pixels. Also the source's reported width/height. */
 	int width = 1920;
 	int height = 1080;
@@ -211,6 +308,23 @@ struct Document {
 	double startDelay = 0.0;
 
 	EndingActionConfig endingAction;
+
+	/* Null when no preset carries that name, including for an empty name. */
+	const TextStyle *findStylePreset(const QString &name) const;
+
+	/*
+	 * The styles a section's text is actually drawn with, once preset bindings are
+	 * resolved. Everything that lays out or paints text goes through these rather than
+	 * reading Section::style directly.
+	 */
+	const TextStyle &effectiveStyle(const Section &section) const;
+	const TextStyle &effectiveSecondaryStyle(const Section &section) const;
+
+	/* Adds `name`, or replaces the style of the preset already carrying that name. */
+	void setStylePreset(const QString &name, const TextStyle &style);
+
+	/* Removes the preset and unbinds every section that referenced it. */
+	void removeStylePreset(const QString &name);
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);

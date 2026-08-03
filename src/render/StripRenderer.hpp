@@ -27,9 +27,30 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace closingtime {
 
 /*
- * Decoded logo images keyed by "path|maxHeight". A single cache is shared by the source
- * and the designer preview, so opening the designer does not re-decode artwork the source
- * has already loaded.
+ * Styles name a font by family, so a scene collection carried to another machine can end up
+ * rendering in whatever Qt substitutes. These two report that rather than let it pass
+ * silently: the designer surfaces the list under the preview, and the source logs it once.
+ */
+
+/*
+ * True when `family` will actually be used rather than substituted. The generic families
+ * Qt resolves against the platform default are always considered available, since there is
+ * nothing for the user to install.
+ */
+bool fontFamilyAvailable(const QString &family);
+
+/*
+ * Families a document's visible text asks for that this machine cannot supply, deduplicated
+ * and sorted. Preset bindings are resolved first, so only fonts that really get drawn count.
+ */
+QStringList missingFontFamilies(const Document &document);
+
+/*
+ * Decoded logo images keyed by "path|maxHeight".
+ *
+ * Deliberately not shared: the source owns one and each designer window owns another. They
+ * are only ever touched from a render job, and render jobs run one at a time, so a cache
+ * has a single user without needing a lock to say so.
  */
 class LogoCache {
 public:
@@ -78,9 +99,10 @@ struct Strip {
 /*
  * Lays a document out into a strip of tiles.
  *
- * Must be called from a thread that owns a Qt raster paint context -- in practice the UI
- * thread. The credits source therefore rebuilds through the UI task queue and hands the
- * finished tiles to the graphics thread for upload, rather than painting inline.
+ * Painting is into a QImage, which Qt supports off the GUI thread, so this runs on the
+ * shared render thread (see RenderThread.hpp) rather than anywhere OBS needs to stay
+ * responsive. The credits source hands the finished tiles to the graphics thread for
+ * upload; the designer hands them back to the UI thread for the preview.
  */
 class StripRenderer {
 public:

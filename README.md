@@ -15,18 +15,27 @@ out of sections:
 | Section type | What it is |
 |---|---|
 | Title / Header | A heading, at two default sizes |
-| Title w/ Logo, Header w/ Logo | A heading with a logo beside it, on either side |
+| Title w/ Logo, Header w/ Logo | A heading with a logo beside it, hugging the text, pinned to the edge, or bridged across to it |
 | Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
-| Text to Text Bridged | `Director . . . . . . Jane Doe` role-to-person pairs |
+| Text to Text Bridged | `Director . . . . . . Jane Doe` role-to-person pairs, with leaders that can repeat or stretch to fill the row |
 | Text List | A single column of names |
 | Logo List | A single column of logos |
 | Multi-List of Text | Names across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
 | Spacer | A blank run, for pacing |
 
+Bridged rows are fully placeable: the bridge can be drawn once, repeated, or stretched to
+span whatever gap the two texts leave; the columns can be fixed (so the leader starts at the
+same place on every row) or sized to the text (so the row reaches both edges); a short row
+can hug either edge or sit centred; and a row with only one side filled in can run its
+leader out to the far edge, for a heading inside an otherwise bridged list.
+
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
-plus padding and side margins. Lists can be typed in directly or imported from a CSV/TSV
-file with a column-mapping step.
+plus padding and side margins. Any style can instead be saved as a named **preset**: bind
+every header to one and editing it once restyles all of them. Sections reorder by dragging,
+edits are undoable (Ctrl+Z), and a font the machine does not have is called out under the
+preview rather than quietly substituted. Lists can be typed in directly or imported from a
+CSV/TSV file with a column-mapping step.
 
 The source properties cover canvas size, background colour, scroll speed, lead-in and
 lead-out padding, start behaviour, looping, and the ending action.
@@ -42,8 +51,8 @@ lead-out padding, start behaviour, looping, and the ending action.
 
 When the last pixel clears the top of the canvas, Closing Time can:
 
-- switch scene, stop recording, stop streaming, stop the virtual camera, hide itself, or
-  restart the roll;
+- switch scene, stop recording, stop streaming, stop the virtual camera, hide itself
+  (everywhere it appears, nested scenes and groups included), or restart the roll;
 - trigger any existing OBS hotkey by name;
 - enable, disable or toggle a filter on any source — handy for kicking off a stinger or a
   fade to black;

@@ -69,17 +69,23 @@ bool hideMatchingItems(obs_scene_t * /*scene*/, obs_sceneitem_t *item, void *par
 	return true;
 }
 
+/*
+ * Hides every scene item backed by `self`, wherever it sits.
+ *
+ * Walking all scenes rather than just the current one is what makes this work for the
+ * arrangements people actually build: a credit roll parked in a nested scene, or the same
+ * source placed in several scenes at once. Nesting is covered for free -- a nested scene is
+ * itself a scene here -- and groups recurse through the item callback.
+ */
 void hideSelf(obs_source_t *self)
 {
-	OBSSourceAutoRelease current = obs_frontend_get_current_scene();
-	if (!current)
-		return;
-
-	obs_scene_t *scene = obs_scene_from_source(current);
-	if (!scene)
-		return;
-
-	obs_scene_enum_items(scene, hideMatchingItems, self);
+	obs_enum_scenes(
+		[](void *param, obs_source_t *source) {
+			if (obs_scene_t *scene = obs_scene_from_source(source))
+				obs_scene_enum_items(scene, hideMatchingItems, param);
+			return true;
+		},
+		self);
 }
 
 void switchScene(const QString &sceneName)

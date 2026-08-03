@@ -44,6 +44,8 @@ target_sources(
     src/model/EndingAction.cpp
     src/model/EndingAction.hpp
     src/plugin-main.cpp
+    src/render/RenderThread.cpp
+    src/render/RenderThread.hpp
     src/render/StripRenderer.cpp
     src/render/StripRenderer.hpp
     src/source/CreditsSource.cpp
