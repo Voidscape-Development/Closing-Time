@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFileInfo>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 
@@ -247,6 +248,113 @@ BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback)
 	return fallback;
 }
 
+const char *textFillId(TextFill fill)
+{
+	switch (fill) {
+	case TextFill::LinearGradient:
+		return "linear_gradient";
+	case TextFill::RadialGradient:
+		return "radial_gradient";
+	case TextFill::Solid:
+	default:
+		return "solid";
+	}
+}
+
+TextFill textFillFromId(const char *id, TextFill fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "solid") == 0)
+		return TextFill::Solid;
+	if (strcmp(id, "linear_gradient") == 0)
+		return TextFill::LinearGradient;
+	if (strcmp(id, "radial_gradient") == 0)
+		return TextFill::RadialGradient;
+	return fallback;
+}
+
+QVector<QPair<qreal, QColor>> GradientSpec::resolvedStops() const
+{
+	QVector<QPair<qreal, QColor>> resolved;
+	resolved.reserve(std::max<qsizetype>(2, stops.size()));
+
+	for (const GradientStop &stop : stops)
+		resolved.append({std::clamp(stop.position, 0.0, 1.0), stop.color});
+
+	std::stable_sort(resolved.begin(), resolved.end(),
+			 [](const QPair<qreal, QColor> &a, const QPair<qreal, QColor> &b) {
+				 return a.first < b.first;
+			 });
+
+	/*
+	 * QGradient paints black wherever it has no stop to interpolate from, so a spec that
+	 * has been edited down to one stop -- or none -- is padded out rather than allowed to
+	 * blank the text out from under the user mid-edit.
+	 */
+	if (resolved.isEmpty())
+		resolved.append({0.0, QColor(255, 255, 255)});
+	if (resolved.size() == 1)
+		resolved.append({1.0, resolved.first().second});
+
+	return resolved;
+}
+
+void GradientSpec::save(obs_data_t *data) const
+{
+	obs_data_set_double(data, "angle", angle);
+
+	saveArray(
+		data, "stops", stops.size(),
+		[](obs_data_t *item, int index, const void *context) {
+			const GradientStop &stop = static_cast<const QVector<GradientStop> *>(context)->at(index);
+			obs_data_set_double(item, "position", stop.position);
+			obs_data_set_int(item, "color", static_cast<long long>(stop.color.rgba()));
+		},
+		&stops);
+}
+
+void GradientSpec::load(obs_data_t *data)
+{
+	angle = obs_data_get_double(data, "angle");
+
+	OBSDataArrayAutoRelease array = obs_data_get_array(data, "stops");
+	if (!array)
+		return;
+
+	stops.clear();
+	const size_t count = obs_data_array_count(array);
+	stops.reserve(static_cast<int>(count));
+	for (size_t i = 0; i < count; ++i) {
+		OBSDataAutoRelease item = obs_data_array_item(array, i);
+		GradientStop stop;
+		stop.position = std::clamp(obs_data_get_double(item, "position"), 0.0, 1.0);
+		stop.color = QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(item, "color")));
+		stops.append(stop);
+	}
+}
+
+bool TextStyle::hasEffects() const
+{
+	return fill != TextFill::Solid || outline.enabled || shadow.enabled;
+}
+
+double TextStyle::effectBleed() const
+{
+	double bleed = 0.0;
+
+	if (outline.enabled)
+		bleed = std::max(bleed, outline.width);
+
+	if (shadow.enabled) {
+		const double reach = std::max(std::abs(shadow.offsetX), std::abs(shadow.offsetY)) + shadow.blur;
+		/* The shadow carries the outline out with it, since it is cast by both together. */
+		bleed = std::max(bleed, reach + (outline.enabled ? outline.width : 0.0));
+	}
+
+	return bleed;
+}
+
 void TextStyle::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "family", family.toUtf8().constData());
@@ -256,6 +364,25 @@ void TextStyle::save(obs_data_t *data) const
 	obs_data_set_int(data, "color", static_cast<long long>(color.rgba()));
 	obs_data_set_string(data, "align", hAlignId(align));
 	obs_data_set_double(data, "line_spacing", lineSpacing);
+	obs_data_set_string(data, "fill", textFillId(fill));
+
+	OBSDataAutoRelease gradientData = obs_data_create();
+	gradient.save(gradientData);
+	obs_data_set_obj(data, "gradient", gradientData);
+
+	OBSDataAutoRelease outlineData = obs_data_create();
+	obs_data_set_bool(outlineData, "enabled", outline.enabled);
+	obs_data_set_double(outlineData, "width", outline.width);
+	obs_data_set_int(outlineData, "color", static_cast<long long>(outline.color.rgba()));
+	obs_data_set_obj(data, "outline", outlineData);
+
+	OBSDataAutoRelease shadowData = obs_data_create();
+	obs_data_set_bool(shadowData, "enabled", shadow.enabled);
+	obs_data_set_double(shadowData, "offset_x", shadow.offsetX);
+	obs_data_set_double(shadowData, "offset_y", shadow.offsetY);
+	obs_data_set_double(shadowData, "blur", shadow.blur);
+	obs_data_set_int(shadowData, "color", static_cast<long long>(shadow.color.rgba()));
+	obs_data_set_obj(data, "shadow", shadowData);
 }
 
 void TextStyle::load(obs_data_t *data)
@@ -276,6 +403,29 @@ void TextStyle::load(obs_data_t *data)
 	lineSpacing = obs_data_get_double(data, "line_spacing");
 	if (lineSpacing <= 0.0)
 		lineSpacing = 1.0;
+
+	/* Absent in documents written before fills existed, which were all solid colour. */
+	fill = textFillFromId(obs_data_get_string(data, "fill"), TextFill::Solid);
+
+	OBSDataAutoRelease gradientData = obs_data_get_obj(data, "gradient");
+	if (gradientData)
+		gradient.load(gradientData);
+
+	OBSDataAutoRelease outlineData = obs_data_get_obj(data, "outline");
+	if (outlineData) {
+		outline.enabled = obs_data_get_bool(outlineData, "enabled");
+		outline.width = std::max(0.0, obs_data_get_double(outlineData, "width"));
+		outline.color = QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(outlineData, "color")));
+	}
+
+	OBSDataAutoRelease shadowData = obs_data_get_obj(data, "shadow");
+	if (shadowData) {
+		shadow.enabled = obs_data_get_bool(shadowData, "enabled");
+		shadow.offsetX = obs_data_get_double(shadowData, "offset_x");
+		shadow.offsetY = obs_data_get_double(shadowData, "offset_y");
+		shadow.blur = std::max(0.0, obs_data_get_double(shadowData, "blur"));
+		shadow.color = QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(shadowData, "color")));
+	}
 }
 
 void TextStyle::defaults(obs_data_t *data, int pixelSize, bool bold)
@@ -287,6 +437,7 @@ void TextStyle::defaults(obs_data_t *data, int pixelSize, bool bold)
 	obs_data_set_default_int(data, "color", static_cast<long long>(qRgba(255, 255, 255, 255)));
 	obs_data_set_default_string(data, "align", "center");
 	obs_data_set_default_double(data, "line_spacing", 1.0);
+	obs_data_set_default_string(data, "fill", textFillId(TextFill::Solid));
 }
 
 void StylePreset::save(obs_data_t *data) const

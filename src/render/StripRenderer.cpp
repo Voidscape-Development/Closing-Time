@@ -25,13 +25,19 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFont>
 #include <QFontDatabase>
 #include <QFontMetricsF>
+#include <QGlyphRun>
 #include <QImageReader>
+#include <QLinearGradient>
 #include <QPainter>
+#include <QPainterPath>
+#include <QRadialGradient>
+#include <QRawFont>
 #include <QTextLayout>
 #include <QTextOption>
 #include <QtMath>
 
 #include <algorithm>
+#include <cmath>
 
 namespace closingtime {
 
@@ -74,17 +80,220 @@ qreal alignOffset(HAlign align, qreal available, qreal used)
 }
 
 /*
+ * The glyphs of a laid-out run as one filled path, positioned at `origin`.
+ *
+ * Only styles that need more than a pen colour go through this: an outline has to be stroked
+ * around the letterforms and a shadow has to be cast by their silhouette, neither of which
+ * QTextLayout::draw() can be asked for. Going by way of QRawFont::pathForGlyph keeps the
+ * shaping QTextLayout already did -- ligatures, marks and bidi runs all stay as laid out --
+ * which reconstructing the path from the source string would not.
+ */
+QPainterPath glyphPath(const QTextLayout &layout, const QPointF &origin)
+{
+	QPainterPath path;
+	path.setFillRule(Qt::WindingFill);
+
+	const QList<QGlyphRun> runs = layout.glyphRuns();
+	for (const QGlyphRun &run : runs) {
+		const QRawFont font = run.rawFont();
+		const QList<quint32> indexes = run.glyphIndexes();
+		const QList<QPointF> positions = run.positions();
+
+		const int count = std::min(indexes.size(), positions.size());
+		for (int i = 0; i < count; ++i) {
+			QPainterPath glyph = font.pathForGlyph(indexes.at(i));
+			if (glyph.isEmpty())
+				continue;
+
+			glyph.translate(origin + positions.at(i));
+			path.addPath(glyph);
+		}
+	}
+
+	return path;
+}
+
+/* The pen an outline is stroked with, or a null pen when the style has no outline. */
+QPen outlinePen(const TextStyle &style)
+{
+	if (!style.outline.enabled || style.outline.width <= 0.0)
+		return QPen(Qt::NoPen);
+
+	/*
+	 * Twice the width the user asked for, because a stroke straddles the path it follows.
+	 * The fill goes over the top afterwards and covers the inner half back up, which
+	 * leaves exactly `width` pixels of outline outside the letterform.
+	 */
+	QPen pen(style.outline.color, style.outline.width * 2.0);
+	pen.setJoinStyle(Qt::RoundJoin);
+	pen.setCapStyle(Qt::RoundCap);
+	return pen;
+}
+
+/*
+ * Softens `image` in place with three box passes, which is close enough to a Gaussian for a
+ * shadow edge and stays a handful of adds per pixel. Premultiplied alpha is what makes
+ * blurring the four channels together correct rather than bleeding colour out of the edges.
+ */
+void boxBlur(QImage &image, int radius, bool vertical)
+{
+	const int width = image.width();
+	const int height = image.height();
+	const int length = vertical ? height : width;
+	if (radius < 1 || length < 2)
+		return;
+
+	const QImage source = image.copy();
+	const int span = radius * 2 + 1;
+	const int lines = vertical ? width : height;
+
+	for (int line = 0; line < lines; ++line) {
+		const auto sample = [&](int index) -> const uchar * {
+			const int clamped = std::clamp(index, 0, length - 1);
+			const int x = vertical ? line : clamped;
+			const int y = vertical ? clamped : line;
+			return source.constScanLine(y) + static_cast<qsizetype>(x) * 4;
+		};
+
+		int sum[4] = {0, 0, 0, 0};
+		for (int i = -radius; i <= radius; ++i) {
+			const uchar *pixel = sample(i);
+			for (int channel = 0; channel < 4; ++channel)
+				sum[channel] += pixel[channel];
+		}
+
+		for (int index = 0; index < length; ++index) {
+			const int x = vertical ? line : index;
+			const int y = vertical ? index : line;
+			uchar *target = image.scanLine(y) + static_cast<qsizetype>(x) * 4;
+			for (int channel = 0; channel < 4; ++channel)
+				target[channel] = static_cast<uchar>(sum[channel] / span);
+
+			const uchar *leaving = sample(index - radius);
+			const uchar *arriving = sample(index + radius + 1);
+			for (int channel = 0; channel < 4; ++channel)
+				sum[channel] += arriving[channel] - leaving[channel];
+		}
+	}
+}
+
+/* Largest shadow buffer we will allocate, in pixels. A blur past this is drawn hard instead. */
+constexpr qint64 kMaxShadowPixels = 64 * 1024 * 1024;
+
+void paintShadow(QPainter *painter, const QPainterPath &path, const TextStyle &style)
+{
+	const TextShadow &shadow = style.shadow;
+	const QPen pen = outlinePen(style);
+	/* The shadow is cast by the outline too, so it has to be grown by the same stroke. */
+	const qreal grow = pen.style() == Qt::NoPen ? 0.0 : pen.widthF() / 2.0;
+
+	const QPainterPath offset = path.translated(shadow.offsetX, shadow.offsetY);
+	const QRectF shape = offset.boundingRect().adjusted(-grow, -grow, grow, grow);
+
+	const int radius = std::clamp(qRound(shadow.blur / 2.0), 0, 100);
+	if (radius < 1) {
+		painter->save();
+		painter->setPen(pen.style() == Qt::NoPen
+					? QPen(Qt::NoPen)
+					: QPen(shadow.color, pen.widthF(), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		painter->setBrush(shadow.color);
+		painter->drawPath(offset);
+		painter->restore();
+		return;
+	}
+
+	/* Three passes of box radius r reach 3r, so that is the margin the blur needs. */
+	const int margin = radius * 3 + 1;
+	const QRect bounds = shape.toAlignedRect().adjusted(-margin, -margin, margin, margin);
+	if (bounds.isEmpty())
+		return;
+
+	if (static_cast<qint64>(bounds.width()) * bounds.height() > kMaxShadowPixels) {
+		obs_log(LOG_WARNING, "text shadow blur too large to buffer; drawing it hard instead");
+		painter->save();
+		painter->setBrush(shadow.color);
+		painter->setPen(Qt::NoPen);
+		painter->drawPath(offset);
+		painter->restore();
+		return;
+	}
+
+	QImage buffer(bounds.size(), QImage::Format_ARGB32_Premultiplied);
+	buffer.fill(Qt::transparent);
+
+	QPainter shadowPainter(&buffer);
+	shadowPainter.setRenderHint(QPainter::Antialiasing);
+	shadowPainter.translate(-bounds.topLeft());
+	shadowPainter.setBrush(shadow.color);
+	shadowPainter.setPen(pen.style() == Qt::NoPen
+				     ? QPen(Qt::NoPen)
+				     : QPen(shadow.color, pen.widthF(), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	shadowPainter.drawPath(offset);
+	shadowPainter.end();
+
+	for (int pass = 0; pass < 3; ++pass) {
+		boxBlur(buffer, radius, false);
+		boxBlur(buffer, radius, true);
+	}
+
+	painter->drawImage(bounds.topLeft(), buffer);
+}
+
+/*
+ * Draws one laid-out run with everything its style asks for. `box` is the run's block, used
+ * to map a gradient; see fillBrush.
+ *
+ * None of this changes where anything sits: an outline and a shadow paint outside the block
+ * without growing it, the way a CSS text-shadow does. StripRenderer::render widens which
+ * sections it visits per tile by the same amount, so a shadow cast across a tile boundary is
+ * still drawn rather than cut off at the seam.
+ */
+void paintStyledLayout(QPainter *painter, const QTextLayout &layout, const TextStyle &style, const QPointF &origin,
+		       const QRectF &box)
+{
+	if (!style.hasEffects()) {
+		painter->setPen(style.color);
+		layout.draw(painter, origin);
+		return;
+	}
+
+	const QPainterPath path = glyphPath(layout, origin);
+	if (path.isEmpty())
+		return;
+
+	painter->save();
+
+	if (style.shadow.enabled)
+		paintShadow(painter, path, style);
+
+	const QPen pen = outlinePen(style);
+	if (pen.style() != Qt::NoPen) {
+		painter->setPen(pen);
+		painter->setBrush(Qt::NoBrush);
+		painter->drawPath(path);
+	}
+
+	painter->setPen(Qt::NoPen);
+	painter->fillPath(path, textFillBrush(style, box));
+
+	painter->restore();
+}
+
+/*
  * Lays `text` out into `width` pixels with an already-prepared font, optionally painting it
  * at (x, y), and returns the height it occupies. Passing a null painter measures without
  * rasterising, which is how the two-pass layout keeps measurement and painting from
  * drifting apart.
  *
- * `wrap` is off for the bridge of a Bridged section: a leader sized to the gap can round a
- * fraction of a pixel over it, and overflowing by that hair reads far better than silently
- * becoming two rows of dots.
+ * `font` and `align` are passed separately from `style` because the bridge of a Bridged
+ * section is drawn in the section's style but with a stretched font and its own alignment.
+ *
+ * `wrap` is off for that bridge: a leader sized to the gap can round a fraction of a pixel
+ * over it, and overflowing by that hair reads far better than silently becoming two rows of
+ * dots.
  */
-int layoutPreparedText(QPainter *painter, const QString &text, const QFont &font, const QColor &color, HAlign align,
-		       double lineSpacing, qreal x, qreal y, qreal width, bool wrap = true)
+int layoutPreparedText(QPainter *painter, const QString &text, const TextStyle &style, const QFont &font, HAlign align,
+		       qreal x, qreal y, qreal width, bool wrap = true)
 {
 	if (text.isEmpty() || width <= 0.0)
 		return 0;
@@ -105,7 +314,11 @@ int layoutPreparedText(QPainter *painter, const QString &text, const QFont &font
 	 */
 	layout.setTextOption(option);
 
-	const qreal step = metrics.lineSpacing() * lineSpacing;
+	const qreal step = metrics.lineSpacing() * style.lineSpacing;
+
+	/* Tracked while laying out so a gradient spans what the lines cover, not the column. */
+	qreal inkedLeft = width;
+	qreal inkedRight = 0.0;
 
 	qreal cursor = 0.0;
 	layout.beginLayout();
@@ -115,14 +328,21 @@ int layoutPreparedText(QPainter *painter, const QString &text, const QFont &font
 			break;
 
 		line.setLineWidth(width);
-		line.setPosition(QPointF(alignOffset(align, width, line.naturalTextWidth()), cursor));
+
+		const qreal lineWidth = line.naturalTextWidth();
+		const qreal lineX = alignOffset(align, width, lineWidth);
+		line.setPosition(QPointF(lineX, cursor));
+
+		inkedLeft = std::min(inkedLeft, lineX);
+		inkedRight = std::max(inkedRight, lineX + lineWidth);
+
 		cursor += step;
 	}
 	layout.endLayout();
 
 	if (painter) {
-		painter->setPen(color);
-		layout.draw(painter, QPointF(x, y));
+		const QRectF box(x + inkedLeft, y, std::max(0.0, inkedRight - inkedLeft), cursor);
+		paintStyledLayout(painter, layout, style, QPointF(x, y), box);
 	}
 
 	return qCeil(cursor);
@@ -130,8 +350,7 @@ int layoutPreparedText(QPainter *painter, const QString &text, const QFont &font
 
 int layoutText(QPainter *painter, const QString &text, const TextStyle &style, qreal x, qreal y, qreal width)
 {
-	return layoutPreparedText(painter, text, makeFont(style), style.color, style.align, style.lineSpacing, x, y,
-				  width);
+	return layoutPreparedText(painter, text, style, makeFont(style), style.align, x, y, width);
 }
 
 /* Width the text wants on its widest line, before any wrapping is imposed on it. */
@@ -456,8 +675,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * Drawn from the same top as the text and in the same font, so the leader
 			 * lands on the text's baseline without needing an offset of its own.
 			 */
-			layoutPreparedText(painter, bridge.text, bridge.font, style.color, HAlign::Center,
-					   style.lineSpacing, row.bridgeX, textTop, row.bridgeWidth, false);
+			layoutPreparedText(painter, bridge.text, style, bridge.font, HAlign::Center, row.bridgeX,
+					   textTop, row.bridgeWidth, false);
 		}
 
 		y += rowHeight;
@@ -492,9 +711,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 				layoutText(painter, entry.text, style, row.leftX, leftTop, row.leftWidth);
 			const int rightHeight = layoutText(painter, entry.secondaryText, rightStyle, row.rightX,
 							   rightTop, row.rightWidth);
-			const int bridgeHeight = layoutPreparedText(painter, bridge.text, bridge.font, style.color,
-								    HAlign::Center, style.lineSpacing, row.bridgeX,
-								    bridgeTop, row.bridgeWidth, false);
+			const int bridgeHeight = layoutPreparedText(painter, bridge.text, style, bridge.font,
+								    HAlign::Center, row.bridgeX, bridgeTop,
+								    row.bridgeWidth, false);
 
 			int rowHeight = 1;
 			const auto extend = [&rowHeight, y](qreal top, int height) {
@@ -597,6 +816,26 @@ struct PlacedSection {
 	int height;
 };
 
+/*
+ * How far outside their own boxes the document's sections can paint, in pixels. Outlines and
+ * shadows do not take part in the layout, so a section drawn near a tile's edge can reach
+ * into the next one; the tile loop widens what it visits by this so the seam stays invisible.
+ */
+int effectBleed(const Document &document)
+{
+	double bleed = 0.0;
+
+	for (const Section &section : document.sections) {
+		if (!section.visible || !sectionUsesText(section.type))
+			continue;
+
+		bleed = std::max(bleed, document.effectiveStyle(section).effectBleed());
+		bleed = std::max(bleed, document.effectiveSecondaryStyle(section).effectBleed());
+	}
+
+	return qCeil(bleed);
+}
+
 QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos, int *totalHeight)
 {
 	QVector<PlacedSection> placed;
@@ -623,6 +862,42 @@ QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos,
 }
 
 } // namespace
+
+QBrush textFillBrush(const TextStyle &style, const QRectF &box)
+{
+	/*
+	 * `box` is the block the gradient is mapped over: the laid-out height of the run and
+	 * the horizontal extent its lines actually ink. Using the laid-out height rather than
+	 * the ink bounds is what keeps a bridged row coherent -- a run of leader dots inks
+	 * perhaps four pixels of height, so mapping the sweep onto its ink would cram the whole
+	 * gradient into the dots while the text beside them showed only the middle of it.
+	 */
+	if (style.fill == TextFill::Solid || box.isEmpty())
+		return QBrush(style.color);
+
+	QGradientStops stops;
+	for (const QPair<qreal, QColor> &stop : style.gradient.resolvedStops())
+		stops.append(QGradientStop(stop.first, stop.second));
+
+	if (style.fill == TextFill::RadialGradient) {
+		/* Half the diagonal, so the last stop lands on the corners rather than inside them. */
+		const qreal radius = std::hypot(box.width(), box.height()) / 2.0;
+		QRadialGradient gradient(box.center(), std::max(radius, 1.0));
+		gradient.setStops(stops);
+		return QBrush(gradient);
+	}
+
+	/* Clockwise from straight down: 0 runs top to bottom, 90 left to right. */
+	const qreal radians = qDegreesToRadians(style.gradient.angle);
+	const QPointF axis(std::sin(radians), std::cos(radians));
+	const QPointF centre = box.center();
+	/* The box's own extent along that axis, so the stops span exactly the block. */
+	const qreal half = (std::abs(axis.x()) * box.width() + std::abs(axis.y()) * box.height()) / 2.0;
+
+	QLinearGradient gradient(centre - axis * half, centre + axis * half);
+	gradient.setStops(stops);
+	return QBrush(gradient);
+}
 
 bool fontFamilyAvailable(const QString &family)
 {
@@ -736,6 +1011,8 @@ Strip StripRenderer::render(const Document &document) const
 	if (strip.height <= 0 || placed.isEmpty())
 		return strip;
 
+	const int bleed = effectBleed(document);
+
 	for (int top = 0; top < strip.height; top += kTileHeight) {
 		const int tileHeight = std::min(kTileHeight, strip.height - top);
 		const int bottom = top + tileHeight;
@@ -750,7 +1027,7 @@ Strip StripRenderer::render(const Document &document) const
 		painter.translate(0, -top);
 
 		for (const PlacedSection &entry : placed) {
-			if (entry.top >= bottom || entry.top + entry.height <= top)
+			if (entry.top - bleed >= bottom || entry.top + entry.height + bleed <= top)
 				continue;
 
 			layoutSection(&painter, *entry.section, document, logos, entry.top);

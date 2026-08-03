@@ -31,7 +31,15 @@ can hug either edge or sit centred; and a row with only one side filled in can r
 leader out to the far edge, for a heading inside an otherwise bridged list.
 
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
-plus padding and side margins. Any style can instead be saved as a named **preset**: bind
+plus padding and side margins. Text can be filled with a flat colour or with a **linear or
+radial gradient** of as many colour stops as you like — a gold sweep down a title, a fade
+across a name — and can carry an **outline** and a soft or hard **drop shadow**, which is
+what keeps white credits legible over bright footage. The gradient runs across each block of
+text rather than across the whole roll, so every name in a list gets the same sweep instead
+of a different slice of one long one, and an outline or shadow never moves anything: it
+paints outside the text without changing where a line sits or how long the roll runs.
+
+Any style can instead be saved as a named **preset**: bind
 every header to one and editing it once restyles all of them. Sections reorder by dragging,
 edits are undoable (Ctrl+Z), and a font the machine does not have is called out under the
 preview rather than quietly substituted. Lists can be typed in directly or imported from a

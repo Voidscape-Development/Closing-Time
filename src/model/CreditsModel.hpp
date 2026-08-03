@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.h>
 
 #include <QColor>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -124,6 +125,79 @@ enum class BridgeSizing { Split, Natural };
 const char *bridgeSizingId(BridgeSizing sizing);
 BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback = BridgeSizing::Split);
 
+/*
+ * What the glyphs themselves are painted with.
+ *
+ *   Solid  - TextStyle::color, exactly as text has always been drawn.
+ *   Linear - the gradient's stops run along an axis across the block of text.
+ *   Radial - the stops run outward from the centre of the block to its corners.
+ *
+ * Both gradients are mapped over the block of text being drawn -- one section's title, one
+ * list entry, one side of a bridged row -- rather than over the canvas or the whole strip.
+ * Mapping over the strip would make a stop's colour depend on how long the roll happens to
+ * be; mapping per block means a run of names all share the same sweep as each other.
+ */
+enum class TextFill { Solid, LinearGradient, RadialGradient };
+
+const char *textFillId(TextFill fill);
+TextFill textFillFromId(const char *id, TextFill fallback = TextFill::Solid);
+
+/* One colour stop. `position` is 0.0 at the start of the gradient's axis and 1.0 at its end. */
+struct GradientStop {
+	double position = 0.0;
+	QColor color = QColor(255, 255, 255);
+
+	bool operator==(const GradientStop &other) const
+	{
+		return qFuzzyCompare(position + 1.0, other.position + 1.0) && color == other.color;
+	}
+	bool operator!=(const GradientStop &other) const { return !(*this == other); }
+};
+
+struct GradientSpec {
+	/*
+	 * Direction of a linear gradient, in degrees clockwise from straight down: 0 runs top
+	 * to bottom, 90 left to right, 180 bottom to top. Ignored by a radial gradient, which
+	 * has no axis to point.
+	 */
+	double angle = 0.0;
+	QVector<GradientStop> stops = {GradientStop{0.0, QColor(255, 255, 255)},
+				       GradientStop{1.0, QColor(140, 140, 140)}};
+
+	/*
+	 * The stops as QGradient wants them: sorted, clamped into 0..1, and padded out to at
+	 * least two so a gradient left with one stop still paints that colour rather than
+	 * falling back to black. Everything that draws a gradient goes through this.
+	 */
+	QVector<QPair<qreal, QColor>> resolvedStops() const;
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+};
+
+/*
+ * A stroke drawn around the glyphs, `width` pixels of it outside the letterform. Drawn under
+ * the fill, so the half of the stroke that falls inside the glyph is covered back over and
+ * the outline reads as growing outward only.
+ */
+struct TextOutline {
+	bool enabled = false;
+	double width = 2.0;
+	QColor color = QColor(0, 0, 0);
+};
+
+/*
+ * A drop shadow, offset from the text and optionally softened. `blur` is the radius the
+ * shadow's edge is spread over, in pixels; 0 leaves it hard.
+ */
+struct TextShadow {
+	bool enabled = false;
+	double offsetX = 0.0;
+	double offsetY = 4.0;
+	double blur = 8.0;
+	QColor color = QColor(0, 0, 0, 160);
+};
+
 struct TextStyle {
 	QString family = QStringLiteral("Sans Serif");
 	/*
@@ -137,6 +211,25 @@ struct TextStyle {
 	HAlign align = HAlign::Center;
 	/* Extra space between lines, as a multiplier of the font's natural line height. */
 	double lineSpacing = 1.0;
+
+	TextFill fill = TextFill::Solid;
+	GradientSpec gradient;
+	TextOutline outline;
+	TextShadow shadow;
+
+	/*
+	 * True when the text needs more than a pen colour to draw. The renderer keeps a fast
+	 * path for the plain case, so this is what decides which one a style takes.
+	 */
+	bool hasEffects() const;
+
+	/*
+	 * How far past the text's own box the drawing can reach, in pixels. Nothing here
+	 * changes the layout -- an outline or a shadow never moves a line or grows a section,
+	 * the same way a CSS text-shadow does not -- so the renderer has to know how far it
+	 * may paint outside the section it is drawing in order not to clip it at a tile edge.
+	 */
+	double effectBleed() const;
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
