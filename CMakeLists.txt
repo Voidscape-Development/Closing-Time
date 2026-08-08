@@ -25,8 +25,10 @@ endif()
 find_package(obs-frontend-api REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+# Svg is here for the bridge artwork: bridges are drawn from SVG tiles rather than from
+# glyphs, so QSvgRenderer is part of the render path and not just an icon loader.
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg)
 target_compile_options(
   ${CMAKE_PROJECT_NAME}
   PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
@@ -39,11 +41,17 @@ set_target_properties(
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
+    src/model/BridgeArt.cpp
+    src/model/BridgeArt.hpp
     src/model/CreditsModel.cpp
     src/model/CreditsModel.hpp
     src/model/EndingAction.cpp
     src/model/EndingAction.hpp
     src/plugin-main.cpp
+    src/render/BridgeArtRenderer.cpp
+    src/render/BridgeArtRenderer.hpp
+    src/render/ImageEffects.cpp
+    src/render/ImageEffects.hpp
     src/render/RenderThread.cpp
     src/render/RenderThread.hpp
     src/render/StripRenderer.cpp

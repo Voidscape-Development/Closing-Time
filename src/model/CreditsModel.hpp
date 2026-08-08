@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QStringList>
 #include <QVector>
 
+#include "model/BridgeArt.hpp"
 #include "model/EndingAction.hpp"
 
 namespace closingtime {
@@ -105,6 +106,11 @@ LogoPlacement logoPlacementFromId(const char *id, LogoPlacement fallback = LogoP
  *             however long the two texts turn out to be.
  *   Stretch - drawn once, with the spacing between its characters widened until it spans
  *             the gap exactly. Keeps the character count the user typed.
+ *
+ * An art bridge reads all three the same way, counting tiles where a text bridge counts
+ * copies of its string. The one exception is a bridge type that scales rather than spreads
+ * (BridgeStretch::Scale, a continuous rule): it has nothing to count, so Repeat and Stretch
+ * both cover the gap exactly and only Fixed leaves it at its natural width.
  */
 enum class BridgeFill { Fixed, Repeat, Stretch };
 
@@ -304,8 +310,40 @@ struct Section {
 	/* Vertical gap between consecutive entries (or rows, for multi-lists), in pixels. */
 	int entryGap = 8;
 
-	/* Bridged sections only: the separator drawn between the two texts. */
+	/*
+	 * Bridged sections only: what the separator between the two texts is drawn from. Text is
+	 * the load-time fallback, so a document written before the art types existed keeps the
+	 * string bridge it was built against; new sections are handed a Dots bridge.
+	 */
+	BridgeType bridgeType = BridgeType::Text;
+	/* Text bridges only: the string laid across the gap. */
 	QString bridge = QStringLiteral(" . . . . . . ");
+	/* Custom bridges only: absolute path to the SVG whose art is tiled across the gap. */
+	QString bridgeSvg;
+	/*
+	 * Art bridges only: how tall the art is drawn, in pixels. A tile's width follows from its
+	 * own proportions, so this one number sizes the whole thing.
+	 */
+	double bridgeThickness = 4.0;
+	/*
+	 * Art bridges only: how far above the row's baseline the art sits, in pixels. At 0 it
+	 * rests on the baseline the way a run of leader dots does; raising it lifts a rule up
+	 * through the middle of the text.
+	 */
+	double bridgeOffset = 0.0;
+	/*
+	 * Art bridges only: space left at each end of the art, in pixels, so a leader does not
+	 * run into the words it joins. A text bridge carries its own spacing in the string the
+	 * user typed, which is why this is confined to art -- applying it there too would move
+	 * every bridged row in every document written before it existed.
+	 */
+	double bridgeGap = 8.0;
+	/*
+	 * Custom bridges only: paint the file's art in the section's own fill rather than in the
+	 * colours it was authored with. The built-in tiles are always painted this way -- they
+	 * are drawn white precisely so they can be -- so this only has a say over a user's file.
+	 */
+	bool bridgeTint = true;
 	BridgeFill bridgeFill = BridgeFill::Fixed;
 	BridgeSizing bridgeSizing = BridgeSizing::Split;
 	/*

@@ -500,7 +500,13 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_string(data, "logo_side", logoSideId(logoSide));
 	obs_data_set_string(data, "logo_placement", logoPlacementId(logoPlacement));
 	obs_data_set_int(data, "logo_gap", logoGap);
+	obs_data_set_string(data, "bridge_type", bridgeTypeId(bridgeType));
 	obs_data_set_string(data, "bridge", bridge.toUtf8().constData());
+	obs_data_set_string(data, "bridge_svg", bridgeSvg.toUtf8().constData());
+	obs_data_set_double(data, "bridge_thickness", bridgeThickness);
+	obs_data_set_double(data, "bridge_offset", bridgeOffset);
+	obs_data_set_double(data, "bridge_gap", bridgeGap);
+	obs_data_set_bool(data, "bridge_tint", bridgeTint);
 	obs_data_set_string(data, "bridge_fill", bridgeFillId(bridgeFill));
 	obs_data_set_string(data, "bridge_sizing", bridgeSizingId(bridgeSizing));
 	obs_data_set_double(data, "bridge_split", bridgeSplit);
@@ -548,7 +554,24 @@ void Section::load(obs_data_t *data)
 	/* Documents written before this setting existed were laid out against Edge. */
 	logoPlacement = logoPlacementFromId(obs_data_get_string(data, "logo_placement"), LogoPlacement::Edge);
 	logoGap = static_cast<int>(obs_data_get_int(data, "logo_gap"));
+	/* Documents written before the art types existed carried a string bridge and nothing else. */
+	bridgeType = bridgeTypeFromId(obs_data_get_string(data, "bridge_type"), BridgeType::Text);
 	bridge = QString::fromUtf8(obs_data_get_string(data, "bridge"));
+	bridgeSvg = QString::fromUtf8(obs_data_get_string(data, "bridge_svg"));
+	bridgeOffset = obs_data_get_double(data, "bridge_offset");
+	/*
+	 * 0 is a legitimate gap -- art running right up to the words -- so a missing key has to be
+	 * told apart from a stored zero. Absent, it takes the same default a new section gets, so
+	 * a document that predates the art types is not handed a worse one on switching to it.
+	 */
+	bridgeGap = obs_data_has_user_value(data, "bridge_gap") ? obs_data_get_double(data, "bridge_gap") : 8.0;
+	bridgeGap = std::max(0.0, bridgeGap);
+	/* A thickness of zero would draw nothing at all, which no document ever means. */
+	bridgeThickness = obs_data_get_double(data, "bridge_thickness");
+	if (bridgeThickness <= 0.0)
+		bridgeThickness = 4.0;
+	/* Absent in documents that predate custom art, whose built-in tiles are tinted regardless. */
+	bridgeTint = obs_data_has_user_value(data, "bridge_tint") ? obs_data_get_bool(data, "bridge_tint") : true;
 	bridgeFill = bridgeFillFromId(obs_data_get_string(data, "bridge_fill"), BridgeFill::Fixed);
 	bridgeSizing = bridgeSizingFromId(obs_data_get_string(data, "bridge_sizing"), BridgeSizing::Split);
 	bridgeRowAlign = hAlignFromId(obs_data_get_string(data, "bridge_row_align"), HAlign::Center);
@@ -691,6 +714,16 @@ Section Section::makeDefault(SectionType type)
 	 */
 	if (sectionUsesLogos(type) && sectionUsesText(type))
 		section.logoPlacement = LogoPlacement::Hug;
+
+	/*
+	 * Likewise for the bridge: a section being added now gets drawn art, tiled across the
+	 * gap, rather than a string of full stops that depends on the font to look like a leader.
+	 * Text stays the load-time fallback for documents written before the art types existed.
+	 */
+	if (type == SectionType::Bridged || (sectionUsesLogos(type) && sectionUsesText(type))) {
+		section.bridgeType = BridgeType::Dots;
+		section.bridgeFill = BridgeFill::Repeat;
+	}
 
 	return section;
 }

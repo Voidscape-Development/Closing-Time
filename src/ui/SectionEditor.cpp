@@ -60,6 +60,26 @@ QString imageFilter()
 	return moduleText("Designer.LogoFilter") + QStringLiteral(" (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.svg)");
 }
 
+/* The only format QSvgRenderer reads, which is what a bridge tile is rendered through. */
+QString svgFilter()
+{
+	return moduleText("Designer.BridgeSvgFilter") + QStringLiteral(" (*.svg *.svgz)");
+}
+
+/*
+ * A bridge type's name for the picker. Bridge types come from a table rather than from a fixed
+ * list of enum cases, so their locale keys are built from the same ids the table already
+ * carries: adding a type needs a string, and needs nothing here.
+ */
+QString bridgeTypeText(BridgeType type)
+{
+	const QString key = QStringLiteral("Designer.BridgeType.") + QString::fromLatin1(bridgeTypeId(type));
+	const QString text = QString::fromUtf8(obs_module_text(key.toUtf8().constData()));
+
+	/* obs_module_text hands the key back when nothing carries it; the table has a name. */
+	return text == key ? QString::fromUtf8(bridgeTypeName(type)) : text;
+}
+
 void addAlignmentOptions(QComboBox *box)
 {
 	box->addItem(moduleText("Designer.Align.Left"), static_cast<int>(HAlign::Left));
@@ -472,8 +492,44 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	logoGap->setSuffix(QStringLiteral(" px"));
 	form->addRow(moduleText("Designer.LogoGap"), logoGap);
 
+	bridgeType = new QComboBox(this);
+	for (BridgeType type : allBridgeTypes())
+		bridgeType->addItem(bridgeTypeText(type), static_cast<int>(type));
+	form->addRow(moduleText("Designer.BridgeType"), bridgeType);
+
 	bridgeEdit = new QLineEdit(this);
 	form->addRow(moduleText("Designer.Bridge"), bridgeEdit);
+
+	auto *bridgeSvgRow = new QWidget(this);
+	auto *bridgeSvgLayout = new QHBoxLayout(bridgeSvgRow);
+	bridgeSvgLayout->setContentsMargins(0, 0, 0, 0);
+	bridgeSvgPath = new QLineEdit(bridgeSvgRow);
+	bridgeSvgBrowse = new QToolButton(bridgeSvgRow);
+	bridgeSvgBrowse->setText(QStringLiteral("..."));
+	bridgeSvgLayout->addWidget(bridgeSvgPath);
+	bridgeSvgLayout->addWidget(bridgeSvgBrowse);
+	form->addRow(moduleText("Designer.BridgeSvg"), bridgeSvgRow);
+
+	bridgeThickness = new QSpinBox(this);
+	bridgeThickness->setRange(1, 1024);
+	bridgeThickness->setSuffix(QStringLiteral(" px"));
+	bridgeThickness->setToolTip(moduleText("Designer.BridgeThickness.Tip"));
+	form->addRow(moduleText("Designer.BridgeThickness"), bridgeThickness);
+
+	bridgeOffset = new QSpinBox(this);
+	bridgeOffset->setRange(-1024, 1024);
+	bridgeOffset->setSuffix(QStringLiteral(" px"));
+	bridgeOffset->setToolTip(moduleText("Designer.BridgeOffset.Tip"));
+	form->addRow(moduleText("Designer.BridgeOffset"), bridgeOffset);
+
+	bridgeGap = new QSpinBox(this);
+	bridgeGap->setRange(0, 2048);
+	bridgeGap->setSuffix(QStringLiteral(" px"));
+	bridgeGap->setToolTip(moduleText("Designer.BridgeGap.Tip"));
+	form->addRow(moduleText("Designer.BridgeGap"), bridgeGap);
+
+	bridgeTint = new QCheckBox(moduleText("Designer.BridgeTint"), this);
+	form->addRow(QString(), bridgeTint);
 
 	bridgeFill = new QComboBox(this);
 	bridgeFill->addItem(moduleText("Designer.BridgeFill.Fixed"), static_cast<int>(BridgeFill::Fixed));
@@ -597,12 +653,17 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(logoSide, &QComboBox::currentIndexChanged, this, notify);
 	connect(logoGap, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeEdit, &QLineEdit::textChanged, this, notify);
+	connect(bridgeSvgPath, &QLineEdit::textChanged, this, notify);
+	connect(bridgeThickness, &QSpinBox::valueChanged, this, notify);
+	connect(bridgeOffset, &QSpinBox::valueChanged, this, notify);
+	connect(bridgeGap, &QSpinBox::valueChanged, this, notify);
+	connect(bridgeTint, &QCheckBox::toggled, this, notify);
 	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
 
 	/* These decide which of the other bridge rows are worth showing. */
-	for (QComboBox *box : {bridgeFill, bridgeSizing, logoPlacement}) {
+	for (QComboBox *box : {bridgeType, bridgeFill, bridgeSizing, logoPlacement}) {
 		connect(box, &QComboBox::currentIndexChanged, this, [this] {
 			if (loading)
 				return;
@@ -643,6 +704,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(secondaryGroup, &QGroupBox::toggled, this, notify);
 	connect(entryTable, &QTableWidget::cellChanged, this, notify);
 	connect(logoBrowse, &QToolButton::clicked, this, &SectionEditor::browseForSectionLogo);
+	connect(bridgeSvgBrowse, &QToolButton::clicked, this, &SectionEditor::browseForBridgeSvg);
 }
 
 void SectionEditor::setSection(const Section &source)
@@ -659,7 +721,13 @@ void SectionEditor::setSection(const Section &source)
 	selectByData(logoPlacement, static_cast<int>(source.logoPlacement));
 	selectByData(logoSide, static_cast<int>(source.logoSide));
 	logoGap->setValue(source.logoGap);
+	selectByData(bridgeType, static_cast<int>(source.bridgeType));
 	bridgeEdit->setText(source.bridge);
+	bridgeSvgPath->setText(source.bridgeSvg);
+	bridgeThickness->setValue(qRound(source.bridgeThickness));
+	bridgeOffset->setValue(qRound(source.bridgeOffset));
+	bridgeGap->setValue(qRound(source.bridgeGap));
+	bridgeTint->setChecked(source.bridgeTint);
 	selectByData(bridgeFill, static_cast<int>(source.bridgeFill));
 	selectByData(bridgeSizing, static_cast<int>(source.bridgeSizing));
 	bridgeSplit->setValue(qRound(source.bridgeSplit * 100.0));
@@ -701,7 +769,13 @@ Section SectionEditor::section() const
 	result.logoPlacement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
 	result.logoSide = static_cast<LogoSide>(logoSide->currentData().toInt());
 	result.logoGap = logoGap->value();
+	result.bridgeType = static_cast<BridgeType>(bridgeType->currentData().toInt());
 	result.bridge = bridgeEdit->text();
+	result.bridgeSvg = bridgeSvgPath->text();
+	result.bridgeThickness = bridgeThickness->value();
+	result.bridgeOffset = bridgeOffset->value();
+	result.bridgeGap = bridgeGap->value();
+	result.bridgeTint = bridgeTint->isChecked();
 	result.bridgeFill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
 	result.bridgeSizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
 	result.bridgeSplit = bridgeSplit->value() / 100.0;
@@ -759,8 +833,20 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	/* A logo row bridged across to its text uses the same bridge fields a Bridged section does. */
 	const bool usesBridge = bridged || (logoBesideText && placement == LogoPlacement::Bridged);
 
+	/* Art and text bridges are configured by different halves of the same set of rows. */
+	const auto bridgeArt = static_cast<BridgeType>(bridgeType->currentData().toInt());
+	const bool drawnArt = usesBridge && bridgeTypeUsesArt(bridgeArt);
+	const bool artFromFile = usesBridge && bridgeTypeUsesFile(bridgeArt);
+
 	form->setRowVisible(logoPlacement, logoBesideText);
-	form->setRowVisible(bridgeEdit, usesBridge);
+	form->setRowVisible(bridgeType, usesBridge);
+	form->setRowVisible(bridgeEdit, usesBridge && !drawnArt);
+	form->setRowVisible(bridgeSvgPath->parentWidget(), artFromFile);
+	form->setRowVisible(bridgeThickness, drawnArt);
+	form->setRowVisible(bridgeOffset, drawnArt);
+	form->setRowVisible(bridgeGap, drawnArt);
+	/* The built-in tiles are drawn white to be tinted; only a user's file has colours to keep. */
+	form->setRowVisible(bridgeTint, artFromFile);
 	form->setRowVisible(bridgeFill, usesBridge);
 	/* Column sizing and row placement describe two texts, so they stay with that type. */
 	form->setRowVisible(bridgeSizing, bridged);
@@ -909,6 +995,14 @@ void SectionEditor::browseForSectionLogo()
 		QFileDialog::getOpenFileName(this, moduleText("Designer.ChooseLogo"), logoPath->text(), imageFilter());
 	if (!path.isEmpty())
 		logoPath->setText(path);
+}
+
+void SectionEditor::browseForBridgeSvg()
+{
+	const QString path = QFileDialog::getOpenFileName(this, moduleText("Designer.ChooseBridgeSvg"),
+							  bridgeSvgPath->text(), svgFilter());
+	if (!path.isEmpty())
+		bridgeSvgPath->setText(path);
 }
 
 void SectionEditor::browseForEntryLogo()
