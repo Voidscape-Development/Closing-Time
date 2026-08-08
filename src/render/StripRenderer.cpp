@@ -39,6 +39,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <cmath>
 
+#include "render/BridgeArtRenderer.hpp"
+#include "render/ImageEffects.hpp"
+
 namespace closingtime {
 
 namespace {
@@ -130,53 +133,6 @@ QPen outlinePen(const TextStyle &style)
 	return pen;
 }
 
-/*
- * Softens `image` in place with three box passes, which is close enough to a Gaussian for a
- * shadow edge and stays a handful of adds per pixel. Premultiplied alpha is what makes
- * blurring the four channels together correct rather than bleeding colour out of the edges.
- */
-void boxBlur(QImage &image, int radius, bool vertical)
-{
-	const int width = image.width();
-	const int height = image.height();
-	const int length = vertical ? height : width;
-	if (radius < 1 || length < 2)
-		return;
-
-	const QImage source = image.copy();
-	const int span = radius * 2 + 1;
-	const int lines = vertical ? width : height;
-
-	for (int line = 0; line < lines; ++line) {
-		const auto sample = [&](int index) -> const uchar * {
-			const int clamped = std::clamp(index, 0, length - 1);
-			const int x = vertical ? line : clamped;
-			const int y = vertical ? clamped : line;
-			return source.constScanLine(y) + static_cast<qsizetype>(x) * 4;
-		};
-
-		int sum[4] = {0, 0, 0, 0};
-		for (int i = -radius; i <= radius; ++i) {
-			const uchar *pixel = sample(i);
-			for (int channel = 0; channel < 4; ++channel)
-				sum[channel] += pixel[channel];
-		}
-
-		for (int index = 0; index < length; ++index) {
-			const int x = vertical ? line : index;
-			const int y = vertical ? index : line;
-			uchar *target = image.scanLine(y) + static_cast<qsizetype>(x) * 4;
-			for (int channel = 0; channel < 4; ++channel)
-				target[channel] = static_cast<uchar>(sum[channel] / span);
-
-			const uchar *leaving = sample(index - radius);
-			const uchar *arriving = sample(index + radius + 1);
-			for (int channel = 0; channel < 4; ++channel)
-				sum[channel] += arriving[channel] - leaving[channel];
-		}
-	}
-}
-
 /* Largest shadow buffer we will allocate, in pixels. A blur past this is drawn hard instead. */
 constexpr qint64 kMaxShadowPixels = 64 * 1024 * 1024;
 
@@ -231,10 +187,7 @@ void paintShadow(QPainter *painter, const QPainterPath &path, const TextStyle &s
 	shadowPainter.drawPath(offset);
 	shadowPainter.end();
 
-	for (int pass = 0; pass < 3; ++pass) {
-		boxBlur(buffer, radius, false);
-		boxBlur(buffer, radius, true);
-	}
+	blurImage(buffer, radius);
 
 	painter->drawImage(bounds.topLeft(), buffer);
 }
@@ -561,13 +514,39 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 	return row;
 }
 
-/* The bridge as it will actually be drawn, with the font that makes it span `width`. */
+/*
+ * The bridge as it will actually be drawn across a given gap.
+ *
+ * Both kinds of bridge end up here: a text bridge as the string and the font that makes it
+ * span the gap, an art bridge as the tiles laid across it. Everything downstream -- where the
+ * row's baseline lands, how tall the row is, what gets painted -- goes through this rather
+ * than asking which kind it is, so the two stay interchangeable at every call site.
+ */
 struct PreparedBridge {
 	QString text;
 	QFont font;
+
+	bool usesArt = false;
+	BridgeArtLayout art;
+
+	bool isEmpty() const { return usesArt ? art.isEmpty() : text.isEmpty(); }
+
+	/*
+	 * How far the bridge reaches above the row's baseline. Art rests on that baseline the way
+	 * a run of leader dots does, raised by `bridgeOffset` when what the user wants is a rule
+	 * running through the middle of the text instead; a text bridge shares the baseline with
+	 * the words either side of it, as any other run of glyphs would.
+	 */
+	qreal ascent(const Section &section) const
+	{
+		if (isEmpty())
+			return 0.0;
+
+		return usesArt ? art.height + section.bridgeOffset : QFontMetricsF(font).ascent();
+	}
 };
 
-PreparedBridge prepareBridge(const Section &section, const TextStyle &style, qreal width)
+PreparedBridge prepareTextBridge(const Section &section, const TextStyle &style, qreal width)
 {
 	PreparedBridge prepared;
 	prepared.font = makeFont(style);
@@ -615,13 +594,67 @@ PreparedBridge prepareBridge(const Section &section, const TextStyle &style, qre
 	return prepared;
 }
 
+PreparedBridge prepareBridge(const Section &section, const TextStyle &style, BridgeArtCache *bridges, qreal width)
+{
+	if (!bridgeTypeUsesArt(section.bridgeType))
+		return prepareTextBridge(section, style, width);
+
+	PreparedBridge prepared;
+	prepared.font = makeFont(style);
+	prepared.usesArt = true;
+	prepared.art = layoutBridgeArt(section, bridges, width);
+	return prepared;
+}
+
+/* The width one copy of the bridge wants, which is what a Fixed bridge reserves from a row. */
+qreal naturalBridgeWidth(const Section &section, const TextStyle &style, BridgeArtCache *bridges)
+{
+	if (!bridgeTypeUsesArt(section.bridgeType))
+		return naturalTextWidth(section.bridge, style);
+
+	/* The gaps either end are part of what the art has to be given room for. */
+	const qreal tile = bridgeTileWidth(section, bridges);
+	return tile > 0.0 ? tile + std::max(0.0, section.bridgeGap) * 2.0 : 0.0;
+}
+
+/*
+ * Draws the bridge with its top edge at `top` and returns the height it occupies. With a null
+ * painter it only measures, like the rest of the layout.
+ */
+int paintBridge(QPainter *painter, const PreparedBridge &bridge, const Section &section, const TextStyle &style,
+		BridgeArtCache *bridges, qreal x, qreal top, qreal width)
+{
+	if (bridge.isEmpty())
+		return 0;
+
+	if (!bridge.usesArt)
+		return layoutPreparedText(painter, bridge.text, style, bridge.font, HAlign::Center, x, top, width,
+					  false);
+
+	if (painter) {
+		/*
+		 * A gradient is mapped over a line of the section's text rather than over the art's
+		 * own few pixels of height, so a leader shows the same slice of the sweep as the
+		 * words either side of it instead of the whole of it crammed into a run of dots.
+		 */
+		const QFontMetricsF metrics(bridge.font);
+		const qreal baseline = top + bridge.ascent(section);
+		const QRectF fillBox(x, baseline - metrics.ascent(), width, metrics.height());
+
+		paintBridgeArt(painter, bridge.art, section, style, bridges, QPointF(x, top), fillBox);
+	}
+
+	return qCeil(bridge.art.height);
+}
+
 /*
  * Both passes of the layout run through this one function. With `painter` set it draws
  * into the current tile; with `painter` null it only reports the height. `top` is the
  * section's Y position in strip space, which is also painter space -- callers translate
  * the painter by the tile offset before drawing.
  */
-int layoutSection(QPainter *painter, const Section &section, const Document &document, LogoCache *logos, int top)
+int layoutSection(QPainter *painter, const Section &section, const Document &document, LogoCache *logos,
+		  BridgeArtCache *bridges, int top)
 {
 	const int contentX = section.marginX;
 	const int contentWidth = std::max(1, document.width - section.marginX * 2);
@@ -670,13 +703,15 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		layoutText(painter, section.text, style, row.textX, textTop, row.textWidth);
 
 		if (section.logoPlacement == LogoPlacement::Bridged) {
-			const PreparedBridge bridge = prepareBridge(section, style, row.bridgeWidth);
+			const PreparedBridge bridge = prepareBridge(section, style, bridges, row.bridgeWidth);
 			/*
-			 * Drawn from the same top as the text and in the same font, so the leader
-			 * lands on the text's baseline without needing an offset of its own.
+			 * Hung off the text's own baseline, so a leader lands on it whatever the
+			 * bridge is made of: text in the same font needs no offset at all, and art
+			 * sits on the same line rather than on the top of the text's box.
 			 */
-			layoutPreparedText(painter, bridge.text, style, bridge.font, HAlign::Center, row.bridgeX,
-					   textTop, row.bridgeWidth, false);
+			const qreal baseline = textTop + QFontMetricsF(makeFont(style)).ascent();
+			paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
+				    baseline - bridge.ascent(section), row.bridgeWidth);
 		}
 
 		y += rowHeight;
@@ -685,12 +720,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::Bridged: {
 		const TextStyle &rightStyle = document.effectiveSecondaryStyle(section);
-		const qreal naturalBridge = naturalTextWidth(section.bridge, style);
+		const qreal naturalBridge = naturalBridgeWidth(section, style, bridges);
 
 		for (const Entry &entry : section.entries) {
 			const BridgedRow row = placeBridgedRow(section, style, rightStyle, entry, contentX,
 							       contentWidth, naturalBridge);
-			const PreparedBridge bridge = prepareBridge(section, style, row.bridgeWidth);
+			const PreparedBridge bridge = prepareBridge(section, style, bridges, row.bridgeWidth);
 
 			/*
 			 * The three parts share a baseline rather than a top edge, which is what
@@ -700,7 +735,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 */
 			const qreal leftAscent = firstBaseline(entry.text, style);
 			const qreal rightAscent = firstBaseline(entry.secondaryText, rightStyle);
-			const qreal bridgeAscent = bridge.text.isEmpty() ? 0.0 : QFontMetricsF(bridge.font).ascent();
+			const qreal bridgeAscent = bridge.ascent(section);
 			const qreal baseline = std::max({leftAscent, rightAscent, bridgeAscent});
 
 			const qreal leftTop = y + baseline - leftAscent;
@@ -711,9 +746,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 				layoutText(painter, entry.text, style, row.leftX, leftTop, row.leftWidth);
 			const int rightHeight = layoutText(painter, entry.secondaryText, rightStyle, row.rightX,
 							   rightTop, row.rightWidth);
-			const int bridgeHeight = layoutPreparedText(painter, bridge.text, style, bridge.font,
-								    HAlign::Center, row.bridgeX, bridgeTop,
-								    row.bridgeWidth, false);
+			const int bridgeHeight = paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
+							     bridgeTop, row.bridgeWidth);
 
 			int rowHeight = 1;
 			const auto extend = [&rowHeight, y](qreal top, int height) {
@@ -836,7 +870,8 @@ int effectBleed(const Document &document)
 	return qCeil(bleed);
 }
 
-QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos, int *totalHeight)
+QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos, BridgeArtCache *bridges,
+				     int *totalHeight)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
@@ -846,7 +881,7 @@ QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos,
 		if (!section.visible)
 			continue;
 
-		const int height = layoutSection(nullptr, section, document, logos, y);
+		const int height = layoutSection(nullptr, section, document, logos, bridges, y);
 		placed.append(PlacedSection{&section, y, height});
 		y += height;
 
@@ -994,8 +1029,16 @@ void LogoCache::invalidate(const QString &path)
 
 int StripRenderer::measure(const Document &document) const
 {
+	/*
+	 * The bridge tiles are parsed for the length of the call and dropped again. Unlike a
+	 * decoded logo there is nothing here worth holding on to between renders -- a tile is a
+	 * few hundred bytes of markup -- and building it fresh is what makes a custom SVG edited
+	 * on disk show up in the next rebuild without anything having to watch the file.
+	 */
+	BridgeArtCache bridges;
+
 	int total = 0;
-	placeSections(document, logos, &total);
+	placeSections(document, logos, &bridges, &total);
 	return total - document.leadIn - document.leadOut;
 }
 
@@ -1004,8 +1047,10 @@ Strip StripRenderer::render(const Document &document) const
 	Strip strip;
 	strip.width = std::max(1, document.width);
 
+	BridgeArtCache bridges;
+
 	int total = 0;
-	const QVector<PlacedSection> placed = placeSections(document, logos, &total);
+	const QVector<PlacedSection> placed = placeSections(document, logos, &bridges, &total);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
 	if (strip.height <= 0 || placed.isEmpty())
@@ -1030,7 +1075,7 @@ Strip StripRenderer::render(const Document &document) const
 			if (entry.top - bleed >= bottom || entry.top + entry.height + bleed <= top)
 				continue;
 
-			layoutSection(&painter, *entry.section, document, logos, entry.top);
+			layoutSection(&painter, *entry.section, document, logos, &bridges, entry.top);
 		}
 
 		painter.end();

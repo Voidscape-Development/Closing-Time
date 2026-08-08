@@ -35,10 +35,13 @@ src/
   plugin-main.cpp          module entry; registers the source and the global signal
   model/
     CreditsModel.{hpp,cpp} TextStyle, StylePreset, LogoRef, Entry, Section, Document + obs_data (de)serialisation
+    BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
     EndingAction.{hpp,cpp} ending-action config and execution
   render/
     RenderThread.{hpp,cpp} the shared rasterisation thread and its job queue
     StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterisation
+    BridgeArtRenderer.{hpp,cpp} SVG tile cache, bridge tiling and painting
+    ImageEffects.{hpp,cpp} box blur and tinting, shared by both shadow paths
   source/
     CreditsSource.{hpp,cpp} obs_source_info: playback, GPU upload, draw, hotkeys, properties
   ui/
@@ -101,31 +104,36 @@ pair together and aligning the group is what makes the gap the real separation �
 what `Section::makeDefault` now hands out. `Edge` remains the *load-time* fallback, so
 documents written before the setting existed keep the layout they were built against.
 
-`Bridged` reuses the Bridged section's machinery outright: `bridge` and `bridgeFill` mean
-exactly what they mean there, and the leader is drawn from the same top and in the same font
-as the text, so it lands on the text's baseline without an offset of its own. `bridgeSizing`,
+`Bridged` reuses the Bridged section's machinery outright: `bridgeType`, `bridge` and
+`bridgeFill` mean exactly what they mean there, and the leader is hung off the text's own
+baseline, so it lands on the line the words sit on whatever it is drawn from. `bridgeSizing`,
 `bridgeSplit` and `bridgeRowAlign` stay out of it — they describe two *texts* sharing a row,
 which is not the shape of this one. Here `logoGap` becomes padding at each end of the span,
 so the leader touches neither the logo nor the text.
 
 ### Bridged rows
 
-A bridged row is three parts — left text, bridge, right text — and two settings decide how
-the width is carved up between them.
+A bridged row is three parts — left text, bridge, right text — and three settings decide what
+the bridge is made of and how the width is carved up between them.
 
-**`bridgeFill`** is what the bridge does with a gap wider than the string itself:
+**`bridgeType`** is what the bridge is drawn from. `Text` is the original — a string set in the
+section's font — and every other type is **vector art**: a small SVG tile laid across the gap.
+See *Bridge artwork* below.
+
+**`bridgeFill`** is what the bridge does with a gap wider than one copy of itself:
 
 | | |
 |---|---|
 | `Fixed` | drawn once at its natural width |
 | `Repeat` | tiled as many *whole* times as fit, centred in the gap |
-| `Stretch` | drawn once, with letter spacing widened until it spans the gap exactly |
+| `Stretch` | spread across the gap, so the run meets both ends of it exactly |
 
-`Repeat` deliberately refuses a partial copy: cutting a leader mid-glyph reads as damage
-once the bridge is a word rather than a run of dots. The cost is up to one unit of slack, so
-a short bridge (`" . "`) is what makes it look tight. `Stretch` divides the shortfall by the
-full character count rather than the gaps between characters, which lands the run's advance
-on the gap exactly instead of overshooting it by one gap.
+`Repeat` deliberately refuses a partial copy: cutting a leader mid-glyph — or mid-dot — reads
+as damage once the bridge is a word rather than a run of full stops. The cost is up to one unit
+of slack, so a short unit is what makes it look tight. `Stretch` closes that gap: for text it
+divides the shortfall by the full character count rather than the gaps between characters,
+which lands the run's advance on the gap exactly instead of overshooting it by one gap; for art
+it widens the space between whole tiles rather than distorting them.
 
 **`bridgeSizing`** is how the two text columns are measured:
 
@@ -157,6 +165,54 @@ Finally, the three parts share a **baseline** rather than a top edge, anchored o
 reaches lowest so nothing climbs into the row above. That is what keeps a leader running
 through the middle of the text when the two sides are set at different sizes; when they
 match, every offset is zero and the result is what it always was.
+
+### Bridge artwork
+
+A bridge drawn from a string can only ever be whatever characters the font happens to carry, at
+whatever weight it draws them: `" . . . . . . "` is a leader by coincidence, and its dots change
+size, shape and spacing with the typeface. So a bridge is **drawn from an SVG tile** instead,
+and the string is one type among several rather than the only option.
+
+`model/BridgeArt.{hpp,cpp}` is a **table**, not a switch. Each row is an id, a display name, the
+markup for one tile, the tile's aspect and what it does when stretched — and that is the whole
+of what a bridge type is. Adding one (a chain, a zigzag, a rule with a diamond in the middle) is
+a row and a locale string; nothing in the renderer, the editor or the persistence format knows
+which types exist. `Custom` is the same mechanism pointed at a file the user picks.
+
+Three decisions hold the rest of it together:
+
+**A tile is described in units of its own height.** The markup is drawn in a box one unit tall
+and `aspect` units wide, and `bridgeTypeSvg` derives the `viewBox` from `aspect` so the two
+cannot drift. One number — `bridgeThickness`, in pixels — then sizes the whole thing, and
+because it is vector art it is as crisp at 3 px as at 30 without a font to supply it.
+
+**Art is a stencil, not a picture.** The built-in tiles are painted white so the renderer can
+rasterise them and fill the silhouette with the section's own `TextStyle`: the same colour,
+the same gradient mapped over the same block, the same outline, the same shadow the words either
+side get. That parity is the point — a leader belongs to the row rather than sitting on it. The
+one thing there is no path left to stroke, so an outline grows the silhouette by a ring of
+offset copies instead, dense enough that consecutive ones overlap within half a pixel. Only a
+custom file has colours of its own worth keeping, so only there does `bridgeTint` get a say.
+
+**Tiling belongs to the type.** `Spread` types (dots, dashes, diamonds) keep whole tiles at
+their own size and open up the space between them, so a leader's dots stay round however long
+the run is. `Scale` types (line, double line) are continuous and have nothing to count, so both
+filling modes stretch one tile across the gap exactly — tiling a rule would leave it short of
+the gap by up to a whole tile, which on an unbroken line reads as damage rather than design.
+
+`bridgeOffset` lifts the art off the baseline it otherwise rests on, which is the difference
+between a run of leader dots and a rule through the middle of the text, and `bridgeGap` keeps it
+clear of the words at each end. Both are confined to art: a text bridge carries its own spacing
+in the string the user typed, and applying either to it would move every bridged row in every
+document written before this existed. `Text` is likewise the **load-time** fallback for
+`bridgeType`, while `Section::makeDefault` hands out `Dots` — the same bargain `logoPlacement`
+struck, and for the same reason.
+
+Tiles are parsed into a `BridgeArtCache` that lives for the length of one measure or render
+rather than being kept between them, unlike `LogoCache`. A tile is a few hundred bytes of
+markup, so the cache exists to avoid re-parsing once per *row*, not once per render — and
+rebuilding it each time is what makes a custom SVG edited on disk show up in the next rebuild
+with nothing having to watch the file.
 
 ### Text fills, outlines and shadows
 
@@ -398,6 +454,8 @@ those fields in order. Import replaces or appends, per a checkbox.
 - Undo/redo in the designer, over sections and presets.
 - Missing fonts are surfaced in the designer and the log instead of silently substituted.
 - Gradient fills, outlines and drop shadows on any style, preset or not.
+- Bridges drawn from SVG art rather than from a string of characters, from a table of types
+  that takes a new one without the renderer or the editor changing.
 
 ## Verifying changes
 
@@ -406,6 +464,16 @@ target in the template yet; renderer and parser changes were validated with an o
 harness covering the `obs_data` round trip for all twelve section types, measure/render
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
+
+Bridge artwork was validated offscreen as well: every built-in type across all three fill
+modes, checking that tiles stay inside the gap they were given, never overlap, and — for a
+spreading type under `Stretch` and a scaling type under either filling mode — meet both ends of
+it; measure/render agreement over a document holding every type; the `obs_data` round trip for
+the new fields; a document written before the art types existed still loading as a text bridge
+with its string intact and a thickness to fall back on; a custom tile sized from its own
+viewBox, and a custom bridge with no file or a missing one drawing nothing rather than failing
+the strip; a leader picking up the same gradient, outline and shadow as the text either side of
+it; and a logo row bridged across to its text taking the same art on the same baseline.
 
 Fills were validated the same way: each of solid, linear, radial, outline, hard and soft
 shadow and all three together rendered offscreen and inspected; the `obs_data` round trip for

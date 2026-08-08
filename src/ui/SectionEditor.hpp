@@ -160,6 +160,7 @@ private:
 	void importCsv();
 	void browseForSectionLogo();
 	void browseForEntryLogo();
+	void browseForBridgeSvg();
 
 	void emitChanged();
 
@@ -177,7 +178,14 @@ private:
 	QComboBox *logoSide = nullptr;
 	QSpinBox *logoGap = nullptr;
 
+	QComboBox *bridgeType = nullptr;
 	QLineEdit *bridgeEdit = nullptr;
+	QLineEdit *bridgeSvgPath = nullptr;
+	QToolButton *bridgeSvgBrowse = nullptr;
+	QSpinBox *bridgeThickness = nullptr;
+	QSpinBox *bridgeOffset = nullptr;
+	QSpinBox *bridgeGap = nullptr;
+	QCheckBox *bridgeTint = nullptr;
 	QComboBox *bridgeFill = nullptr;
 	QComboBox *bridgeSizing = nullptr;
 	QSpinBox *bridgeSplit = nullptr;

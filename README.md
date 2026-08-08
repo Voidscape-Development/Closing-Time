@@ -17,17 +17,25 @@ out of sections:
 | Title / Header | A heading, at two default sizes |
 | Title w/ Logo, Header w/ Logo | A heading with a logo beside it, hugging the text, pinned to the edge, or bridged across to it |
 | Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
-| Text to Text Bridged | `Director . . . . . . Jane Doe` role-to-person pairs, with leaders that can repeat or stretch to fill the row |
+| Text to Text Bridged | `Director ······ Jane Doe` role-to-person pairs, joined by a leader of dots, dashes, diamonds, a rule, your own SVG, or plain text |
 | Text List | A single column of names |
 | Logo List | A single column of logos |
 | Multi-List of Text | Names across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
 | Spacer | A blank run, for pacing |
 
-Bridged rows are fully placeable: the bridge can be drawn once, repeated, or stretched to
-span whatever gap the two texts leave; the columns can be fixed (so the leader starts at the
-same place on every row) or sized to the text (so the row reaches both edges); a short row
-can hug either edge or sit centred; and a row with only one side filled in can run its
+In a bridged row the **bridge** joining the two texts is drawn from artwork rather than from
+characters, so a leader is a real shape at a thickness you set instead of whatever full stops
+your font happens to draw: pick dots, dashes, diamonds, a line or a double rule, or point it at
+an SVG of your own. It picks up the section's own colour, gradient, outline and shadow, so it
+belongs to the row rather than sitting on it, and it can be lifted off the baseline to run a
+rule through the middle of the text. Plain text is still one of the styles, for when a word —
+`and`, `with` — is what belongs in the gap.
+
+Bridged rows are fully placeable on top of that: the bridge can be drawn once, repeated, or
+spread to span whatever gap the two texts leave; the columns can be fixed (so the leader starts
+at the same place on every row) or sized to the text (so the row reaches both edges); a short
+row can hug either edge or sit centred; and a row with only one side filled in can run its
 leader out to the far edge, for a heading inside an otherwise bridged list.
 
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
@@ -72,8 +80,9 @@ and ending actions are mutually exclusive — a looping roll never ends.
 
 ## Building
 
-Requires CMake 3.28+, a C++17 compiler, Qt 6, and the OBS Studio sources/dependencies. The
-plugin needs both `ENABLE_QT` and `ENABLE_FRONTEND_API`, which are on by default.
+Requires CMake 3.28+, a C++17 compiler, Qt 6 (Core, Gui, Widgets and Svg — Svg is what draws
+the bridge artwork), and the OBS Studio sources/dependencies. The plugin needs both
+`ENABLE_QT` and `ENABLE_FRONTEND_API`, which are on by default.
 
 ```bash
 cmake --preset ubuntu-x86_64      # or windows-x64 / macos
