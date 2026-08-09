@@ -26,10 +26,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 class QCheckBox;
 class QComboBox;
-class QHBoxLayout;
+class QFormLayout;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QScrollArea;
 class QTableWidget;
 
 namespace closingtime {
@@ -57,11 +58,15 @@ private:
 	void browse();
 	void reloadFile();
 	void refreshPreview();
-	void rebuildMappingRow();
+	void rebuildMappingPanel();
+	/* Re-labels the mapping rows in place, so toggling the header row keeps the mapping. */
+	void updateMappingNames();
 	void accept() override;
 
 	QVector<Field> availableFields() const;
 	QString fieldLabel(Field field) const;
+	/* The file's own name for a column, falling back to "Column N" without a usable header. */
+	QString columnName(int column) const;
 
 	SectionType targetType;
 
@@ -73,10 +78,16 @@ private:
 	QCheckBox *replaceBox = nullptr;
 	QLabel *statusLabel = nullptr;
 	QTableWidget *preview = nullptr;
-	/* One combo per detected column, laid out above the preview table. */
+	/*
+	 * One row per detected column in the panel beside the preview: the column's own name from
+	 * the file, and the field it will be imported as. Both vectors are indexed by column.
+	 */
 	QVector<QComboBox *> mapping;
-	QWidget *mappingRow = nullptr;
-	QHBoxLayout *mappingLayout = nullptr;
+	QVector<QLabel *> mappingNames;
+	QWidget *mappingPanel = nullptr;
+	QFormLayout *mappingLayout = nullptr;
+	QScrollArea *mappingScroll = nullptr;
+	QLabel *mappingEmpty = nullptr;
 
 	CsvTable table;
 	QVector<Entry> imported;
