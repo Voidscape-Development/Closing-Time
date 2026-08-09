@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QPainter>
 #include <QSpinBox>
@@ -236,6 +237,8 @@ void GradientEditor::setFill(TextFill newFill)
 void GradientEditor::rebuildTable()
 {
 	table->setRowCount(current.stops.size());
+	/* The rows the old selection named are gone, whether or not the count changed. */
+	table->clearSelection();
 
 	for (int row = 0; row < current.stops.size(); ++row) {
 		const GradientStop &stop = current.stops.at(row);
@@ -276,13 +279,67 @@ void GradientEditor::rebuildTable()
 
 bool GradientEditor::eventFilter(QObject *watched, QEvent *event)
 {
-	if (event->type() == QEvent::FocusIn) {
-		const QVariant row = watched->property(kStopRowProperty);
-		if (row.isValid() && row.toInt() < table->rowCount())
-			table->selectRow(row.toInt());
+	if (event->type() == QEvent::FocusIn && !selecting) {
+		const int row = rowForCell(watched);
+		if (row >= 0)
+			selectStopRow(row);
 	}
 
 	return QWidget::eventFilter(watched, event);
+}
+
+int GradientEditor::rowForCell(const QObject *cell) const
+{
+	const QVariant stored = cell->property(kStopRowProperty);
+	if (!stored.isValid())
+		return -1;
+
+	const int row = stored.toInt();
+	if (row < 0 || row >= table->rowCount())
+		return -1;
+
+	/*
+	 * setCellWidget() only deletes the widget it replaces on the next trip through the event
+	 * loop, so a rebuilt table leaves orphans behind that still carry a row number and still
+	 * have this filter on them. Anything the table no longer holds does not name a stop.
+	 */
+	for (int column = 0; column < StopColumnCount; ++column)
+		if (table->cellWidget(row, column) == cell)
+			return row;
+
+	return -1;
+}
+
+int GradientEditor::selectedStopRow() const
+{
+	const QModelIndexList rows = table->selectionModel()->selectedRows();
+	return rows.isEmpty() ? -1 : rows.constFirst().row();
+}
+
+/*
+ * Selecting through the selection model rather than with QTableWidget::selectRow(), which is
+ * what crashed here. selectRow() also moves the current cell to the first column, and the view
+ * answers a current cell change by focusing that cell's widget -- QAbstractItemView::edit()
+ * hands focus straight to a persistent editor. The view has its own FocusIn filter on those
+ * widgets that moves the current cell back to whichever one just took focus, so with a swatch
+ * focused the two chase each other: current cell to the spin box, focus to the spin box,
+ * current cell back to the swatch, focus back to the swatch. Every hop is delivered as a
+ * nested event, so nothing unwinds and the stack runs out. Leaving the current cell alone
+ * breaks the cycle -- the view still tracks it through its own filter, and the Remove button
+ * reads the selection instead.
+ */
+void GradientEditor::selectStopRow(int row)
+{
+	if (selectedStopRow() == row)
+		return;
+
+	const QModelIndex first = table->model()->index(row, 0);
+	const QModelIndex last = table->model()->index(row, StopColumnCount - 1);
+
+	selecting = true;
+	table->selectionModel()->select(QItemSelection(first, last),
+					QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+	selecting = false;
 }
 
 void GradientEditor::readTable()
@@ -341,7 +398,7 @@ void GradientEditor::addStop()
 
 void GradientEditor::removeSelectedStop()
 {
-	const int row = table->currentRow();
+	const int row = selectedStopRow();
 	if (row < 0 || row >= current.stops.size() || current.stops.size() <= 2)
 		return;
 

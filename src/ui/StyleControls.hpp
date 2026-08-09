@@ -109,6 +109,12 @@ private:
 	void removeSelectedStop();
 	void notifyEdited();
 
+	/* The stop a cell widget belongs to, or -1 if the table no longer holds that widget. */
+	int rowForCell(const QObject *cell) const;
+	/* The stop the Remove button acts on, or -1 if nothing is selected. */
+	int selectedStopRow() const;
+	void selectStopRow(int row);
+
 	QSpinBox *angle = nullptr;
 	QWidget *angleRow = nullptr;
 	QTableWidget *table = nullptr;
@@ -118,6 +124,8 @@ private:
 	GradientSpec current;
 	TextFill fill = TextFill::LinearGradient;
 	bool loading = false;
+	/* Set while this editor drives the selection, so its own focus traffic is ignored. */
+	bool selecting = false;
 };
 
 } // namespace closingtime
