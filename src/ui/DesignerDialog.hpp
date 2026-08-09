@@ -32,7 +32,9 @@ class QDialogButtonBox;
 class QLabel;
 class QPushButton;
 class QScrollArea;
+class QSplitter;
 class QTimer;
+class QToolButton;
 
 namespace closingtime {
 
@@ -152,6 +154,16 @@ private:
 	void refreshUndoButtons();
 
 	/*
+	 * Folds the section list away to the button in its own header, and back.
+	 *
+	 * Dragging the splitter shut did this before, which is easy to do by accident and leaves
+	 * nothing on screen saying how to undo it. The splitter no longer collapses its children at
+	 * all; the button is the one way in and, because it stays put when the pane folds, the one
+	 * way back out.
+	 */
+	void setSectionsCollapsed(bool collapsed);
+
+	/*
 	 * How a finished render finds its way back to a window that may since have closed.
 	 * Held by shared_ptr because the render thread needs something it can safely keep hold
 	 * of; the pointer inside is set in the constructor and cleared in the destructor, both
@@ -186,7 +198,16 @@ private:
 	bool previewInFlight = false;
 	bool previewAgain = false;
 
+	QSplitter *splitter = nullptr;
 	SectionListWidget *sectionList = nullptr;
+	QWidget *listPane = nullptr;
+	QLabel *sectionsLabel = nullptr;
+	QWidget *listButtonRow = nullptr;
+	QToolButton *collapseButton = nullptr;
+	bool sectionsCollapsed = false;
+	/* The pane widths to come back to, taken the moment the list is folded away. */
+	QList<int> expandedSizes;
+
 	SectionEditor *editor = nullptr;
 	QScrollArea *editorScroll = nullptr;
 	PreviewWidget *preview = nullptr;

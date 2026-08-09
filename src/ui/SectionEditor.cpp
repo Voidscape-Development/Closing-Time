@@ -54,6 +54,9 @@ QString moduleText(const char *key)
 	return QString::fromUtf8(obs_module_text(key));
 }
 
+/* Height the entry table asks for before it starts scrolling, in pixels. */
+constexpr int kEntryTableMinimumHeight = 260;
+
 /* Image formats QImageReader can decode without extra plugins on every OBS platform. */
 QString imageFilter()
 {
@@ -437,6 +440,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 {
 	auto *outer = new QVBoxLayout(this);
 	outer->setContentsMargins(0, 0, 0, 0);
+	outerLayout = outer;
 
 	form = new QFormLayout();
 	outer->addLayout(form);
@@ -594,6 +598,17 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	marginX->setSuffix(QStringLiteral(" px"));
 	form->addRow(moduleText("Designer.MarginX"), marginX);
 
+	sectionWidth = new QSpinBox(this);
+	sectionWidth->setRange(1, 100);
+	sectionWidth->setSuffix(QStringLiteral(" %"));
+	sectionWidth->setToolTip(moduleText("Designer.SectionWidth.Tip"));
+	form->addRow(moduleText("Designer.SectionWidth"), sectionWidth);
+
+	sectionAlign = new QComboBox(this);
+	addAlignmentOptions(sectionAlign);
+	sectionAlign->setToolTip(moduleText("Designer.SectionAlign.Tip"));
+	form->addRow(moduleText("Designer.SectionAlign"), sectionAlign);
+
 	auto *styleGroup = new QGroupBox(moduleText("Designer.TextStyle"), this);
 	auto *styleLayout = new QVBoxLayout(styleGroup);
 	primaryStyle = new StyleEditor(styleGroup);
@@ -614,6 +629,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	entryTable->setSelectionBehavior(QAbstractItemView::SelectRows);
 	entryTable->verticalHeader()->setVisible(false);
 	entryTable->horizontalHeader()->setStretchLastSection(true);
+	/*
+	 * A list is the thing being worked on when a section has one, so the table asks for enough
+	 * height to read a run of entries at a glance and to have somewhere to scroll. It still
+	 * grows past this with the pane -- see the trailing stretch below.
+	 */
+	entryTable->setMinimumHeight(kEntryTableMinimumHeight);
 	entriesLayout->addWidget(entryTable);
 
 	auto *buttons = new QHBoxLayout();
@@ -634,6 +655,15 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	entriesLayout->addLayout(buttons);
 	outer->addWidget(entriesGroup, 1);
+
+	/*
+	 * Whatever height is left over when the editor is shorter than the pane it sits in. A
+	 * QVBoxLayout with nothing to give the slack to shares it out between the items it has, so
+	 * without this a type carrying few fields -- Title especially -- has its handful of rows
+	 * spread down the pane with gaps between them rather than sitting one under the next.
+	 */
+	outer->addStretch();
+	trailingStretchIndex = outer->count() - 1;
 
 	connect(typeBox, &QComboBox::currentIndexChanged, this, [this] {
 		if (loading)
@@ -680,6 +710,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(paddingTop, &QSpinBox::valueChanged, this, notify);
 	connect(paddingBottom, &QSpinBox::valueChanged, this, notify);
 	connect(marginX, &QSpinBox::valueChanged, this, notify);
+	connect(sectionWidth, &QSpinBox::valueChanged, this, notify);
+	connect(sectionAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(primaryStyle, &StyleEditor::changed, this, notify);
 	connect(secondaryStyle, &StyleEditor::changed, this, notify);
 
@@ -741,6 +773,8 @@ void SectionEditor::setSection(const Section &source)
 	paddingTop->setValue(source.paddingTop);
 	paddingBottom->setValue(source.paddingBottom);
 	marginX->setValue(source.marginX);
+	sectionWidth->setValue(std::clamp(qRound(source.sectionWidth * 100.0), 1, 100));
+	selectByData(sectionAlign, static_cast<int>(source.sectionAlign));
 
 	primaryStyle->setStyle(source.style);
 	secondaryStyle->setStyle(source.secondaryStyle);
@@ -789,6 +823,8 @@ Section SectionEditor::section() const
 	result.paddingTop = paddingTop->value();
 	result.paddingBottom = paddingBottom->value();
 	result.marginX = marginX->value();
+	result.sectionWidth = sectionWidth->value() / 100.0;
+	result.sectionAlign = static_cast<HAlign>(sectionAlign->currentData().toInt());
 	result.style = primaryStyle->style();
 	result.secondaryStyle = secondaryStyle->style();
 	result.useSecondaryStyle = secondaryGroup->isChecked();
@@ -868,6 +904,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	primaryStyle->parentWidget()->setVisible(hasText || hasLogos);
 	secondaryGroup->setVisible(type == SectionType::Bridged);
 	entriesGroup->setVisible(hasEntries);
+
+	/*
+	 * The entry table is the one thing here worth growing, so it takes the leftover height
+	 * whenever it is on show. With no table the trailing spacer takes it instead, which is what
+	 * keeps the rows packed at the top rather than spread down the pane.
+	 */
+	outerLayout->setStretch(trailingStretchIndex, hasEntries ? 0 : 1);
 }
 
 void SectionEditor::rebuildEntryTable(SectionType type)

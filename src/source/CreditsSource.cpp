@@ -500,6 +500,52 @@ void drawBackground(const QColor &color, int width, int height)
 		gs_draw_sprite(nullptr, 0, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 }
 
+/*
+ * Draws one strip tile, clipped to the canvas.
+ *
+ * `top` is where the tile's own top edge lands in canvas space, and it is fractional: the roll
+ * advances by whatever part of a pixel the scroll speed and the frame rate work out to, and that
+ * fraction is what makes the movement read as smooth rather than as a step every few frames.
+ *
+ * Clipping through gs_draw_sprite_subregion cannot carry it. That call takes whole texels, so
+ * the visible height has to be rounded down to the previous whole pixel, and the quad ends up
+ * short of the canvas edge by the fraction that was dropped -- a sliver along the bottom that
+ * never gets painted, which content entering from below appears to pop through rather than slide
+ * into. Building the quad here puts the fraction into both the geometry and the texture
+ * coordinates instead, so the tile meets the edge it is clipped against exactly.
+ */
+void drawTile(gs_texture_t *texture, double top, int canvasHeight)
+{
+	const auto width = static_cast<double>(gs_texture_get_width(texture));
+	const auto height = static_cast<double>(gs_texture_get_height(texture));
+	if (width <= 0.0 || height <= 0.0)
+		return;
+
+	const double visibleTop = std::max(top, 0.0);
+	const double visibleBottom = std::min(top + height, static_cast<double>(canvasHeight));
+	if (visibleBottom <= visibleTop)
+		return;
+
+	const auto x0 = 0.0f;
+	const auto x1 = static_cast<float>(width);
+	const auto y0 = static_cast<float>(visibleTop);
+	const auto y1 = static_cast<float>(visibleBottom);
+	const auto v0 = static_cast<float>((visibleTop - top) / height);
+	const auto v1 = static_cast<float>((visibleBottom - top) / height);
+
+	/* Vertices in the order libobs builds its own sprites for a triangle strip: tl, tr, bl, br. */
+	gs_render_start(false);
+	gs_texcoord(0.0f, v0, 0);
+	gs_vertex2f(x0, y0);
+	gs_texcoord(1.0f, v0, 0);
+	gs_vertex2f(x1, y0);
+	gs_texcoord(0.0f, v1, 0);
+	gs_vertex2f(x0, y1);
+	gs_texcoord(1.0f, v1, 0);
+	gs_vertex2f(x1, y1);
+	gs_render_stop(GS_TRISTRIP);
+}
+
 void videoRender(void *raw, gs_effect_t *)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
@@ -535,30 +581,14 @@ void videoRender(void *raw, gs_effect_t *)
 	while (gs_effect_loop(effect, "Draw")) {
 		for (size_t i = 0; i < data->tileTextures.size(); ++i) {
 			gs_texture_t *texture = data->tileTextures[i];
-			const int tileWidth = static_cast<int>(gs_texture_get_width(texture));
-			const int tileHeight = static_cast<int>(gs_texture_get_height(texture));
-			const double tileTop = stripTop + data->tileTops[i];
 
 			/*
 			 * Rather than clipping with a scissor rect, which lives in screen space and
-			 * would fight the scene item's transform, each tile is drawn as the
-			 * sub-rectangle that actually falls inside the canvas.
+			 * would fight the scene item's transform, each tile is drawn as the part of
+			 * itself that actually falls inside the canvas.
 			 */
-			const int skipTop = static_cast<int>(std::max(0.0, -tileTop));
-			const double drawTop = tileTop + skipTop;
-			const int visibleHeight = static_cast<int>(
-				std::min(static_cast<double>(tileHeight - skipTop), canvasHeight - drawTop));
-
-			if (visibleHeight <= 0 || drawTop >= canvasHeight)
-				continue;
-
-			gs_matrix_push();
-			gs_matrix_translate3f(0.0f, static_cast<float>(drawTop), 0.0f);
 			gs_effect_set_texture(imageParam, texture);
-			gs_draw_sprite_subregion(texture, 0, 0, static_cast<uint32_t>(skipTop),
-						 static_cast<uint32_t>(tileWidth),
-						 static_cast<uint32_t>(visibleHeight));
-			gs_matrix_pop();
+			drawTile(texture, stripTop + data->tileTops[i], canvasHeight);
 		}
 	}
 

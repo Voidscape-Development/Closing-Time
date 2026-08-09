@@ -519,6 +519,8 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_int(data, "padding_top", paddingTop);
 	obs_data_set_int(data, "padding_bottom", paddingBottom);
 	obs_data_set_int(data, "margin_x", marginX);
+	obs_data_set_double(data, "section_width", sectionWidth);
+	obs_data_set_string(data, "section_align", hAlignId(sectionAlign));
 	obs_data_set_int(data, "spacer_height", spacerHeight);
 	obs_data_set_bool(data, "visible", visible);
 	obs_data_set_bool(data, "use_secondary_style", useSecondaryStyle);
@@ -590,6 +592,15 @@ void Section::load(obs_data_t *data)
 	paddingTop = static_cast<int>(obs_data_get_int(data, "padding_top"));
 	paddingBottom = static_cast<int>(obs_data_get_int(data, "padding_bottom"));
 	marginX = static_cast<int>(obs_data_get_int(data, "margin_x"));
+	/*
+	 * Absent in every document written before the section box existed, all of which were laid
+	 * out across the full canvas width. A stored 0 would collapse the section to nothing, so a
+	 * missing key has to be told apart from one rather than inferred from the value.
+	 */
+	sectionWidth = obs_data_has_user_value(data, "section_width") ? obs_data_get_double(data, "section_width")
+								      : 1.0;
+	sectionWidth = std::clamp(sectionWidth, 0.0, 1.0);
+	sectionAlign = hAlignFromId(obs_data_get_string(data, "section_align"), HAlign::Center);
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
 	visible = obs_data_get_bool(data, "visible");
 	useSecondaryStyle = obs_data_get_bool(data, "use_secondary_style");

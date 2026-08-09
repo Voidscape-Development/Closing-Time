@@ -71,6 +71,18 @@ editor's field visibility. One struct keeps serialisation trivial and makes chan
 section's type in the designer a non-destructive operation: nothing is thrown away, the
 unused fields simply stop being read.
 
+### The section box
+
+Every section is laid out inside a box rather than across the canvas: `sectionWidth` is the
+share of the canvas width it occupies, `sectionAlign` where that share sits, and `marginX` an
+inset taken off each of the box's own edges. At the defaults — the full width, centred — the box
+*is* the canvas and the result is the plain inset from both edges that a margin has always given.
+
+The box exists because a margin alone can only ever centre things: it insets both sides equally,
+so a margin large enough to push a block towards one edge pushes it in from the other by exactly
+as much. Splitting "how wide" from "where" is what lets a run of credits sit hard against one
+side of the frame while still keeping a margin's worth of clear space off that side.
+
 ### Section types
 
 | Type | Content | Notes |
@@ -145,8 +157,18 @@ it widens the space between whole tiles rather than distorting them.
 `bridgeSplit` divides the space the two texts *share* rather than the whole width, which is
 what makes `Split` + `Fixed` + `0.5` reproduce the old hard-coded 50/50 layout exactly.
 With a filling bridge there is nothing to reserve, so the same number reads as a plain tab
-stop. Under `Natural`, two texts that together overflow the row shrink in proportion rather
-than letting whichever comes first swallow the row and wrap the other out of existence.
+stop — and a tab stop is a *starting* position, not a cap: a left text that overruns it takes
+the width it needs (up to whatever the right column leaves) and pushes the bridge along, rather
+than wrapping inside its column with most of the row sitting empty beside it. Rows that do fit
+still start their bridge at the same x, which is the whole point of the setting. Under a `Fixed`
+bridge the split is a real division of reserved space, so it stays a cap there. Under `Natural`,
+two texts that together overflow the row shrink in proportion rather than letting whichever comes
+first swallow the row and wrap the other out of existence.
+
+Column widths are measured through the same `QTextLayout` the paint pass lays the run out with,
+and rounded up to a whole pixel. A column sized from a natural width is handed that width straight
+back as its line width, and a measurement landing a fraction of a pixel under what the layout then
+asks for is enough to break the line — text wrapping inside a column measured to fit it.
 
 From there **one placement path covers every combination**: whatever the columns leave over
 becomes the bridge, and the row is aligned within the section by `bridgeRowAlign`. That
@@ -165,6 +187,13 @@ Finally, the three parts share a **baseline** rather than a top edge, anchored o
 reaches lowest so nothing climbs into the row above. That is what keeps a leader running
 through the middle of the text when the two sides are set at different sizes; when they
 match, every offset is zero and the result is what it always was.
+
+The baseline is taken from the **laid-out line**, not from `QFontMetricsF::ascent()`. The two
+part company as soon as anything other than the family's own engine supplies a glyph — one
+character falling back to another font is enough, and the gap runs from one pixel to eight
+depending on the families involved — and a row measured against one ascent while its glyphs are
+drawn against another sits its two sides visibly apart for no reason the document can explain.
+Measuring it the way the paint pass positions it is the same rule the rest of the layout follows.
 
 ### Bridge artwork
 
@@ -239,7 +268,17 @@ on would reflow every section bound to it and change the roll's duration. The co
 section can paint outside its own box, which the tile loop has to know about: `effectBleed()`
 reports the furthest any style reaches and `render()` widens the range of sections it visits
 per tile by that much, so a shadow cast across a tile boundary is drawn into both tiles
-instead of being cut off at the seam.
+instead of being cut off at the seam. A section that only places logos counts for that too —
+see below — so the bleed is taken over every visible section that sets text *or* draws artwork.
+
+**A logo casts the style's shadow as well.** A section's `TextStyle` is what says a shadow is
+wanted, and a wordmark used as a heading is that section's content as much as a line of type
+would be; leaving it flat while the headings either side of it were lifted off the background
+made the setting look broken rather than deliberate. The artwork is its own silhouette — its
+alpha is the shape — so there is no path to offset, only the image recoloured to the shadow's
+ink at the size it is about to be drawn, softened by the same box passes as everything else.
+The outline is deliberately not carried across: a stroke around a photograph's rectangle is a
+frame, which is a different feature wanting its own controls, not this one applied to art.
 
 **Effects render through glyph paths, plain text does not.** `QTextLayout::draw()` can only
 put a pen colour through the glyphs, so a style with a fill, an outline or a shadow is
@@ -315,8 +354,17 @@ offset 0 and travels upward, so the roll enters from the bottom. Total travel is
 space at its top and bottom.
 
 **Clipping.** Rather than a scissor rect — which lives in screen space and would fight the
-scene item's transform — each tile is drawn as the sub-rectangle that actually falls inside
-the canvas, via `gs_draw_sprite_subregion`. The background is a solid quad drawn underneath.
+scene item's transform — each tile is drawn as the part of itself that actually falls inside
+the canvas. The background is a solid quad drawn underneath.
+
+That clipped quad is built vertex by vertex rather than through `gs_draw_sprite_subregion`,
+because the scroll position is fractional and that call is not: it takes whole texels, so the
+visible height has to be rounded down and the quad ends up short of the canvas edge by the
+fraction that was dropped. What is left is a sliver along the bottom that never gets painted —
+a pixel or two once bilinear sampling has softened the last row — which content entering from
+below appears to pop through rather than slide into, and which is most obvious on a block of
+solid artwork such as a row of logos. Four vertices carrying the fraction in both the positions
+and the texture coordinates cost nothing per frame and land the edge exactly.
 
 ## Threading
 
@@ -393,9 +441,20 @@ Ownership is split cleanly with the properties dialog — **the designer owns co
 action**. On Apply, the designer re-reads the live settings and writes back only its own
 half, so edits made in the properties window while the designer was open are not clobbered.
 
+The section list opens wider than its stretch factor alone would give it, and folds away to a
+button in its own header rather than to a splitter drag. Dragging a pane shut is easy to do by
+accident and leaves nothing on screen saying how to undo it, so the splitter no longer collapses
+its children at all: the button is the one way in, and because it stays put when the pane folds,
+the one way back out.
+
 The editor keeps one widget set and hides the rows that do not apply to the selected type
 (`QFormLayout::setRowVisible`, Qt 6.4+) rather than rebuilding, which keeps focus and scroll
-position stable while clicking down the section list. Preview re-renders are debounced by
+position stable while clicking down the section list. A trailing spacer takes whatever height
+is left over: a `QVBoxLayout` with nothing to give its slack to shares it out between the items
+it has, which spread a short type's handful of rows down the pane with gaps between them. The
+entry table is the one thing worth growing, so it takes the slack instead whenever the selected
+type has one, and asks for enough height to read a run of entries at a glance. Preview
+re-renders are debounced by
 250 ms so typing does not re-rasterise the strip on every keystroke, and the render itself
 happens off-thread, so even a roll that takes seconds to rasterise leaves the window usable.
 
@@ -456,6 +515,9 @@ those fields in order. Import replaces or appends, per a checkbox.
 - Gradient fills, outlines and drop shadows on any style, preset or not.
 - Bridges drawn from SVG art rather than from a string of characters, from a table of types
   that takes a new one without the renderer or the editor changing.
+- A section box — a width and a placement — so a section can sit against one edge of the canvas
+  with its margin still holding it clear of that edge.
+- Logos cast the style's drop shadow, the same as text and bridge artwork.
 
 ## Verifying changes
 
@@ -482,6 +544,23 @@ with no effects and no bleed; a bridged row's leader picking up the same sweep a
 outline as the text either side of it; and a 30 px blur straddling the 2048 px tile seam,
 where the summed alpha of the rows either side of the boundary has to stay continuous rather
 than dropping to zero on one side.
+
+Row geometry and the section box were checked the same way, against the previous build as well
+as the new one so that each case is known to fail before it passes: every bridged row staying on
+one line across both sizing modes and both filling modes, including a left text that overruns its
+tab stop with the rest of the row free; both sides of a row keeping a shared baseline when one of
+them carries a character the family cannot supply and the line is really laid out against a
+fallback engine's ascent; a half-width section placed left, right and centred keeping its ink
+inside the box it was given while a full-width one still spans margin to margin; measure/render
+agreement over a document holding every section type; the `obs_data` round trip for the two new
+fields and a document written before them loading full width and centred; and a logo's shadow
+landing at its offset without changing the strip's height.
+
+The designer's layout was checked offscreen too, by giving the editor more height than it needs
+and measuring the largest run of empty space between its visible controls — 6 px for every
+section type with the trailing spacer, against 22 px for a Title and 123 px for a Logo Title
+without it — along with the entry table holding its minimum height and the section box surviving
+a round trip through the editor's widgets.
 
 Two pieces can already be tested without libobs at all, which is the shape the rest of the
 harness should take:
