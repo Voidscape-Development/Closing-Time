@@ -487,6 +487,13 @@ The dialog offers the fields that make sense for the target section type — lef
 Bridged, path/height for logo lists, text otherwise — defaulting to mapping columns onto
 those fields in order. Import replaces or appends, per a checkbox.
 
+The mapping sits in a panel beside the preview rather than in a strip above it: one row per
+column, scrolling down as far as the file is wide, so a dozen-column spreadsheet needs no
+sideways scrolling to reach its last column. Each row is labelled with the column's own name
+from the header, which is also what the preview's header shows, falling back to `Column N`
+when there is no header row or the name is blank. Toggling the header checkbox re-labels the
+rows in place rather than rebuilding them, so a mapping the user has already set survives.
+
 ## Known limitations
 
 1. **Logos are static.** No animated GIF/WebM logos. *Hybrid logos*: the strip stays as-is

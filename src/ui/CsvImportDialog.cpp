@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -100,21 +101,53 @@ CsvImportDialog::CsvImportDialog(SectionType type, QWidget *parent) : QDialog(pa
 
 	outer->addLayout(form);
 
-	outer->addWidget(new QLabel(moduleText("Import.MappingHint"), this));
+	auto *hint = new QLabel(moduleText("Import.MappingHint"), this);
+	hint->setWordWrap(true);
+	outer->addWidget(hint);
 
-	auto *mappingScroll = new QScrollArea(this);
+	/*
+	 * The mapping sits beside the preview rather than above it: a column of "name -> field"
+	 * rows scrolls down as far as the file is wide, so a spreadsheet with a dozen columns
+	 * needs no sideways scrolling to reach the last one, and each row is labelled with the
+	 * column's own name from the file rather than a position nobody can match up by eye.
+	 */
+	auto *content = new QHBoxLayout();
+
+	auto *mappingGroup = new QGroupBox(moduleText("Import.Mapping"), this);
+	/* Wide enough for a field name and its combo, capped so one long header cannot take over. */
+	mappingGroup->setMinimumWidth(200);
+	mappingGroup->setMaximumWidth(320);
+	auto *mappingGroupLayout = new QVBoxLayout(mappingGroup);
+
+	mappingEmpty = new QLabel(moduleText("Import.NoColumns"), mappingGroup);
+	mappingEmpty->setWordWrap(true);
+	mappingGroupLayout->addWidget(mappingEmpty, 0, Qt::AlignTop);
+
+	mappingScroll = new QScrollArea(mappingGroup);
 	mappingScroll->setWidgetResizable(true);
-	mappingScroll->setFixedHeight(72);
-	mappingRow = new QWidget(mappingScroll);
-	mappingLayout = new QHBoxLayout(mappingRow);
+	mappingScroll->setFrameShape(QFrame::NoFrame);
+	mappingScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	mappingPanel = new QWidget(mappingScroll);
+	mappingLayout = new QFormLayout(mappingPanel);
 	mappingLayout->setContentsMargins(0, 0, 0, 0);
-	mappingScroll->setWidget(mappingRow);
-	outer->addWidget(mappingScroll);
+	/*
+	 * Each name sits on its own line above its combo. The panel is narrow by design, and a
+	 * header like "Role on production" is common enough that squeezing it into a label column
+	 * beside the combo would clip it.
+	 */
+	mappingLayout->setRowWrapPolicy(QFormLayout::WrapAllRows);
+	mappingLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	mappingScroll->setWidget(mappingPanel);
+	mappingGroupLayout->addWidget(mappingScroll, 1);
+
+	content->addWidget(mappingGroup);
 
 	preview = new QTableWidget(this);
 	preview->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	preview->verticalHeader()->setVisible(false);
-	outer->addWidget(preview, 1);
+	content->addWidget(preview, 1);
+
+	outer->addLayout(content, 1);
 
 	statusLabel = new QLabel(this);
 	outer->addWidget(statusLabel);
@@ -128,6 +161,9 @@ CsvImportDialog::CsvImportDialog(SectionType type, QWidget *parent) : QDialog(pa
 	connect(headerBox, &QCheckBox::toggled, this, &CsvImportDialog::refreshPreview);
 	connect(buttons, &QDialogButtonBox::accepted, this, &CsvImportDialog::accept);
 	connect(buttons, &QDialogButtonBox::rejected, this, &CsvImportDialog::reject);
+
+	/* Starts with no file, so the panel starts on its "nothing to map yet" state. */
+	rebuildMappingPanel();
 }
 
 bool CsvImportDialog::replaceExisting() const
@@ -214,18 +250,17 @@ void CsvImportDialog::reloadFile()
 		statusLabel->setText(moduleText("Import.ReadFailed") + QStringLiteral(": ") + error);
 	}
 
-	rebuildMappingRow();
+	rebuildMappingPanel();
 	refreshPreview();
 }
 
-void CsvImportDialog::rebuildMappingRow()
+void CsvImportDialog::rebuildMappingPanel()
 {
-	/* The combos are children of the per-column cells, so clearing the row frees them. */
+	/* removeRow() deletes the label and the combo it holds, so the vectors go stale with it. */
 	mapping.clear();
-	while (QLayoutItem *item = mappingLayout->takeAt(0)) {
-		delete item->widget();
-		delete item;
-	}
+	mappingNames.clear();
+	while (mappingLayout->rowCount() > 0)
+		mappingLayout->removeRow(0);
 
 	int columnCount = 0;
 	for (const QStringList &row : table)
@@ -234,11 +269,10 @@ void CsvImportDialog::rebuildMappingRow()
 	const QVector<Field> fields = availableFields();
 
 	for (int column = 0; column < columnCount; ++column) {
-		auto *cell = new QWidget(mappingRow);
-		auto *layout = new QVBoxLayout(cell);
-		layout->setContentsMargins(0, 0, 0, 0);
+		auto *name = new QLabel(mappingPanel);
+		name->setWordWrap(true);
 
-		auto *box = new QComboBox(cell);
+		auto *box = new QComboBox(mappingPanel);
 		for (Field field : fields)
 			box->addItem(fieldLabel(field), static_cast<int>(field));
 
@@ -248,17 +282,39 @@ void CsvImportDialog::rebuildMappingRow()
 		 */
 		box->setCurrentIndex(column + 1 < fields.size() ? column + 1 : 0);
 
-		layout->addWidget(
-			new QLabel(QStringLiteral("%1 %2").arg(moduleText("Import.Column")).arg(column + 1), cell));
-		layout->addWidget(box);
-
-		mappingLayout->addWidget(cell);
+		mappingLayout->addRow(name, box);
+		mappingNames.append(name);
 		mapping.append(box);
 
 		connect(box, &QComboBox::currentIndexChanged, this, &CsvImportDialog::refreshPreview);
 	}
 
-	mappingLayout->addStretch();
+	/* Nothing to map until a file is loaded, and an empty panel does not say why. */
+	mappingEmpty->setVisible(columnCount == 0);
+	mappingScroll->setVisible(columnCount > 0);
+
+	updateMappingNames();
+}
+
+void CsvImportDialog::updateMappingNames()
+{
+	for (int column = 0; column < mappingNames.size(); ++column) {
+		const QString name = columnName(column);
+		mappingNames.at(column)->setText(name);
+		/* The panel is narrow, so a name the label has to wrap is worth spelling out. */
+		mappingNames.at(column)->setToolTip(name);
+	}
+}
+
+QString CsvImportDialog::columnName(int column) const
+{
+	if (headerBox->isChecked() && !table.isEmpty() && column < table.first().size()) {
+		const QString header = table.first().at(column).trimmed();
+		if (!header.isEmpty())
+			return header;
+	}
+
+	return QStringLiteral("%1 %2").arg(moduleText("Import.Column")).arg(column + 1);
 }
 
 void CsvImportDialog::refreshPreview()
@@ -275,13 +331,12 @@ void CsvImportDialog::refreshPreview()
 	preview->setColumnCount(columnCount);
 
 	QStringList headers;
-	for (int column = 0; column < columnCount; ++column) {
-		if (hasHeader && !table.isEmpty() && column < table.first().size())
-			headers.append(table.first().at(column));
-		else
-			headers.append(QStringLiteral("%1 %2").arg(moduleText("Import.Column")).arg(column + 1));
-	}
+	for (int column = 0; column < columnCount; ++column)
+		headers.append(columnName(column));
 	preview->setHorizontalHeaderLabels(headers);
+
+	/* The header row moving in or out of the data renames every column of the panel too. */
+	updateMappingNames();
 
 	const int dataRows = std::max(0, static_cast<int>(table.size()) - firstRow);
 	const int shown = std::min(dataRows, kPreviewRowLimit);
