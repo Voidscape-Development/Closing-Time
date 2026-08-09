@@ -393,8 +393,22 @@ struct Section {
 	/* Vertical padding above and below the section's content, in pixels. */
 	int paddingTop = 16;
 	int paddingBottom = 16;
-	/* Horizontal inset applied to both edges, in pixels. */
+	/* Horizontal inset applied to both edges of the section's own box, in pixels. */
 	int marginX = 0;
+	/*
+	 * The share of the canvas width the section's box occupies, 0.0 to 1.0, and where that
+	 * box sits within the canvas.
+	 *
+	 * `marginX` insets both edges of the box equally, so on its own it can only ever centre
+	 * the content: a margin large enough to push a block to one side pushes it in from the
+	 * other by just as much. These two are what let a section be narrower than the canvas and
+	 * then be placed against an edge, with the margin still holding it clear of that edge.
+	 *
+	 * At the defaults -- the full width, centred -- the box is the canvas and the layout is
+	 * exactly what it was before either setting existed.
+	 */
+	double sectionWidth = 1.0;
+	HAlign sectionAlign = HAlign::Center;
 	/* Spacer sections only: how tall the blank run is, in pixels. */
 	int spacerHeight = 120;
 

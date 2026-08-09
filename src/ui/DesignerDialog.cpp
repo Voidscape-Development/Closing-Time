@@ -39,6 +39,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -64,6 +65,9 @@ constexpr int kEditBurstMs = 900;
 
 /* How many steps back the designer can go before the oldest is forgotten. */
 constexpr int kUndoDepth = 100;
+
+/* Opening widths of the section list, the editor and the preview, in pixels. */
+const QList<int> kDefaultPaneSizes = {320, 560, 400};
 
 /*
  * One designer window per source. Keyed by the raw pointer purely for identity; the
@@ -168,21 +172,34 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	resize(1280, 800);
 
 	auto *outer = new QVBoxLayout(this);
-	auto *splitter = new QSplitter(Qt::Horizontal, this);
+	splitter = new QSplitter(Qt::Horizontal, this);
+	/* Folding a pane away is the collapse button's job now, not something a drag can do. */
+	splitter->setChildrenCollapsible(false);
 
 	/* --- left: the section list, in roll order --- */
-	auto *listPane = new QWidget(splitter);
+	listPane = new QWidget(splitter);
 	auto *listLayout = new QVBoxLayout(listPane);
 	listLayout->setContentsMargins(0, 0, 0, 0);
-	listLayout->addWidget(new QLabel(moduleText("Designer.Sections"), listPane));
+
+	auto *listHeader = new QHBoxLayout();
+	sectionsLabel = new QLabel(moduleText("Designer.Sections"), listPane);
+	collapseButton = new QToolButton(listPane);
+	collapseButton->setAutoRaise(true);
+	collapseButton->setArrowType(Qt::LeftArrow);
+	collapseButton->setToolTip(moduleText("Designer.Sections.Collapse"));
+	listHeader->addWidget(sectionsLabel, 1);
+	listHeader->addWidget(collapseButton);
+	listLayout->addLayout(listHeader);
 
 	sectionList = new SectionListWidget(listPane);
 	sectionList->setToolTip(moduleText("Designer.Sections.Tip"));
 	listLayout->addWidget(sectionList, 1);
 
-	auto *listButtons = new QHBoxLayout();
+	listButtonRow = new QWidget(listPane);
+	auto *listButtons = new QHBoxLayout(listButtonRow);
+	listButtons->setContentsMargins(0, 0, 0, 0);
 	const auto addListButton = [&](const char *key, auto slot) {
-		auto *button = new QPushButton(moduleText(key), listPane);
+		auto *button = new QPushButton(moduleText(key), listButtonRow);
 		listButtons->addWidget(button);
 		connect(button, &QPushButton::clicked, this, slot);
 		return button;
@@ -197,9 +214,9 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	 * Add is a menu button rather than a plain one: there are twelve section types and
 	 * picking the type up front is what decides which editor fields appear.
 	 */
-	auto *addButton = new QPushButton(moduleText("Designer.Add"), listPane);
+	auto *addButton = new QPushButton(moduleText("Designer.Add"), listButtonRow);
 	listButtons->insertWidget(0, addButton);
-	listLayout->addLayout(listButtons);
+	listLayout->addWidget(listButtonRow);
 
 	auto *addMenu = new QMenu(addButton);
 	for (SectionType type : allSectionTypes()) {
@@ -243,6 +260,11 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	splitter->setStretchFactor(0, 1);
 	splitter->setStretchFactor(1, 3);
 	splitter->setStretchFactor(2, 2);
+	/*
+	 * Wider than the stretch factors alone would open it: the list carries a section's own
+	 * label, and a roll's sections are told apart by reading them rather than by counting them.
+	 */
+	splitter->setSizes(kDefaultPaneSizes);
 	outer->addWidget(splitter, 1);
 
 	/* --- bottom: undo, import/export and the dialog buttons --- */
@@ -279,6 +301,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 
 	connect(refreshTimer, &QTimer::timeout, this, &DesignerDialog::refreshPreview);
 	connect(editBurstTimer, &QTimer::timeout, this, [this] { editBurstOpen = false; });
+	connect(collapseButton, &QToolButton::clicked, this, [this] { setSectionsCollapsed(!sectionsCollapsed); });
 	connect(undoButton, &QPushButton::clicked, this, &DesignerDialog::undo);
 	connect(redoButton, &QPushButton::clicked, this, &DesignerDialog::redo);
 	connect(sectionList, &QListWidget::currentRowChanged, this, &DesignerDialog::onSelectionChanged);
@@ -449,6 +472,40 @@ void DesignerDialog::redo()
 	undoStack.append(snapshot());
 	restore(redoStack.takeLast());
 	refreshUndoButtons();
+}
+
+void DesignerDialog::setSectionsCollapsed(bool collapsed)
+{
+	if (collapsed == sectionsCollapsed)
+		return;
+
+	/* Taken before anything is hidden, so the pane comes back the width it went away at. */
+	if (collapsed)
+		expandedSizes = splitter->sizes();
+
+	sectionsCollapsed = collapsed;
+
+	sectionsLabel->setVisible(!collapsed);
+	sectionList->setVisible(!collapsed);
+	listButtonRow->setVisible(!collapsed);
+
+	collapseButton->setArrowType(collapsed ? Qt::RightArrow : Qt::LeftArrow);
+	collapseButton->setToolTip(moduleText(collapsed ? "Designer.Sections.Expand" : "Designer.Sections.Collapse"));
+
+	/*
+	 * The pane is pinned to the width of the button rather than hidden outright: the button is
+	 * what reopens it, so it has to stay on screen and stay where it was.
+	 */
+	if (collapsed) {
+		/* Re-laid out first, so the width asked for is the folded one and not the stale one. */
+		listPane->layout()->activate();
+		listPane->setMaximumWidth(
+			std::max(collapseButton->sizeHint().width(), listPane->layout()->minimumSize().width()));
+		return;
+	}
+
+	listPane->setMaximumWidth(QWIDGETSIZE_MAX);
+	splitter->setSizes(expandedSizes.size() == splitter->count() ? expandedSizes : kDefaultPaneSizes);
 }
 
 void DesignerDialog::refreshUndoButtons()

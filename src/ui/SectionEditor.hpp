@@ -35,6 +35,7 @@ class QPushButton;
 class QSpinBox;
 class QTableWidget;
 class QToolButton;
+class QVBoxLayout;
 
 namespace closingtime {
 
@@ -199,6 +200,8 @@ private:
 	QSpinBox *paddingTop = nullptr;
 	QSpinBox *paddingBottom = nullptr;
 	QSpinBox *marginX = nullptr;
+	QSpinBox *sectionWidth = nullptr;
+	QComboBox *sectionAlign = nullptr;
 	QSpinBox *spacerHeight = nullptr;
 
 	StyleEditor *primaryStyle = nullptr;
@@ -207,6 +210,14 @@ private:
 
 	QGroupBox *entriesGroup = nullptr;
 	QTableWidget *entryTable = nullptr;
+
+	/*
+	 * Absorbs whatever height is left once the visible rows have been laid out. Without it a
+	 * type carrying few fields has its rows spread down the pane by the leftover space rather
+	 * than sitting one under the next.
+	 */
+	QVBoxLayout *outerLayout = nullptr;
+	int trailingStretchIndex = -1;
 
 	QVector<StylePreset> presets;
 	/*

@@ -56,6 +56,15 @@ constexpr int kMaxStripHeight = 200000;
 /* Drawn in place of a logo whose file is missing or undecodable. */
 constexpr int kPlaceholderAspectNumerator = 2;
 
+/*
+ * A line width wide enough that nothing ever breaks against it, for the passes that want a
+ * run's natural width rather than a wrapped one.
+ */
+constexpr qreal kUnboundedWidth = 1.0e7;
+
+/* Largest buffer a logo's shadow is softened in, in pixels. A blur past this is drawn hard. */
+constexpr qint64 kMaxLogoShadowPixels = 64 * 1024 * 1024;
+
 QFont makeFont(const TextStyle &style)
 {
 	QFont font(style.family);
@@ -67,6 +76,18 @@ QFont makeFont(const TextStyle &style)
 	font.setBold(style.bold);
 	font.setItalic(style.italic);
 	return font;
+}
+
+/*
+ * The paragraph as QTextLayout wants it. QTextLayout only breaks on explicit line separators,
+ * not on the plain newlines the user types, so everything that lays a run out -- measuring or
+ * painting -- has to go through the same substitution or the two disagree about line count.
+ */
+QString layoutContent(const QString &text)
+{
+	QString content = text;
+	content.replace(QLatin1Char('\n'), QChar::LineSeparator);
+	return content;
 }
 
 qreal alignOffset(HAlign align, qreal available, qreal used)
@@ -253,11 +274,7 @@ int layoutPreparedText(QPainter *painter, const QString &text, const TextStyle &
 
 	const QFontMetricsF metrics(font);
 
-	/* QTextLayout only breaks on explicit line separators, not on plain newlines. */
-	QString content = text;
-	content.replace(QLatin1Char('\n'), QChar::LineSeparator);
-
-	QTextLayout layout(content, font);
+	QTextLayout layout(layoutContent(text), font);
 	QTextOption option;
 	option.setWrapMode(wrap ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
 	/*
@@ -306,28 +323,74 @@ int layoutText(QPainter *painter, const QString &text, const TextStyle &style, q
 	return layoutPreparedText(painter, text, style, makeFont(style), style.align, x, y, width);
 }
 
-/* Width the text wants on its widest line, before any wrapping is imposed on it. */
+/*
+ * Width the text wants on its widest line, before any wrapping is imposed on it.
+ *
+ * Measured through the same QTextLayout the paint pass lays the run out with, rather than
+ * through QFontMetricsF, and rounded up to a whole pixel. A column sized from this is handed
+ * straight back to that layout as its line width, so a natural width landing a fraction of a
+ * pixel under what the layout then asks for is enough to break the line -- text wrapping
+ * inside a column measured to fit it, with the space it could have used sitting empty beside
+ * it. Rounding up costs at most a pixel of column and cannot round the other way.
+ */
 qreal naturalTextWidth(const QString &text, const TextStyle &style)
 {
 	if (text.isEmpty())
 		return 0.0;
 
-	const QFontMetricsF metrics(makeFont(style));
+	QTextLayout layout(layoutContent(text), makeFont(style));
+	QTextOption option;
+	option.setWrapMode(QTextOption::NoWrap);
+	layout.setTextOption(option);
 
 	qreal widest = 0.0;
-	for (const QString &line : text.split(QLatin1Char('\n')))
-		widest = std::max(widest, metrics.horizontalAdvance(line));
+	layout.beginLayout();
+	for (;;) {
+		QTextLine line = layout.createLine();
+		if (!line.isValid())
+			break;
 
-	return widest;
+		line.setLineWidth(kUnboundedWidth);
+		widest = std::max(widest, line.naturalTextWidth());
+	}
+	layout.endLayout();
+
+	return std::ceil(widest);
 }
 
-/* Distance from the top of a run of this text down to its first baseline. */
-qreal firstBaseline(const QString &text, const TextStyle &style)
+/*
+ * Distance from the top of a run of this text down to the baseline of its first line, when laid
+ * out into `width` pixels.
+ *
+ * Taken from the laid-out line rather than from QFontMetricsF::ascent(), because the line is
+ * what the paint pass positions the glyphs against. The two agree for a run set entirely in the
+ * family's own engine and part company as soon as anything else supplies a glyph -- a fallback
+ * font for one character, a different engine picked for the run's script -- and a row whose
+ * parts are measured against one ascent and drawn against another sits its sides a pixel or two
+ * apart for no reason the document can explain.
+ *
+ * Empty text has no baseline to share and reports none, so a bridged row with one side blank is
+ * anchored on the side that is actually there.
+ */
+qreal firstBaseline(const QString &text, const TextStyle &style, qreal width)
 {
 	if (text.isEmpty())
 		return 0.0;
 
-	return QFontMetricsF(makeFont(style)).ascent();
+	const QFont font = makeFont(style);
+	QTextLayout layout(layoutContent(text), font);
+	QTextOption option;
+	option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+	layout.setTextOption(option);
+
+	layout.beginLayout();
+	QTextLine line = layout.createLine();
+	if (line.isValid())
+		line.setLineWidth(std::max(0.0, width));
+	layout.endLayout();
+
+	/* A width too small to lay anything out into still has the font's own ascent to offer. */
+	return line.isValid() ? line.ascent() : QFontMetricsF(font).ascent();
 }
 
 /* The size a logo will be drawn at once it is fitted into `available` pixels of width. */
@@ -346,7 +409,60 @@ QSize logoDrawSize(const QImage &image, const LogoRef &ref, int available)
 	return size;
 }
 
-void paintLogo(QPainter *painter, const QImage &image, const QRect &rect)
+/*
+ * The shadow a logo casts, softened exactly the way the text's and the bridge art's are.
+ *
+ * The artwork is its own silhouette -- its alpha is the shape -- so there is no path to offset
+ * here, only the image recoloured to the shadow's ink at the size it is about to be drawn. Like
+ * every other effect in the renderer this paints outside the section's box without growing it,
+ * which is why `effectBleed` has to count the sections that place logos as well as the ones that
+ * set text.
+ */
+void paintLogoShadow(QPainter *painter, const QImage &image, const QRect &rect, const TextShadow &shadow)
+{
+	if (rect.isEmpty())
+		return;
+
+	const QImage ink = tintedImage(image.scaled(rect.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+					       .convertToFormat(QImage::Format_ARGB32_Premultiplied),
+				       shadow.color);
+	if (ink.isNull())
+		return;
+
+	const QPointF at = QPointF(rect.topLeft()) + QPointF(shadow.offsetX, shadow.offsetY);
+	const int radius = std::clamp(qRound(shadow.blur / 2.0), 0, 100);
+
+	if (radius < 1) {
+		painter->drawImage(at, ink);
+		return;
+	}
+
+	/* Three passes of box radius r reach 3r, so that is the margin the blur needs. */
+	const int margin = radius * 3 + 1;
+	const QSize size(ink.width() + margin * 2, ink.height() + margin * 2);
+
+	if (static_cast<qint64>(size.width()) * size.height() > kMaxLogoShadowPixels) {
+		obs_log(LOG_WARNING, "logo shadow blur too large to buffer; drawing it hard instead");
+		painter->drawImage(at, ink);
+		return;
+	}
+
+	QImage buffer(size, QImage::Format_ARGB32_Premultiplied);
+	if (buffer.isNull())
+		return;
+
+	buffer.fill(Qt::transparent);
+
+	QPainter bufferPainter(&buffer);
+	bufferPainter.drawImage(QPoint(margin, margin), ink);
+	bufferPainter.end();
+
+	blurImage(buffer, radius);
+
+	painter->drawImage(at - QPointF(margin, margin), buffer);
+}
+
+void paintLogo(QPainter *painter, const QImage &image, const QRect &rect, const TextStyle &style)
 {
 	if (!painter)
 		return;
@@ -362,6 +478,9 @@ void paintLogo(QPainter *painter, const QImage &image, const QRect &rect)
 		painter->restore();
 		return;
 	}
+
+	if (style.shadow.enabled)
+		paintLogoShadow(painter, image, rect, style.shadow);
 
 	painter->drawImage(rect, image);
 }
@@ -465,11 +584,22 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 		const qreal reserved = section.bridgeFill == BridgeFill::Fixed ? naturalBridge : 0.0;
 		leftWidth = section.bridgeSplit * std::max(0.0, contentWidth - reserved);
 
-		if (section.bridgeFill == BridgeFill::Fixed)
+		if (section.bridgeFill == BridgeFill::Fixed) {
 			rightWidth = std::max(0.0, contentWidth - leftWidth - naturalBridge);
-		else
+		} else {
 			rightWidth = std::min(naturalTextWidth(entry.secondaryText, rightStyle),
 					      std::max(0.0, contentWidth - leftWidth));
+
+			/*
+			 * With a filling bridge the split is a tab stop rather than a cap: there is
+			 * nothing reserved on the other side of it, so a left text that overruns it
+			 * takes what it needs and pushes the bridge along instead of wrapping inside
+			 * its column with the gap beside it left empty. Rows that do fit still start
+			 * their bridge at the same x, which is the whole point of the setting.
+			 */
+			leftWidth = std::clamp(naturalTextWidth(entry.text, leftStyle), leftWidth,
+					       std::max(leftWidth, contentWidth - rightWidth));
+		}
 	} else {
 		leftWidth = naturalTextWidth(entry.text, leftStyle);
 		rightWidth = naturalTextWidth(entry.secondaryText, rightStyle);
@@ -656,8 +786,20 @@ int paintBridge(QPainter *painter, const PreparedBridge &bridge, const Section &
 int layoutSection(QPainter *painter, const Section &section, const Document &document, LogoCache *logos,
 		  BridgeArtCache *bridges, int top)
 {
-	const int contentX = section.marginX;
-	const int contentWidth = std::max(1, document.width - section.marginX * 2);
+	/*
+	 * The section's box: a share of the canvas width, placed within it by `sectionAlign`, with
+	 * `marginX` taken off each of the box's own edges. A margin alone can only ever centre the
+	 * content, since it insets both sides equally; the box is what lets a section sit against
+	 * one edge of the canvas with the margin still holding it clear of that edge.
+	 *
+	 * At the defaults -- the full width, centred -- the box is the canvas and this is exactly
+	 * the inset from both edges that it has always been.
+	 */
+	const qreal boxWidth = std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
+	const int boxX = qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
+
+	const int contentX = boxX + section.marginX;
+	const int contentWidth = std::max(1, qRound(boxWidth) - section.marginX * 2);
 
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
 	const TextStyle &style = document.effectiveStyle(section);
@@ -680,7 +822,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const QImage image = logos->get(section.logo.path, section.logo.maxHeight);
 		const QSize size = logoDrawSize(image, section.logo, contentWidth);
 		const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
-		paintLogo(painter, image, QRect(QPoint(x, y), size));
+		paintLogo(painter, image, QRect(QPoint(x, y), size), style);
 		y += size.height();
 		break;
 	}
@@ -699,7 +841,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		/* The logo and the text are centred against each other within the row. */
 		paintLogo(painter, image,
-			  QRect(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize));
+			  QRect(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize), style);
 		layoutText(painter, section.text, style, row.textX, textTop, row.textWidth);
 
 		if (section.logoPlacement == LogoPlacement::Bridged) {
@@ -707,9 +849,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			/*
 			 * Hung off the text's own baseline, so a leader lands on it whatever the
 			 * bridge is made of: text in the same font needs no offset at all, and art
-			 * sits on the same line rather than on the top of the text's box.
+			 * sits on the same line rather than on the top of the text's box. A row with
+			 * no text at all still has the font's own ascent to hang it from.
 			 */
-			const qreal baseline = textTop + QFontMetricsF(makeFont(style)).ascent();
+			const qreal textAscent = section.text.isEmpty()
+							 ? QFontMetricsF(makeFont(style)).ascent()
+							 : firstBaseline(section.text, style, row.textWidth);
+			const qreal baseline = textTop + textAscent;
 			paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
 				    baseline - bridge.ascent(section), row.bridgeWidth);
 		}
@@ -733,8 +879,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * sides are set at different sizes. It is anchored on whichever part
 			 * reaches lowest, so nothing climbs above the row into the one before it.
 			 */
-			const qreal leftAscent = firstBaseline(entry.text, style);
-			const qreal rightAscent = firstBaseline(entry.secondaryText, rightStyle);
+			const qreal leftAscent = firstBaseline(entry.text, style, row.leftWidth);
+			const qreal rightAscent = firstBaseline(entry.secondaryText, rightStyle, row.rightWidth);
 			const qreal bridgeAscent = bridge.ascent(section);
 			const qreal baseline = std::max({leftAscent, rightAscent, bridgeAscent});
 
@@ -783,7 +929,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const QImage image = logos->get(entry.logo.path, entry.logo.maxHeight);
 			const QSize size = logoDrawSize(image, entry.logo, contentWidth);
 			const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
-			paintLogo(painter, image, QRect(QPoint(x, y), size));
+			paintLogo(painter, image, QRect(QPoint(x, y), size), style);
 			y += size.height() + section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -823,7 +969,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					const QSize size = logoDrawSize(image, entry.logo, columnWidth);
 					const int logoX =
 						x + qRound(alignOffset(style.align, columnWidth, size.width()));
-					paintLogo(painter, image, QRect(QPoint(logoX, y), size));
+					paintLogo(painter, image, QRect(QPoint(logoX, y), size), style);
 					rowHeight = std::max(rowHeight, size.height());
 				} else {
 					const int height = layoutText(painter, entry.text, style, x, y, columnWidth);
@@ -860,7 +1006,8 @@ int effectBleed(const Document &document)
 	double bleed = 0.0;
 
 	for (const Section &section : document.sections) {
-		if (!section.visible || !sectionUsesText(section.type))
+		/* Logos cast the style's shadow as well, so a section that only places art counts too. */
+		if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type)))
 			continue;
 
 		bleed = std::max(bleed, document.effectiveStyle(section).effectBleed());
