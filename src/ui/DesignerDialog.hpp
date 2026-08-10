@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QDialog>
 #include <QListWidget>
+#include <QVector>
 
 #include <memory>
 
@@ -67,6 +68,20 @@ protected:
  * it. Must be called from the UI thread.
  */
 void openDesignerFor(obs_source_t *source);
+
+/*
+ * The same, from anywhere. Hotkeys arrive on the hotkey thread and a window can only be opened
+ * on the UI one, so the call is queued; a weak reference makes a source destroyed in between the
+ * two ends of that queue a no-op rather than a crash.
+ */
+void openDesignerForAsync(obs_source_t *source);
+
+/*
+ * Opens the designer for one of `candidates`, asking which when there is more than one and
+ * saying so when there are none. This is the way in that does not start from a source's
+ * properties window. Must be called from the UI thread.
+ */
+void openDesignerForOneOf(const QVector<OBSSource> &candidates);
 
 /* Closes any designer window bound to `source`. Safe to call for sources with none. */
 void closeDesignerFor(obs_source_t *source);

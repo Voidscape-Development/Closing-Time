@@ -44,6 +44,7 @@ bool obs_module_load(void)
 	signal_handler_add(obs_get_signal_handler(), "void closing_time_finished(ptr source)");
 
 	closingtime::registerCreditsSource();
+	closingtime::registerDesignerToolsMenu();
 
 	obs_log(LOG_INFO, "Closing Time loaded (version %s)", PLUGIN_VERSION);
 	return true;

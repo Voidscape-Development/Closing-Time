@@ -210,6 +210,8 @@ private:
 
 	QGroupBox *entriesGroup = nullptr;
 	QTableWidget *entryTable = nullptr;
+	/* Hidden for the entry types that have no logo path to set. */
+	QToolButton *setLogoButton = nullptr;
 
 	/*
 	 * Absorbs whatever height is left once the visible rows have been laid out. Without it a

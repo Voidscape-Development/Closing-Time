@@ -27,4 +27,10 @@ inline constexpr const char *kCreditsSourceId = "closing_time_credits";
 
 void registerCreditsSource();
 
+/*
+ * Adds the Tools menu entry that opens the designer for a credit roll without going through
+ * that source's properties window. Must be called from the UI thread, after the frontend exists.
+ */
+void registerDesignerToolsMenu();
+
 } // namespace closingtime

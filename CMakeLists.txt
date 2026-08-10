@@ -68,6 +68,8 @@ target_sources(
     src/ui/SectionEditor.hpp
     src/ui/StyleControls.cpp
     src/ui/StyleControls.hpp
+    src/ui/ToolButtons.cpp
+    src/ui/ToolButtons.hpp
     src/util/CsvParser.cpp
     src/util/CsvParser.hpp
 )

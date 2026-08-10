@@ -28,6 +28,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLabel>
 #include <QPainter>
 #include <QSpinBox>
+#include <QStyle>
+#include <QStyleOptionButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -50,6 +52,19 @@ constexpr int kCheckerSize = 8;
 /* Columns of the stop table. */
 enum StopColumn { StopPosition = 0, StopColour = 1, StopColumnCount = 2 };
 
+/*
+ * Tallest the stop table is allowed to get before it starts scrolling, in pixels. It sizes
+ * itself to the stops it actually holds up to this, so a sweep built from six or seven stops is
+ * read down the list rather than through a scroll bar four rows tall.
+ */
+constexpr int kMaxStopTableHeight = 320;
+
+/* Breathing room around a stop's own controls, so a row is not the exact height of a spin box. */
+constexpr int kStopRowPadding = 4;
+
+/* Checkerboard cell size behind a swatch carrying alpha. */
+constexpr int kSwatchCheckerSize = 5;
+
 /* Set on each cell widget so a focus event can say which stop it belongs to. */
 constexpr const char *kStopRowProperty = "closingtime_stop_row";
 
@@ -71,7 +86,13 @@ void ColourButton::setColour(const QColor &colour)
 
 void ColourButton::pick()
 {
-	const QColor picked = QColorDialog::getColor(current, this, dialogTitle, QColorDialog::ShowAlphaChannel);
+	/*
+	 * Parented to the window rather than to this button. A dialog is a child of whatever it is
+	 * parented to for style purposes as well as for stacking, so hanging one off a widget hands
+	 * it that widget's styling -- which is how the colour dialog came to be painted in the very
+	 * colour it was being opened to change.
+	 */
+	const QColor picked = QColorDialog::getColor(current, window(), dialogTitle, QColorDialog::ShowAlphaChannel);
 	if (!picked.isValid() || picked == current)
 		return;
 
@@ -84,13 +105,64 @@ void ColourButton::pick()
 void ColourButton::refresh()
 {
 	setText(current.name(QColor::HexArgb));
+	update();
+}
+
+/*
+ * The swatch is painted rather than set as a stylesheet background.
+ *
+ * A stylesheet does not stop at the widget it is set on: it reaches everything beneath that
+ * widget in the object tree, and a dialog parented to a widget is beneath it for styling as much
+ * as for stacking. So the colour dialog this button opens was being painted in the very colour it
+ * had been opened to change -- and so was every control inside it. Painting the swatch here, and
+ * hanging the dialog off the window instead, leaves nothing behind to cascade.
+ *
+ * It also stays crisp at whatever DPI OBS is running at, which was the reason the stylesheet was
+ * preferred to an icon in the first place: a painted rectangle has no fixed resolution to lose.
+ */
+void ColourButton::paintEvent(QPaintEvent *event)
+{
+	/* The frame, the focus ring and the pressed state, all as the running theme draws them. */
+	QPushButton::paintEvent(event);
+
+	QStyleOptionButton option;
+	initStyleOption(&option);
+
+	const QRect swatch = style()->subElementRect(QStyle::SE_PushButtonContents, &option, this);
+	if (swatch.isEmpty())
+		return;
+
+	QPainter painter(this);
+
+	/* Colours here carry alpha, so the swatch needs something to be transparent against. */
+	if (current.alpha() < 255) {
+		painter.fillRect(swatch, QColor(48, 48, 48));
+		for (int y = 0; y * kSwatchCheckerSize < swatch.height(); ++y) {
+			for (int x = 0; x * kSwatchCheckerSize < swatch.width(); ++x) {
+				if ((x + y) % 2 == 0)
+					continue;
+
+				painter.fillRect(QRect(swatch.left() + x * kSwatchCheckerSize,
+						       swatch.top() + y * kSwatchCheckerSize, kSwatchCheckerSize,
+						       kSwatchCheckerSize)
+							 .intersected(swatch),
+						 QColor(62, 62, 62));
+			}
+		}
+	}
+
+	painter.fillRect(swatch, current);
+
 	/*
-	 * The swatch is drawn as a stylesheet background rather than an icon so it stays crisp
-	 * at whatever DPI the user's OBS window is running at.
+	 * The hex code goes back on top of the fill, because the theme's own text colour is no
+	 * longer readable against it. Composited over the checkerboard, a colour with alpha reads
+	 * lighter than its own lightness says, so the test is made against what is actually shown.
 	 */
-	setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
-			      .arg(current.name(QColor::HexRgb),
-				   current.lightness() > 127 ? QStringLiteral("#000") : QStringLiteral("#fff")));
+	const QColor shown = QColor::fromRgbF(current.redF() * current.alphaF() + 0.22 * (1.0 - current.alphaF()),
+					      current.greenF() * current.alphaF() + 0.22 * (1.0 - current.alphaF()),
+					      current.blueF() * current.alphaF() + 0.22 * (1.0 - current.alphaF()));
+	painter.setPen(shown.lightness() > 127 ? Qt::black : Qt::white);
+	painter.drawText(swatch, Qt::AlignCenter, text());
 }
 
 /* -------------------------------------------------------------------- GradientPreview */
@@ -172,8 +244,7 @@ GradientEditor::GradientEditor(QWidget *parent) : QWidget(parent)
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
 	table->setSelectionMode(QAbstractItemView::SingleSelection);
 	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-	/* Four stops fit without scrolling, which covers all but the most elaborate sweeps. */
-	table->setMaximumHeight(160);
+	/* Height follows the stop count -- see updateTableHeight -- rather than being fixed here. */
 	layout->addWidget(table);
 
 	auto *buttons = new QHBoxLayout();
@@ -270,11 +341,36 @@ void GradientEditor::rebuildTable()
 			cell->setProperty(kStopRowProperty, row);
 			cell->installEventFilter(this);
 		}
+
+		/*
+		 * Rows are sized from the controls they hold. A cell widget is stretched to whatever
+		 * the row happens to be, so leaving the row at the header's default height is what
+		 * decides whether a spin box is drawn at its own size or squashed into less.
+		 */
+		table->setRowHeight(row, std::max(position->sizeHint().height(), colour->sizeHint().height()) +
+						 kStopRowPadding);
 	}
 
 	table->resizeColumnToContents(StopPosition);
+	updateTableHeight();
 	removeButton->setEnabled(false);
 	preview->setSpec(fill, current);
+}
+
+/*
+ * The table is exactly as tall as the stops it holds, up to a cap. A fixed height sized for four
+ * stops turned every sweep past that into a four-row window scrolled through one row at a time,
+ * while a two-stop gradient -- the common case -- was given empty rows it had no use for.
+ */
+void GradientEditor::updateTableHeight()
+{
+	int total = table->horizontalHeader()->sizeHint().height() + table->frameWidth() * 2;
+	for (int row = 0; row < table->rowCount(); ++row)
+		total += table->rowHeight(row);
+
+	const int height = std::min(total, kMaxStopTableHeight);
+	table->setMinimumHeight(height);
+	table->setMaximumHeight(height);
 }
 
 bool GradientEditor::eventFilter(QObject *watched, QEvent *event)

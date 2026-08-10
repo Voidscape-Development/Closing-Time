@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QInputDialog>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -38,6 +39,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QStringList>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -47,6 +49,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "render/RenderThread.hpp"
 #include "ui/PreviewWidget.hpp"
 #include "ui/SectionEditor.hpp"
+#include "ui/ToolButtons.hpp"
 
 namespace closingtime {
 
@@ -101,6 +104,60 @@ void openDesignerFor(obs_source_t *source)
 
 	auto *dialog = new DesignerDialog(source, mainWindow());
 	dialog->show();
+}
+
+void openDesignerForAsync(obs_source_t *source)
+{
+	if (!source)
+		return;
+
+	/*
+	 * A hotkey callback runs on the hotkey thread, and the interaction window's callbacks run
+	 * inside an event that has not finished being delivered. Both want a window opened, which
+	 * only the UI thread can do, so the request is queued rather than serviced where it lands.
+	 * The weak reference is what makes a source destroyed in between the two a no-op.
+	 */
+	auto *weak = new OBSWeakSourceAutoRelease(obs_source_get_weak_source(source));
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			const std::unique_ptr<OBSWeakSourceAutoRelease> held(
+				static_cast<OBSWeakSourceAutoRelease *>(param));
+
+			OBSSourceAutoRelease strong = obs_weak_source_get_source(*held);
+			if (strong)
+				openDesignerFor(strong);
+		},
+		weak, false);
+}
+
+void openDesignerForOneOf(const QVector<OBSSource> &candidates)
+{
+	if (candidates.isEmpty()) {
+		QMessageBox::information(mainWindow(), moduleText("Designer.Title"), moduleText("Designer.NoSources"));
+		return;
+	}
+
+	if (candidates.size() == 1) {
+		openDesignerFor(candidates.constFirst());
+		return;
+	}
+
+	QStringList names;
+	names.reserve(candidates.size());
+	for (const OBSSource &source : candidates)
+		names.append(QString::fromUtf8(obs_source_get_name(source)));
+
+	bool accepted = false;
+	const QString chosen = QInputDialog::getItem(mainWindow(), moduleText("Designer.Title"),
+						     moduleText("Designer.ChooseSource"), names, 0, false, &accepted);
+	if (!accepted)
+		return;
+
+	/* Back through the snapshot the picker was built from, rather than by looking the name up. */
+	const int index = names.indexOf(chosen);
+	if (index >= 0)
+		openDesignerFor(candidates.at(index));
 }
 
 void closeDesignerFor(obs_source_t *source)
@@ -198,24 +255,29 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	listButtonRow = new QWidget(listPane);
 	auto *listButtons = new QHBoxLayout(listButtonRow);
 	listButtons->setContentsMargins(0, 0, 0, 0);
-	const auto addListButton = [&](const char *key, auto slot) {
-		auto *button = new QPushButton(moduleText(key), listButtonRow);
+	const auto addListButton = [&](QToolButton *button, auto slot) {
 		listButtons->addWidget(button);
-		connect(button, &QPushButton::clicked, this, slot);
-		return button;
+		connect(button, &QToolButton::clicked, this, slot);
 	};
-
-	addListButton("Designer.Duplicate", &DesignerDialog::duplicateSection);
-	addListButton("Designer.Remove", &DesignerDialog::removeSection);
-	addListButton("Designer.MoveUp", [this] { moveSection(-1); });
-	addListButton("Designer.MoveDown", [this] { moveSection(1); });
 
 	/*
 	 * Add is a menu button rather than a plain one: there are twelve section types and
 	 * picking the type up front is what decides which editor fields appear.
 	 */
-	auto *addButton = new QPushButton(moduleText("Designer.Add"), listButtonRow);
-	listButtons->insertWidget(0, addButton);
+	auto *addButton = makeGlyphButton(listButtonRow, QStringLiteral("+"), moduleText("Designer.Add"));
+	addButton->setPopupMode(QToolButton::InstantPopup);
+	listButtons->addWidget(addButton);
+
+	addListButton(makeGlyphButton(listButtonRow, QStringLiteral("−"), moduleText("Designer.Remove")),
+		      &DesignerDialog::removeSection);
+	addListButton(makeArrowButton(listButtonRow, Qt::UpArrow, moduleText("Designer.MoveUp")),
+		      [this] { moveSection(-1); });
+	addListButton(makeArrowButton(listButtonRow, Qt::DownArrow, moduleText("Designer.MoveDown")),
+		      [this] { moveSection(1); });
+	/* No glyph says "duplicate" without a theme icon behind it, so this one keeps its word. */
+	addListButton(makeLabelledButton(listButtonRow, moduleText("Designer.Duplicate")),
+		      &DesignerDialog::duplicateSection);
+	listButtons->addStretch();
 	listLayout->addWidget(listButtonRow);
 
 	auto *addMenu = new QMenu(addButton);
@@ -247,6 +309,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	previewLayout->setContentsMargins(0, 0, 0, 0);
 	previewLayout->addWidget(new QLabel(moduleText("Designer.Preview"), previewPane));
 	preview = new PreviewWidget(previewPane);
+	preview->setToolTip(moduleText("Designer.Preview.Tip"));
 	previewLayout->addWidget(preview, 1);
 	durationLabel = new QLabel(previewPane);
 	previewLayout->addWidget(durationLabel);

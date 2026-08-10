@@ -44,6 +44,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <functional>
 
 #include "ui/CsvImportDialog.hpp"
+#include "ui/ToolButtons.hpp"
 
 namespace closingtime {
 
@@ -56,6 +57,9 @@ QString moduleText(const char *key)
 
 /* Height the entry table asks for before it starts scrolling, in pixels. */
 constexpr int kEntryTableMinimumHeight = 260;
+
+/* Width of a logo list's height column, which never holds more than four digits and a suffix. */
+constexpr int kEntryHeightColumnWidth = 80;
 
 /* Image formats QImageReader can decode without extra plugins on every OBS platform. */
 QString imageFilter()
@@ -638,20 +642,29 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	entriesLayout->addWidget(entryTable);
 
 	auto *buttons = new QHBoxLayout();
-	const auto addButton = [&](const char *key, auto slot) {
-		auto *button = new QPushButton(moduleText(key), entriesGroup);
+	const auto addButton = [&](QToolButton *button, auto slot) {
 		buttons->addWidget(button);
-		connect(button, &QPushButton::clicked, this, slot);
+		connect(button, &QToolButton::clicked, this, slot);
 		return button;
 	};
 
-	addButton("Designer.AddEntry", &SectionEditor::addEntry);
-	addButton("Designer.RemoveEntry", &SectionEditor::removeSelectedEntries);
-	addButton("Designer.MoveUp", [this] { moveSelectedEntry(-1); });
-	addButton("Designer.MoveDown", [this] { moveSelectedEntry(1); });
-	addButton("Designer.SetLogo", &SectionEditor::browseForEntryLogo);
+	addButton(makeGlyphButton(entriesGroup, QStringLiteral("+"), moduleText("Designer.AddEntry")),
+		  &SectionEditor::addEntry);
+	addButton(makeGlyphButton(entriesGroup, QStringLiteral("−"), moduleText("Designer.RemoveEntry")),
+		  &SectionEditor::removeSelectedEntries);
+	addButton(makeArrowButton(entriesGroup, Qt::UpArrow, moduleText("Designer.MoveUp")),
+		  [this] { moveSelectedEntry(-1); });
+	addButton(makeArrowButton(entriesGroup, Qt::DownArrow, moduleText("Designer.MoveDown")),
+		  [this] { moveSelectedEntry(1); });
+	/*
+	 * Only a logo list has a path to set, so this one comes and goes with the section type --
+	 * see applyTypeVisibility. Everything else in the row acts on a row of the table whatever
+	 * the table happens to hold.
+	 */
+	setLogoButton = addButton(makeLabelledButton(entriesGroup, moduleText("Designer.SetLogo")),
+				  &SectionEditor::browseForEntryLogo);
 	buttons->addStretch();
-	addButton("Designer.ImportCsv", &SectionEditor::importCsv);
+	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ImportCsv")), &SectionEditor::importCsv);
 
 	entriesLayout->addLayout(buttons);
 	outer->addWidget(entriesGroup, 1);
@@ -904,6 +917,8 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	primaryStyle->parentWidget()->setVisible(hasText || hasLogos);
 	secondaryGroup->setVisible(type == SectionType::Bridged);
 	entriesGroup->setVisible(hasEntries);
+	/* Nothing for a file picker to fill in when the entries are lines of text. */
+	setLogoButton->setVisible(hasEntries && hasLogos);
 
 	/*
 	 * The entry table is the one thing here worth growing, so it takes the leftover height
@@ -938,6 +953,23 @@ void SectionEditor::rebuildEntryTable(SectionType type)
 		entryTable->setColumnCount(1);
 		entryTable->setHorizontalHeaderLabels({moduleText("Designer.Column.Text")});
 		break;
+	}
+
+	/*
+	 * The last column takes the slack everywhere except a logo list, where the last column is a
+	 * pixel height -- three digits' worth of table given to it while the file path beside it,
+	 * the one thing in the row long enough to need reading, is squeezed into what is left.
+	 * There the path column takes the width instead and the height keeps only what it needs.
+	 */
+	const bool logoEntries = sectionUsesLogos(type) && sectionUsesEntries(type);
+	QHeaderView *header = entryTable->horizontalHeader();
+
+	header->setStretchLastSection(!logoEntries);
+	header->setSectionResizeMode(QHeaderView::Interactive);
+
+	if (logoEntries) {
+		header->setSectionResizeMode(0, QHeaderView::Stretch);
+		entryTable->setColumnWidth(1, kEntryHeightColumnWidth);
 	}
 }
 

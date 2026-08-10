@@ -26,9 +26,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace closingtime {
 
 /*
- * Draws the rendered strip at a scale that fits the widget's width, with a frame marking
- * where the canvas edges fall. This is the same Strip the source uploads to the GPU, so
- * what the designer shows is what the roll will look like.
+ * Draws the rendered strip at a scale that fits the canvas across the widget, with the canvas
+ * itself framed at the top of the pane and the roll below it dimmed as still to come. This is
+ * the same Strip the source uploads to the GPU, so what the designer shows is what the roll
+ * will look like.
  */
 class PreviewWidget : public QWidget {
 	Q_OBJECT
@@ -49,6 +50,8 @@ protected:
 	void resizeEvent(QResizeEvent *event) override;
 
 private:
+	/* Width the canvas is drawn at: the widget's, less the surround kept either side of it. */
+	int canvasScreenWidth() const;
 	qreal scaleFactor() const;
 	int maxScroll() const;
 

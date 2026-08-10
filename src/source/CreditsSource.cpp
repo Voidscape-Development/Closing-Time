@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QSet>
 #include <QString>
+#include <QVector>
 
 #include <algorithm>
 #include <cstring>
@@ -100,6 +101,7 @@ struct CreditsSourceData {
 	obs_hotkey_id startHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id pauseHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id restartHotkey = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id designerHotkey = OBS_INVALID_HOTKEY_ID;
 };
 
 /* ------------------------------------------------------------------ strip rebuilding */
@@ -433,6 +435,20 @@ void *create(obs_data_t *settings, obs_source_t *source)
 		},
 		data);
 
+	/*
+	 * Opening the designer through the properties window means opening, and then closing, a
+	 * window that has nothing to do with what is being edited. This is one of three ways round
+	 * that: a hotkey per source, the Tools menu entry registered below, and the Interact button
+	 * the interaction flag puts in the source toolbar.
+	 */
+	data->designerHotkey = obs_hotkey_register_source(
+		source, "ClosingTime.Designer", obs_module_text("Hotkey.Designer"),
+		[](void *param, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+			if (pressed)
+				openDesignerForAsync(static_cast<CreditsSourceData *>(param)->source);
+		},
+		data);
+
 	update(data, settings);
 	return data;
 }
@@ -444,6 +460,7 @@ void destroy(void *raw)
 	obs_hotkey_unregister(data->startHotkey);
 	obs_hotkey_unregister(data->pauseHotkey);
 	obs_hotkey_unregister(data->restartHotkey);
+	obs_hotkey_unregister(data->designerHotkey);
 
 	closeDesignerFor(data->source);
 
@@ -481,6 +498,36 @@ void onHide(void *raw)
 void videoTick(void *raw, float seconds)
 {
 	advance(static_cast<CreditsSourceData *>(raw), seconds);
+}
+
+/* ------------------------------------------------------------------------ interaction */
+
+/*
+ * What the Interact button does here.
+ *
+ * OBS puts an Interact button in the source toolbar for anything carrying
+ * OBS_SOURCE_INTERACTION, and clicking it opens OBS's own interaction window -- a live view of
+ * the source that forwards mouse and keyboard events into it. There is no hook for a plugin to
+ * put its own window there instead: the button belongs to the frontend, not to the source.
+ *
+ * What a source does get is the events that window sends it, and the first of those is a focus
+ * event raised the moment the window appears. So the designer opens on that, and again on a
+ * click inside the window, which is what makes the Interact button a way through to the editor
+ * rather than a view of a roll nobody can interact with. The interaction window itself stays
+ * open behind the designer; closing it is the frontend's to do, not ours.
+ */
+void onFocus(void *raw, bool focused)
+{
+	if (focused)
+		openDesignerForAsync(static_cast<CreditsSourceData *>(raw)->source);
+}
+
+void onMouseClick(void *raw, const struct obs_mouse_event *, int32_t type, bool mouseUp, uint32_t)
+{
+	if (type != MOUSE_LEFT || mouseUp)
+		return;
+
+	openDesignerForAsync(static_cast<CreditsSourceData *>(raw)->source);
 }
 
 void drawBackground(const QColor &color, int width, int height)
@@ -764,6 +811,61 @@ obs_properties_t *getProperties(void *raw)
 	return props;
 }
 
+/* ---------------------------------------------------------------- finding a credit roll */
+
+bool isCreditsSource(obs_source_t *source)
+{
+	const char *id = obs_source_get_id(source);
+	return id && std::strcmp(id, kCreditsSourceId) == 0;
+}
+
+/* Every credit roll in the scene collection, in whatever order libobs holds them. */
+QVector<OBSSource> creditsSources()
+{
+	QVector<OBSSource> found;
+
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			if (isCreditsSource(source))
+				static_cast<QVector<OBSSource> *>(param)->append(OBSSource(source));
+			return true;
+		},
+		&found);
+
+	return found;
+}
+
+/*
+ * The credit roll selected in the current scene, if one is. Only the scene's own items are
+ * looked at; a roll nested inside a group falls through to the picker rather than being hunted
+ * down, which is the difference between one predicate and a recursive walk for a case the picker
+ * already covers.
+ */
+OBSSourceAutoRelease selectedCreditsSource()
+{
+	obs_source_t *found = nullptr;
+	OBSSourceAutoRelease sceneSource = obs_frontend_get_current_scene();
+
+	if (obs_scene_t *scene = obs_scene_from_source(sceneSource)) {
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+				if (!obs_sceneitem_selected(item))
+					return true;
+
+				obs_source_t *source = obs_sceneitem_get_source(item);
+				if (!isCreditsSource(source))
+					return true;
+
+				*static_cast<obs_source_t **>(param) = obs_source_get_ref(source);
+				return false;
+			},
+			&found);
+	}
+
+	return OBSSourceAutoRelease(found);
+}
+
 struct obs_source_info creditsSourceInfo = {};
 
 } // namespace
@@ -772,7 +874,8 @@ void registerCreditsSource()
 {
 	creditsSourceInfo.id = kCreditsSourceId;
 	creditsSourceInfo.type = OBS_SOURCE_TYPE_INPUT;
-	creditsSourceInfo.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW;
+	/* Interaction is what puts an Interact button on the source; see onFocus. */
+	creditsSourceInfo.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_INTERACTION;
 	creditsSourceInfo.icon_type = OBS_ICON_TYPE_TEXT;
 	creditsSourceInfo.get_name = getName;
 	creditsSourceInfo.create = create;
@@ -786,8 +889,29 @@ void registerCreditsSource()
 	creditsSourceInfo.hide = onHide;
 	creditsSourceInfo.video_tick = videoTick;
 	creditsSourceInfo.video_render = videoRender;
+	creditsSourceInfo.focus = onFocus;
+	creditsSourceInfo.mouse_click = onMouseClick;
 
 	obs_register_source(&creditsSourceInfo);
+}
+
+void registerDesignerToolsMenu()
+{
+	obs_frontend_add_tools_menu_item(
+		obs_module_text("ToolsMenu.Designer"),
+		[](void *) {
+			/*
+			 * Whatever is selected in the current scene wins, so the usual case -- one
+			 * roll, or the one just clicked on -- opens without a question being asked.
+			 */
+			if (OBSSourceAutoRelease selected = selectedCreditsSource()) {
+				openDesignerFor(selected);
+				return;
+			}
+
+			openDesignerForOneOf(creditsSources());
+		},
+		nullptr);
 }
 
 } // namespace closingtime

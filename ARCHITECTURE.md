@@ -48,6 +48,7 @@ src/
     DesignerDialog.{hpp,cpp} three-pane designer window
     SectionEditor.{hpp,cpp}  per-section editor + StyleEditor
     StyleControls.{hpp,cpp}  colour button, gradient stop editor and its swatch
+    ToolButtons.{hpp,cpp}    the compact button shapes a list's controls are built from
     PreviewWidget.{hpp,cpp}  scaled preview of the rendered strip
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
   util/
@@ -453,8 +454,15 @@ position stable while clicking down the section list. A trailing spacer takes wh
 is left over: a `QVBoxLayout` with nothing to give its slack to shares it out between the items
 it has, which spread a short type's handful of rows down the pane with gaps between them. The
 entry table is the one thing worth growing, so it takes the slack instead whenever the selected
-type has one, and asks for enough height to read a run of entries at a glance. Preview
-re-renders are debounced by
+type has one, and asks for enough height to read a run of entries at a glance.
+
+The same rule reaches past the form rows: *Set Logo* is hidden for the types whose entries are
+lines of text rather than paths, and a logo list hands its width to the path column instead of to
+the three-digit pixel height beside it. The gradient stop table sizes itself the same way, from
+the stops it actually holds up to a cap, rather than at a fixed height that turned every sweep
+past four stops into a four-row window and gave a two-stop one empty rows it had no use for.
+
+Preview re-renders are debounced by
 250 ms so typing does not re-rasterise the strip on every keystroke, and the render itself
 happens off-thread, so even a roll that takes seconds to rasterise leaves the window usable.
 
@@ -475,6 +483,63 @@ One window per source, tracked in a registry keyed by source pointer. Because so
 destroyed on the graphics thread, `closeDesignerFor` queues the close onto the UI thread and
 only acts once the dialog's weak reference has actually expired — which also covers a later
 source reusing the same address.
+
+### Ways in
+
+The properties window's button was the only way to reach the designer, which meant opening — and
+then closing — a window that has nothing to do with what is being edited. There are now four:
+
+| | |
+|---|---|
+| The properties window's button | the original, unchanged |
+| **Tools ▸ Credits Designer…** | whatever credit roll is selected in the current scene, else the only one, else a picker |
+| A **per-source hotkey** | `ClosingTime.Designer`, alongside start/pause/restart |
+| The source's **Interact** button | see below |
+
+The last one is a compromise worth naming. `OBS_SOURCE_INTERACTION` is what puts an Interact
+button on a source, but the button belongs to the frontend: it opens OBS's own interaction
+window, and no plugin hook exists to put a different window there instead. What the source does
+get is the events that window sends it, the first being a focus event raised as it appears — so
+the designer opens on that, and on a click inside the window as a backstop. The interaction
+window stays open behind the designer; closing it is the frontend's to do.
+
+Two of these arrive off the UI thread — a hotkey runs on the hotkey thread, and the interaction
+callbacks run inside an event still being delivered — so both go through `openDesignerForAsync`,
+which queues onto the UI thread holding a weak reference. A source destroyed between the two ends
+of that queue makes the task a no-op rather than a crash.
+
+### Preview
+
+The preview pane is the whole roll end to end, at whatever scale fits the canvas across it, with
+the wheel moving through it. The dashed frame is the canvas: one screenful, held at the top of
+the pane, so the roll runs up through it the way it will on air, and everything below the frame
+is dimmed as content that has not reached the screen yet.
+
+Both halves of that are corrections to an outline that had stopped saying anything. The strip
+was drawn edge to edge, which put the canvas's left and right edges exactly on the pane's own
+border — an outline with nothing on the far side of it to mark it off against — and the dimming
+is what makes the frame's bottom edge a boundary rather than a line lying across the middle of
+the roll for no visible reason. The scale now comes from the canvas's width rather than the
+pane's, and the few pixels of surround that buys is the whole difference between a frame around
+the canvas and a border around a pane.
+
+### Controls on a list
+
+The section list's own controls, and the entry table's, are the compact buttons OBS uses for the
+same job: a square carrying a glyph or an arrow, with the word it used to show moved to its
+tooltip (`ui/ToolButtons.hpp`). That is a legibility decision second and a width decision first —
+five labelled buttons held the section pane open at over 400 px whether or not the user had any
+use for the space, and a splitter cannot be dragged past what the widgets underneath it demand.
+The same row of glyphs comes to under half of that, so the pane now goes as narrow as the list
+itself is useful at. Duplicate keeps its word: no glyph says it without a theme icon behind it.
+
+A colour swatch is **painted**, not set as a stylesheet background. A stylesheet does not stop at
+the widget it is set on — it reaches everything beneath that widget in the object tree, and a
+dialog parented to a widget is beneath it for styling as much as for stacking, so the colour
+dialog these buttons open was being painted in the very colour it had been opened to change.
+Painting the swatch and hanging the dialog off the window rather than the button leaves nothing
+to cascade, and a painted rectangle has no fixed resolution to lose at high DPI, which was the
+reason a stylesheet was preferred to an icon in the first place.
 
 ## CSV import
 
@@ -525,6 +590,12 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 - A section box — a width and a placement — so a section can sit against one edge of the canvas
   with its margin still holding it clear of that edge.
 - Logos cast the style's drop shadow, the same as text and bridge artwork.
+- Three more ways into the designer — the Tools menu, a per-source hotkey, and the source's
+  Interact button — so it is no longer reached only through the properties window.
+- The preview's canvas frame means something again: the canvas is inset from the pane's edges and
+  the roll below one screenful is dimmed.
+- Colour buttons paint their swatch instead of carrying a stylesheet that leaked into the colour
+  dialog they opened.
 
 ## Verifying changes
 
