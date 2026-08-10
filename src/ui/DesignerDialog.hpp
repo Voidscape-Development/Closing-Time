@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QDialog>
 #include <QListWidget>
+#include <QVector>
 
 #include <memory>
 
@@ -67,6 +68,24 @@ protected:
  * it. Must be called from the UI thread.
  */
 void openDesignerFor(obs_source_t *source);
+
+/*
+ * The same, from anywhere. A hotkey arrives on the hotkey thread and a window can only be opened
+ * on the UI one, so the call is queued; a weak reference makes a source destroyed in between the
+ * two ends of that queue a no-op rather than a crash.
+ */
+void openDesignerForAsync(obs_source_t *source);
+
+/*
+ * Adds the Tools menu entry that opens the designer without going through a source's properties
+ * window: a submenu listing every source of type `sourceId` in the scene collection by name,
+ * whichever scene each one happens to sit in, opening that source's designer when picked.
+ *
+ * The list is rebuilt each time the submenu is opened, so it follows sources being added,
+ * renamed and removed without anything having to watch for it. Must be called from the UI
+ * thread, once the frontend exists.
+ */
+void registerDesignerToolsMenu(const char *sourceId);
 
 /* Closes any designer window bound to `source`. Safe to call for sources with none. */
 void closeDesignerFor(obs_source_t *source);

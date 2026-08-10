@@ -48,6 +48,10 @@ public:
 signals:
 	void colourChanged();
 
+protected:
+	/* Draws the swatch over the theme's own button, and the hex code back on top of it. */
+	void paintEvent(QPaintEvent *event) override;
+
 private:
 	void pick();
 	void refresh();
@@ -103,6 +107,8 @@ protected:
 
 private:
 	void rebuildTable();
+	/* Sizes the stop table to the rows it now holds, up to the cap it starts scrolling at. */
+	void updateTableHeight();
 	void readTable();
 	void sortStops();
 	void addStop();

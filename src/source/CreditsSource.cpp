@@ -100,6 +100,7 @@ struct CreditsSourceData {
 	obs_hotkey_id startHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id pauseHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id restartHotkey = OBS_INVALID_HOTKEY_ID;
+	obs_hotkey_id designerHotkey = OBS_INVALID_HOTKEY_ID;
 };
 
 /* ------------------------------------------------------------------ strip rebuilding */
@@ -433,6 +434,19 @@ void *create(obs_data_t *settings, obs_source_t *source)
 		},
 		data);
 
+	/*
+	 * Opening the designer through the properties window means opening, and then closing, a
+	 * window that has nothing to do with what is being edited. This is one of two ways round
+	 * that: a hotkey per source, and the Tools menu entry registered below.
+	 */
+	data->designerHotkey = obs_hotkey_register_source(
+		source, "ClosingTime.Designer", obs_module_text("Hotkey.Designer"),
+		[](void *param, obs_hotkey_id, obs_hotkey_t *, bool pressed) {
+			if (pressed)
+				openDesignerForAsync(static_cast<CreditsSourceData *>(param)->source);
+		},
+		data);
+
 	update(data, settings);
 	return data;
 }
@@ -444,6 +458,7 @@ void destroy(void *raw)
 	obs_hotkey_unregister(data->startHotkey);
 	obs_hotkey_unregister(data->pauseHotkey);
 	obs_hotkey_unregister(data->restartHotkey);
+	obs_hotkey_unregister(data->designerHotkey);
 
 	closeDesignerFor(data->source);
 

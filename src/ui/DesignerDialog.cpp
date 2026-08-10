@@ -47,6 +47,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "render/RenderThread.hpp"
 #include "ui/PreviewWidget.hpp"
 #include "ui/SectionEditor.hpp"
+#include "ui/ToolButtons.hpp"
 
 namespace closingtime {
 
@@ -84,6 +85,75 @@ QWidget *mainWindow()
 	return static_cast<QWidget *>(obs_frontend_get_main_window());
 }
 
+/*
+ * One source the Tools submenu offers. The reference is weak because the menu holds these for as
+ * long as it is open: a strong one would keep a roll the user deleted mid-menu alive behind their
+ * back, and the entry has to cope with the source going away regardless.
+ */
+struct MenuEntry {
+	QString name;
+	OBSWeakSource source;
+};
+
+struct MenuCollector {
+	QByteArray sourceId;
+	QVector<MenuEntry> entries;
+};
+
+/*
+ * Every source of one type in the scene collection, whichever scene each sits in --
+ * `obs_enum_sources` walks the collection's inputs rather than the current scene's items, which
+ * is what makes a roll parked in a scene the user is not looking at reachable from here.
+ */
+QVector<MenuEntry> sourcesOfType(const QByteArray &sourceId)
+{
+	MenuCollector collector{sourceId, {}};
+
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			auto *found = static_cast<MenuCollector *>(param);
+
+			const char *id = obs_source_get_id(source);
+			if (id && found->sourceId == id)
+				found->entries.append(MenuEntry{QString::fromUtf8(obs_source_get_name(source)),
+								OBSGetWeakRef(source)});
+
+			return true;
+		},
+		&collector);
+
+	/* Listed by name: libobs hands them over in creation order, which reads as no order at all. */
+	std::sort(collector.entries.begin(), collector.entries.end(), [](const MenuEntry &a, const MenuEntry &b) {
+		return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+	});
+
+	return collector.entries;
+}
+
+/* Rebuilds the Tools submenu from what is loaded right now. */
+void fillDesignerMenu(QMenu *menu, const QByteArray &sourceId)
+{
+	menu->clear();
+
+	const QVector<MenuEntry> entries = sourcesOfType(sourceId);
+	if (entries.isEmpty()) {
+		/* A disabled line rather than an empty menu, which reads as a broken one. */
+		menu->addAction(moduleText("Designer.NoSources"))->setEnabled(false);
+		return;
+	}
+
+	for (const MenuEntry &entry : entries) {
+		QAction *open = menu->addAction(entry.name);
+
+		/* Upgraded when picked, so a source destroyed while the menu is open opens nothing. */
+		QObject::connect(open, &QAction::triggered, menu, [source = entry.source] {
+			OBSSourceAutoRelease strong = obs_weak_source_get_source(source);
+			if (strong)
+				openDesignerFor(strong);
+		});
+	}
+}
+
 } // namespace
 
 void openDesignerFor(obs_source_t *source)
@@ -101,6 +171,58 @@ void openDesignerFor(obs_source_t *source)
 
 	auto *dialog = new DesignerDialog(source, mainWindow());
 	dialog->show();
+}
+
+void openDesignerForAsync(obs_source_t *source)
+{
+	if (!source)
+		return;
+
+	/*
+	 * A hotkey callback runs on the hotkey thread, and a window can only be opened on the UI
+	 * one, so the request is queued rather than serviced where it lands. The weak reference is
+	 * what makes a source destroyed in between the two ends of that queue a no-op.
+	 */
+	auto *weak = new OBSWeakSourceAutoRelease(obs_source_get_weak_source(source));
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			const std::unique_ptr<OBSWeakSourceAutoRelease> held(
+				static_cast<OBSWeakSourceAutoRelease *>(param));
+
+			OBSSourceAutoRelease strong = obs_weak_source_get_source(*held);
+			if (strong)
+				openDesignerFor(strong);
+		},
+		weak, false);
+}
+
+void registerDesignerToolsMenu(const char *sourceId)
+{
+	/*
+	 * The qaction form rather than the plain menu item, because what goes in the Tools menu is
+	 * a submenu rather than something to click: a roll is picked by name from a list of every
+	 * one in the collection, which is a menu's own job and does not need a dialog to do it.
+	 */
+	auto *action =
+		static_cast<QAction *>(obs_frontend_add_tools_menu_qaction(obs_module_text("ToolsMenu.Designer")));
+	if (!action)
+		return;
+
+	/* Outlives the plugin's own objects, so it hangs off the window rather than off anything here. */
+	auto *menu = new QMenu(mainWindow());
+	action->setMenu(menu);
+
+	const QByteArray id(sourceId);
+	QObject::connect(menu, &QMenu::aboutToShow, menu, [menu, id] { fillDesignerMenu(menu, id); });
+
+	/*
+	 * Filled once here as well, even though there is nothing to find at module load: an empty
+	 * submenu is drawn as an unusable one by the macOS menu bar, which would leave the entry
+	 * looking broken until something happened to open it. The placeholder is enough to keep it
+	 * a submenu, and the first hover replaces it with what is actually loaded.
+	 */
+	fillDesignerMenu(menu, id);
 }
 
 void closeDesignerFor(obs_source_t *source)
@@ -198,24 +320,29 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	listButtonRow = new QWidget(listPane);
 	auto *listButtons = new QHBoxLayout(listButtonRow);
 	listButtons->setContentsMargins(0, 0, 0, 0);
-	const auto addListButton = [&](const char *key, auto slot) {
-		auto *button = new QPushButton(moduleText(key), listButtonRow);
+	const auto addListButton = [&](QToolButton *button, auto slot) {
 		listButtons->addWidget(button);
-		connect(button, &QPushButton::clicked, this, slot);
-		return button;
+		connect(button, &QToolButton::clicked, this, slot);
 	};
-
-	addListButton("Designer.Duplicate", &DesignerDialog::duplicateSection);
-	addListButton("Designer.Remove", &DesignerDialog::removeSection);
-	addListButton("Designer.MoveUp", [this] { moveSection(-1); });
-	addListButton("Designer.MoveDown", [this] { moveSection(1); });
 
 	/*
 	 * Add is a menu button rather than a plain one: there are twelve section types and
 	 * picking the type up front is what decides which editor fields appear.
 	 */
-	auto *addButton = new QPushButton(moduleText("Designer.Add"), listButtonRow);
-	listButtons->insertWidget(0, addButton);
+	auto *addButton = makeGlyphButton(listButtonRow, QStringLiteral("+"), moduleText("Designer.Add"));
+	addButton->setPopupMode(QToolButton::InstantPopup);
+	listButtons->addWidget(addButton);
+
+	addListButton(makeGlyphButton(listButtonRow, QStringLiteral("−"), moduleText("Designer.Remove")),
+		      &DesignerDialog::removeSection);
+	addListButton(makeArrowButton(listButtonRow, Qt::UpArrow, moduleText("Designer.MoveUp")),
+		      [this] { moveSection(-1); });
+	addListButton(makeArrowButton(listButtonRow, Qt::DownArrow, moduleText("Designer.MoveDown")),
+		      [this] { moveSection(1); });
+	/* No glyph says "duplicate" without a theme icon behind it, so this one keeps its word. */
+	addListButton(makeLabelledButton(listButtonRow, moduleText("Designer.Duplicate")),
+		      &DesignerDialog::duplicateSection);
+	listButtons->addStretch();
 	listLayout->addWidget(listButtonRow);
 
 	auto *addMenu = new QMenu(addButton);
@@ -247,6 +374,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	previewLayout->setContentsMargins(0, 0, 0, 0);
 	previewLayout->addWidget(new QLabel(moduleText("Designer.Preview"), previewPane));
 	preview = new PreviewWidget(previewPane);
+	preview->setToolTip(moduleText("Designer.Preview.Tip"));
 	previewLayout->addWidget(preview, 1);
 	durationLabel = new QLabel(previewPane);
 	previewLayout->addWidget(durationLabel);

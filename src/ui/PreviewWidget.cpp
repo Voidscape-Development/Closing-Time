@@ -31,6 +31,19 @@ namespace {
 /* Checkerboard cell size, in widget pixels, used behind a transparent background. */
 constexpr int kCheckerSize = 12;
 
+/*
+ * Clear space kept either side of the canvas, in widget pixels.
+ *
+ * The strip used to be drawn edge to edge, which left the canvas's own left and right edges
+ * sitting exactly on the widget's border: the frame marking them had nothing on the far side of
+ * it to mark them off against, so what it was outlining stopped being legible. A few pixels of
+ * surround is the whole difference between a frame around the canvas and a border around a pane.
+ */
+constexpr int kCanvasInset = 10;
+
+/* Laid over the part of the roll that has not reached the canvas yet. */
+constexpr int kUpcomingScrimAlpha = 64;
+
 void paintChecker(QPainter &painter, const QRect &rect)
 {
 	painter.fillRect(rect, QColor(48, 48, 48));
@@ -41,7 +54,8 @@ void paintChecker(QPainter &painter, const QRect &rect)
 		for (int x = rect.left() / kCheckerSize; x <= rect.right() / kCheckerSize; ++x) {
 			if ((x + y) % 2 == 0)
 				continue;
-			painter.drawRect(x * kCheckerSize, y * kCheckerSize, kCheckerSize, kCheckerSize);
+			painter.drawRect(
+				QRect(x * kCheckerSize, y * kCheckerSize, kCheckerSize, kCheckerSize).intersected(rect));
 		}
 	}
 }
@@ -72,9 +86,14 @@ void PreviewWidget::scrollToStripY(int stripY)
 	update();
 }
 
+int PreviewWidget::canvasScreenWidth() const
+{
+	return std::max(1, width() - kCanvasInset * 2);
+}
+
 qreal PreviewWidget::scaleFactor() const
 {
-	return static_cast<qreal>(width()) / static_cast<qreal>(canvasWidth);
+	return static_cast<qreal>(canvasScreenWidth()) / static_cast<qreal>(canvasWidth);
 }
 
 int PreviewWidget::maxScroll() const
@@ -107,18 +126,35 @@ void PreviewWidget::wheelEvent(QWheelEvent *event)
 	event->accept();
 }
 
+/*
+ * What the preview is showing, and what the dashed frame means:
+ *
+ * The pane is the whole roll laid out end to end, drawn at whatever scale fits the canvas across
+ * it, with the wheel moving through it. The dashed frame is the canvas itself -- one screenful,
+ * held at the top of the pane -- so the roll runs up through it exactly the way it will on air.
+ * Everything below the frame is content that has not reached the canvas yet, and it is dimmed to
+ * say so: the frame marks a real boundary rather than an outline whose relationship to the
+ * pixels around it has to be guessed at.
+ *
+ * The scale is taken from the canvas's width rather than the pane's, which is what puts the
+ * canvas's own left and right edges inside the pane instead of on top of its border.
+ */
 void PreviewWidget::paintEvent(QPaintEvent *)
 {
 	QPainter painter(this);
 	const qreal scale = scaleFactor();
+	const QRect canvasColumn(kCanvasInset, 0, canvasScreenWidth(), height());
+
+	/* Anything outside the canvas is not part of the roll, so it is left as plain surround. */
+	painter.fillRect(rect(), palette().window());
 
 	if (background.alpha() >= 255) {
-		painter.fillRect(rect(), background);
+		painter.fillRect(canvasColumn, background);
 	} else {
 		/* A checkerboard makes it obvious which parts of the roll are transparent. */
-		paintChecker(painter, rect());
+		paintChecker(painter, canvasColumn);
 		if (background.alpha() > 0)
-			painter.fillRect(rect(), background);
+			painter.fillRect(canvasColumn, background);
 	}
 
 	painter.setRenderHints(QPainter::SmoothPixmapTransform | QPainter::Antialiasing);
@@ -130,20 +166,29 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 		if (top + tileHeight < 0 || top > height())
 			continue;
 
-		painter.drawImage(QRectF(0, top, width(), tileHeight), tile.image);
+		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), tileHeight), tile.image);
 	}
 
-	/*
-	 * The canvas outline shows how much of the roll is on screen at once, which is the
-	 * single most useful thing to see while sizing type and padding.
-	 */
-	const qreal canvasScaledHeight = canvasHeight * scale;
+	const qreal onAirHeight = std::min<qreal>(canvasHeight * scale, height());
+	const QRectF onAir(canvasColumn.left() + 0.5, 0.5, canvasColumn.width() - 1.0, onAirHeight - 1.0);
+
+	/* Dimmed rather than hidden: this is still the content being edited, just not on air yet. */
+	if (onAirHeight < height())
+		painter.fillRect(QRectF(canvasColumn.left(), onAirHeight, canvasColumn.width(), height() - onAirHeight),
+				 QColor(0, 0, 0, kUpcomingScrimAlpha));
+
 	painter.setBrush(Qt::NoBrush);
+
+	/* The canvas runs the full height of the pane; only the screenful at the top is on air. */
+	painter.setPen(QPen(QColor(255, 255, 255, 40), 1));
+	painter.drawLine(QPointF(canvasColumn.left() + 0.5, 0), QPointF(canvasColumn.left() + 0.5, height()));
+	painter.drawLine(QPointF(canvasColumn.right() + 0.5, 0), QPointF(canvasColumn.right() + 0.5, height()));
+
 	QPen pen(QColor(255, 200, 80, 200));
 	pen.setStyle(Qt::DashLine);
 	pen.setWidth(1);
 	painter.setPen(pen);
-	painter.drawRect(QRectF(0.5, 0.5, width() - 1.0, std::min<qreal>(canvasScaledHeight, height()) - 1.0));
+	painter.drawRect(onAir);
 }
 
 } // namespace closingtime
