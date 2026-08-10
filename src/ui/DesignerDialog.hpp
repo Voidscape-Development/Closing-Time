@@ -70,7 +70,7 @@ protected:
 void openDesignerFor(obs_source_t *source);
 
 /*
- * The same, from anywhere. Hotkeys arrive on the hotkey thread and a window can only be opened
+ * The same, from anywhere. A hotkey arrives on the hotkey thread and a window can only be opened
  * on the UI one, so the call is queued; a weak reference makes a source destroyed in between the
  * two ends of that queue a no-op rather than a crash.
  */

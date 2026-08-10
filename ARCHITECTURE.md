@@ -487,26 +487,24 @@ source reusing the same address.
 ### Ways in
 
 The properties window's button was the only way to reach the designer, which meant opening — and
-then closing — a window that has nothing to do with what is being edited. There are now four:
+then closing — a window that has nothing to do with what is being edited. There are now three:
 
 | | |
 |---|---|
 | The properties window's button | the original, unchanged |
 | **Tools ▸ Credits Designer…** | whatever credit roll is selected in the current scene, else the only one, else a picker |
 | A **per-source hotkey** | `ClosingTime.Designer`, alongside start/pause/restart |
-| The source's **Interact** button | see below |
 
-The last one is a compromise worth naming. `OBS_SOURCE_INTERACTION` is what puts an Interact
-button on a source, but the button belongs to the frontend: it opens OBS's own interaction
-window, and no plugin hook exists to put a different window there instead. What the source does
-get is the events that window sends it, the first being a focus event raised as it appears — so
-the designer opens on that, and on a click inside the window as a backstop. The interaction
-window stays open behind the designer; closing it is the frontend's to do.
+The source's own **Interact** button was considered and left alone. `OBS_SOURCE_INTERACTION` is
+what puts one there, but the button belongs to the frontend: it opens OBS's interaction window,
+and no plugin hook exists to put a different window there instead. The nearest thing available is
+to open the designer from the focus event that window raises as it appears — which leaves the
+interaction window sitting open behind it, with no way for the plugin to close it. A stray window
+nobody asked for is a worse trade than one menu entry.
 
-Two of these arrive off the UI thread — a hotkey runs on the hotkey thread, and the interaction
-callbacks run inside an event still being delivered — so both go through `openDesignerForAsync`,
-which queues onto the UI thread holding a weak reference. A source destroyed between the two ends
-of that queue makes the task a no-op rather than a crash.
+The hotkey arrives on the hotkey thread, and a window can only be opened on the UI one, so it
+goes through `openDesignerForAsync`, which queues onto the UI thread holding a weak reference. A
+source destroyed between the two ends of that queue makes the task a no-op rather than a crash.
 
 ### Preview
 
@@ -590,8 +588,8 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 - A section box — a width and a placement — so a section can sit against one edge of the canvas
   with its margin still holding it clear of that edge.
 - Logos cast the style's drop shadow, the same as text and bridge artwork.
-- Three more ways into the designer — the Tools menu, a per-source hotkey, and the source's
-  Interact button — so it is no longer reached only through the properties window.
+- Two more ways into the designer — the Tools menu and a per-source hotkey — so it is no longer
+  reached only through the properties window.
 - The preview's canvas frame means something again: the canvas is inset from the pane's edges and
   the roll below one screenful is dimmed.
 - Colour buttons paint their swatch instead of carrying a stylesheet that leaked into the colour

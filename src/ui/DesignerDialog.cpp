@@ -112,10 +112,9 @@ void openDesignerForAsync(obs_source_t *source)
 		return;
 
 	/*
-	 * A hotkey callback runs on the hotkey thread, and the interaction window's callbacks run
-	 * inside an event that has not finished being delivered. Both want a window opened, which
-	 * only the UI thread can do, so the request is queued rather than serviced where it lands.
-	 * The weak reference is what makes a source destroyed in between the two a no-op.
+	 * A hotkey callback runs on the hotkey thread, and a window can only be opened on the UI
+	 * one, so the request is queued rather than serviced where it lands. The weak reference is
+	 * what makes a source destroyed in between the two ends of that queue a no-op.
 	 */
 	auto *weak = new OBSWeakSourceAutoRelease(obs_source_get_weak_source(source));
 	obs_queue_task(

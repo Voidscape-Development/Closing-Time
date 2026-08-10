@@ -437,9 +437,8 @@ void *create(obs_data_t *settings, obs_source_t *source)
 
 	/*
 	 * Opening the designer through the properties window means opening, and then closing, a
-	 * window that has nothing to do with what is being edited. This is one of three ways round
-	 * that: a hotkey per source, the Tools menu entry registered below, and the Interact button
-	 * the interaction flag puts in the source toolbar.
+	 * window that has nothing to do with what is being edited. This is one of two ways round
+	 * that: a hotkey per source, and the Tools menu entry registered below.
 	 */
 	data->designerHotkey = obs_hotkey_register_source(
 		source, "ClosingTime.Designer", obs_module_text("Hotkey.Designer"),
@@ -498,36 +497,6 @@ void onHide(void *raw)
 void videoTick(void *raw, float seconds)
 {
 	advance(static_cast<CreditsSourceData *>(raw), seconds);
-}
-
-/* ------------------------------------------------------------------------ interaction */
-
-/*
- * What the Interact button does here.
- *
- * OBS puts an Interact button in the source toolbar for anything carrying
- * OBS_SOURCE_INTERACTION, and clicking it opens OBS's own interaction window -- a live view of
- * the source that forwards mouse and keyboard events into it. There is no hook for a plugin to
- * put its own window there instead: the button belongs to the frontend, not to the source.
- *
- * What a source does get is the events that window sends it, and the first of those is a focus
- * event raised the moment the window appears. So the designer opens on that, and again on a
- * click inside the window, which is what makes the Interact button a way through to the editor
- * rather than a view of a roll nobody can interact with. The interaction window itself stays
- * open behind the designer; closing it is the frontend's to do, not ours.
- */
-void onFocus(void *raw, bool focused)
-{
-	if (focused)
-		openDesignerForAsync(static_cast<CreditsSourceData *>(raw)->source);
-}
-
-void onMouseClick(void *raw, const struct obs_mouse_event *, int32_t type, bool mouseUp, uint32_t)
-{
-	if (type != MOUSE_LEFT || mouseUp)
-		return;
-
-	openDesignerForAsync(static_cast<CreditsSourceData *>(raw)->source);
 }
 
 void drawBackground(const QColor &color, int width, int height)
@@ -874,8 +843,7 @@ void registerCreditsSource()
 {
 	creditsSourceInfo.id = kCreditsSourceId;
 	creditsSourceInfo.type = OBS_SOURCE_TYPE_INPUT;
-	/* Interaction is what puts an Interact button on the source; see onFocus. */
-	creditsSourceInfo.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_INTERACTION;
+	creditsSourceInfo.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW;
 	creditsSourceInfo.icon_type = OBS_ICON_TYPE_TEXT;
 	creditsSourceInfo.get_name = getName;
 	creditsSourceInfo.create = create;
@@ -889,8 +857,6 @@ void registerCreditsSource()
 	creditsSourceInfo.hide = onHide;
 	creditsSourceInfo.video_tick = videoTick;
 	creditsSourceInfo.video_render = videoRender;
-	creditsSourceInfo.focus = onFocus;
-	creditsSourceInfo.mouse_click = onMouseClick;
 
 	obs_register_source(&creditsSourceInfo);
 }
