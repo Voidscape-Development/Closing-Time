@@ -492,8 +492,23 @@ then closing — a window that has nothing to do with what is being edited. Ther
 | | |
 |---|---|
 | The properties window's button | the original, unchanged |
-| **Tools ▸ Credits Designer…** | whatever credit roll is selected in the current scene, else the only one, else a picker |
+| **Tools ▸ Credits Designer** | a submenu of every roll in the collection, by name |
 | A **per-source hotkey** | `ClosingTime.Designer`, alongside start/pause/restart |
+
+The Tools entry is a submenu rather than something to click, built through
+`obs_frontend_add_tools_menu_qaction` so a `QMenu` can be hung off the action. Picking a name
+opens that roll's designer, and the list covers the whole scene collection rather than the
+current scene: `obs_enum_sources` walks the collection's inputs, so a roll parked in a scene the
+user is not looking at is one hover away rather than unreachable without switching scenes first.
+A modal picker would have done the same job and been a worse way to do it — a list of names is a
+menu's own work.
+
+The list is rebuilt on `aboutToShow`, which is what keeps it in step with sources being added,
+renamed and removed without anything having to watch for any of that, and entries hold **weak**
+references, so a roll deleted while the menu happens to be open opens nothing rather than being
+kept alive by the menu holding it. It is also filled once at registration, even though nothing is
+loaded that early: the macOS menu bar draws an empty submenu as an unusable one, and the
+"no sources" placeholder is enough to keep it a submenu until the first hover replaces it.
 
 The source's own **Interact** button was considered and left alone. `OBS_SOURCE_INTERACTION` is
 what puts one there, but the button belongs to the frontend: it opens OBS's interaction window,

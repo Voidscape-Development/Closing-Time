@@ -77,11 +77,15 @@ void openDesignerFor(obs_source_t *source);
 void openDesignerForAsync(obs_source_t *source);
 
 /*
- * Opens the designer for one of `candidates`, asking which when there is more than one and
- * saying so when there are none. This is the way in that does not start from a source's
- * properties window. Must be called from the UI thread.
+ * Adds the Tools menu entry that opens the designer without going through a source's properties
+ * window: a submenu listing every source of type `sourceId` in the scene collection by name,
+ * whichever scene each one happens to sit in, opening that source's designer when picked.
+ *
+ * The list is rebuilt each time the submenu is opened, so it follows sources being added,
+ * renamed and removed without anything having to watch for it. Must be called from the UI
+ * thread, once the frontend exists.
  */
-void openDesignerForOneOf(const QVector<OBSSource> &candidates);
+void registerDesignerToolsMenu(const char *sourceId);
 
 /* Closes any designer window bound to `source`. Safe to call for sources with none. */
 void closeDesignerFor(obs_source_t *source);

@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "render/RenderThread.hpp"
 #include "source/CreditsSource.hpp"
+#include "ui/DesignerDialog.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -44,7 +45,11 @@ bool obs_module_load(void)
 	signal_handler_add(obs_get_signal_handler(), "void closing_time_finished(ptr source)");
 
 	closingtime::registerCreditsSource();
-	closingtime::registerDesignerToolsMenu();
+	/*
+	 * The menu lists sources by type and the designer opens them, so neither half of that
+	 * belongs to the other: the module entry point is where the two are introduced.
+	 */
+	closingtime::registerDesignerToolsMenu(closingtime::kCreditsSourceId);
 
 	obs_log(LOG_INFO, "Closing Time loaded (version %s)", PLUGIN_VERSION);
 	return true;

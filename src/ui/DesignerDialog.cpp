@@ -30,7 +30,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHash>
-#include <QInputDialog>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -39,7 +38,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
-#include <QStringList>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -87,6 +85,75 @@ QWidget *mainWindow()
 	return static_cast<QWidget *>(obs_frontend_get_main_window());
 }
 
+/*
+ * One source the Tools submenu offers. The reference is weak because the menu holds these for as
+ * long as it is open: a strong one would keep a roll the user deleted mid-menu alive behind their
+ * back, and the entry has to cope with the source going away regardless.
+ */
+struct MenuEntry {
+	QString name;
+	OBSWeakSource source;
+};
+
+struct MenuCollector {
+	QByteArray sourceId;
+	QVector<MenuEntry> entries;
+};
+
+/*
+ * Every source of one type in the scene collection, whichever scene each sits in --
+ * `obs_enum_sources` walks the collection's inputs rather than the current scene's items, which
+ * is what makes a roll parked in a scene the user is not looking at reachable from here.
+ */
+QVector<MenuEntry> sourcesOfType(const QByteArray &sourceId)
+{
+	MenuCollector collector{sourceId, {}};
+
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) {
+			auto *found = static_cast<MenuCollector *>(param);
+
+			const char *id = obs_source_get_id(source);
+			if (id && found->sourceId == id)
+				found->entries.append(MenuEntry{QString::fromUtf8(obs_source_get_name(source)),
+								OBSGetWeakRef(source)});
+
+			return true;
+		},
+		&collector);
+
+	/* Listed by name: libobs hands them over in creation order, which reads as no order at all. */
+	std::sort(collector.entries.begin(), collector.entries.end(), [](const MenuEntry &a, const MenuEntry &b) {
+		return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+	});
+
+	return collector.entries;
+}
+
+/* Rebuilds the Tools submenu from what is loaded right now. */
+void fillDesignerMenu(QMenu *menu, const QByteArray &sourceId)
+{
+	menu->clear();
+
+	const QVector<MenuEntry> entries = sourcesOfType(sourceId);
+	if (entries.isEmpty()) {
+		/* A disabled line rather than an empty menu, which reads as a broken one. */
+		menu->addAction(moduleText("Designer.NoSources"))->setEnabled(false);
+		return;
+	}
+
+	for (const MenuEntry &entry : entries) {
+		QAction *open = menu->addAction(entry.name);
+
+		/* Upgraded when picked, so a source destroyed while the menu is open opens nothing. */
+		QObject::connect(open, &QAction::triggered, menu, [source = entry.source] {
+			OBSSourceAutoRelease strong = obs_weak_source_get_source(source);
+			if (strong)
+				openDesignerFor(strong);
+		});
+	}
+}
+
 } // namespace
 
 void openDesignerFor(obs_source_t *source)
@@ -130,33 +197,32 @@ void openDesignerForAsync(obs_source_t *source)
 		weak, false);
 }
 
-void openDesignerForOneOf(const QVector<OBSSource> &candidates)
+void registerDesignerToolsMenu(const char *sourceId)
 {
-	if (candidates.isEmpty()) {
-		QMessageBox::information(mainWindow(), moduleText("Designer.Title"), moduleText("Designer.NoSources"));
-		return;
-	}
-
-	if (candidates.size() == 1) {
-		openDesignerFor(candidates.constFirst());
-		return;
-	}
-
-	QStringList names;
-	names.reserve(candidates.size());
-	for (const OBSSource &source : candidates)
-		names.append(QString::fromUtf8(obs_source_get_name(source)));
-
-	bool accepted = false;
-	const QString chosen = QInputDialog::getItem(mainWindow(), moduleText("Designer.Title"),
-						     moduleText("Designer.ChooseSource"), names, 0, false, &accepted);
-	if (!accepted)
+	/*
+	 * The qaction form rather than the plain menu item, because what goes in the Tools menu is
+	 * a submenu rather than something to click: a roll is picked by name from a list of every
+	 * one in the collection, which is a menu's own job and does not need a dialog to do it.
+	 */
+	auto *action =
+		static_cast<QAction *>(obs_frontend_add_tools_menu_qaction(obs_module_text("ToolsMenu.Designer")));
+	if (!action)
 		return;
 
-	/* Back through the snapshot the picker was built from, rather than by looking the name up. */
-	const int index = names.indexOf(chosen);
-	if (index >= 0)
-		openDesignerFor(candidates.at(index));
+	/* Outlives the plugin's own objects, so it hangs off the window rather than off anything here. */
+	auto *menu = new QMenu(mainWindow());
+	action->setMenu(menu);
+
+	const QByteArray id(sourceId);
+	QObject::connect(menu, &QMenu::aboutToShow, menu, [menu, id] { fillDesignerMenu(menu, id); });
+
+	/*
+	 * Filled once here as well, even though there is nothing to find at module load: an empty
+	 * submenu is drawn as an unusable one by the macOS menu bar, which would leave the entry
+	 * looking broken until something happened to open it. The placeholder is enough to keep it
+	 * a submenu, and the first hover replaces it with what is actually loaded.
+	 */
+	fillDesignerMenu(menu, id);
 }
 
 void closeDesignerFor(obs_source_t *source)
