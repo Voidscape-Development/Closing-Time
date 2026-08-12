@@ -44,6 +44,29 @@ constexpr int kCanvasInset = 10;
 /* Laid over the part of the roll that has not reached the canvas yet. */
 constexpr int kUpcomingScrimAlpha = 64;
 
+/*
+ * The layout overlay's colours, one per kind of box.
+ *
+ * Chosen to stay apart from each other rather than to be pretty: the point of the overlay is to
+ * say at a glance which rectangle is which, over a roll whose own colours are the user's.
+ */
+QColor layoutBoxColour(LayoutBox::Kind kind)
+{
+	switch (kind) {
+	case LayoutBox::Kind::Section:
+		return QColor(90, 180, 255);
+	case LayoutBox::Kind::Content:
+		return QColor(120, 220, 150);
+	case LayoutBox::Kind::Logo:
+		return QColor(255, 170, 60);
+	case LayoutBox::Kind::Bridge:
+		return QColor(235, 225, 110);
+	case LayoutBox::Kind::Text:
+	default:
+		return QColor(255, 120, 200);
+	}
+}
+
 void paintChecker(QPainter &painter, const QRect &rect)
 {
 	painter.fillRect(rect, QColor(48, 48, 48));
@@ -80,6 +103,32 @@ void PreviewWidget::setStrip(const Strip &newStrip, int newCanvasWidth, int newC
 	update();
 }
 
+void PreviewWidget::setLayoutBoxes(const LayoutBoxes &boxes)
+{
+	layoutBoxes = boxes;
+	if (layoutBoxesVisible)
+		update();
+}
+
+void PreviewWidget::setLayoutBoxesVisible(bool visible)
+{
+	if (visible == layoutBoxesVisible)
+		return;
+
+	layoutBoxesVisible = visible;
+	update();
+}
+
+void PreviewWidget::setHighlightedSection(int index)
+{
+	if (index == highlightedSection)
+		return;
+
+	highlightedSection = index;
+	if (layoutBoxesVisible)
+		update();
+}
+
 void PreviewWidget::scrollToStripY(int stripY)
 {
 	scroll = std::clamp(static_cast<int>(stripY * scaleFactor()), 0, maxScroll());
@@ -96,10 +145,25 @@ qreal PreviewWidget::scaleFactor() const
 	return static_cast<qreal>(canvasScreenWidth()) / static_cast<qreal>(canvasWidth);
 }
 
+qreal PreviewWidget::onAirHeight() const
+{
+	return std::min<qreal>(canvasHeight * scaleFactor(), height());
+}
+
+/*
+ * The roll stops scrolling once its last pixel has reached the bottom of the framed canvas, not
+ * once it has reached the bottom of the pane.
+ *
+ * The frame is the only part of the pane that says anything about what goes to air; everything
+ * below it is content that has not got there yet. Stopping at the pane's own bottom edge left the
+ * end of the roll parked in that dimmed run and refused to bring it any further, so the last
+ * sections could be looked at but never seen in the frame they are being designed for -- and the
+ * taller the pane, the more of the roll that was true of.
+ */
 int PreviewWidget::maxScroll() const
 {
 	const int scaledHeight = static_cast<int>(strip.height * scaleFactor());
-	return std::max(0, scaledHeight - height());
+	return std::max(0, scaledHeight - static_cast<int>(onAirHeight()));
 }
 
 QSize PreviewWidget::sizeHint() const
@@ -169,13 +233,18 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), tileHeight), tile.image);
 	}
 
-	const qreal onAirHeight = std::min<qreal>(canvasHeight * scale, height());
-	const QRectF onAir(canvasColumn.left() + 0.5, 0.5, canvasColumn.width() - 1.0, onAirHeight - 1.0);
+	const qreal framedHeight = onAirHeight();
+	const QRectF onAir(canvasColumn.left() + 0.5, 0.5, canvasColumn.width() - 1.0, framedHeight - 1.0);
 
 	/* Dimmed rather than hidden: this is still the content being edited, just not on air yet. */
-	if (onAirHeight < height())
-		painter.fillRect(QRectF(canvasColumn.left(), onAirHeight, canvasColumn.width(), height() - onAirHeight),
+	if (framedHeight < height())
+		painter.fillRect(QRectF(canvasColumn.left(), framedHeight, canvasColumn.width(),
+					height() - framedHeight),
 				 QColor(0, 0, 0, kUpcomingScrimAlpha));
+
+	/* Under the canvas frame, which has to stay readable over whatever the overlay draws. */
+	if (layoutBoxesVisible)
+		paintLayoutBoxes(painter, canvasColumn, scale);
 
 	painter.setBrush(Qt::NoBrush);
 
@@ -189,6 +258,63 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 	pen.setWidth(1);
 	painter.setPen(pen);
 	painter.drawRect(onAir);
+}
+
+/*
+ * Draws the layout's own rectangles over the roll: each section's box, the content area left
+ * inside its margins and padding, and every block of text, logo and bridge that was placed.
+ *
+ * This is a debugging view of the layout rather than a part of the design, so it says as much as
+ * it can while getting in the way as little as it can: hairlines rather than filled shapes, a
+ * section box dashed so it reads as a bound rather than as something drawn, and everything
+ * outside the selected section taken down to a quarter strength so the section being edited is
+ * the one that stands out. Boxes are drawn back to front -- the section's own box first, its
+ * contents over the top -- so a text column sitting exactly on its section's edge is still
+ * visible.
+ */
+void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColumn, qreal scale) const
+{
+	if (layoutBoxes.isEmpty())
+		return;
+
+	painter.save();
+	painter.setRenderHint(QPainter::Antialiasing, false);
+	painter.setBrush(Qt::NoBrush);
+
+	const auto draw = [&](LayoutBox::Kind kind) {
+		for (const LayoutBox &box : layoutBoxes) {
+			if (box.kind != kind)
+				continue;
+
+			const QRectF mapped(canvasColumn.left() + box.rect.x() * scale, box.rect.y() * scale - scroll,
+					    box.rect.width() * scale, box.rect.height() * scale);
+			if (mapped.bottom() < 0 || mapped.top() > height())
+				continue;
+
+			const bool dim = highlightedSection >= 0 && box.section != highlightedSection;
+
+			QColor colour = layoutBoxColour(kind);
+			colour.setAlpha(dim ? 60 : 230);
+
+			QPen boxPen(colour, 1);
+			if (kind == LayoutBox::Kind::Section)
+				boxPen.setStyle(Qt::DashLine);
+			else if (kind == LayoutBox::Kind::Content)
+				boxPen.setStyle(Qt::DotLine);
+
+			painter.setPen(boxPen);
+			/* Half-pixel inset so a one-pixel pen lands on the boundary, not either side of it. */
+			painter.drawRect(mapped.adjusted(0.5, 0.5, -0.5, -0.5));
+		}
+	};
+
+	draw(LayoutBox::Kind::Section);
+	draw(LayoutBox::Kind::Content);
+	draw(LayoutBox::Kind::Text);
+	draw(LayoutBox::Kind::Logo);
+	draw(LayoutBox::Kind::Bridge);
+
+	painter.restore();
 }
 
 } // namespace closingtime

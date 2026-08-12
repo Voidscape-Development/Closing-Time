@@ -261,7 +261,35 @@ void resetRoll(CreditsSourceData *data)
 	resetRollLocked(data);
 }
 
-void advance(CreditsSourceData *data, float seconds)
+/*
+ * How far to advance the roll for one tick, in seconds.
+ *
+ * `video_tick` reports the wall-clock gap since the last tick, and that gap jitters: a percent or
+ * two either side of the frame interval on an idle machine, more whenever anything else on the
+ * system takes a moment. Frames are composited on a fixed cadence regardless, so feeding the
+ * measured gap straight into the scroll position moves the roll a slightly different distance in
+ * each equally-spaced frame. On a page of type that reads as the roll catching -- appearing to
+ * stall for an instant and then carry on -- because the eye tracks the text and sees the spacing
+ * between successive positions change, not the clock the positions were derived from.
+ *
+ * A gap close enough to the video's own frame interval to be that jitter is therefore taken as
+ * the interval, which lands equal distances on equally-spaced frames and is what makes the
+ * movement read as smooth. A gap well outside that band is a real stall -- a dropped frame, a
+ * scene collection loading -- and is used as measured, so the roll keeps its timing over anything
+ * long enough to be worth keeping it over.
+ */
+double tickSeconds(float seconds)
+{
+	struct obs_video_info ovi;
+	if (!obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+		return seconds;
+
+	const double interval = static_cast<double>(ovi.fps_den) / static_cast<double>(ovi.fps_num);
+	const bool withinJitter = seconds > interval * 0.5 && seconds < interval * 1.5;
+	return withinJitter ? interval : static_cast<double>(seconds);
+}
+
+void advance(CreditsSourceData *data, double seconds)
 {
 	const Document &document = data->document;
 
@@ -495,7 +523,7 @@ void onHide(void *raw)
 
 void videoTick(void *raw, float seconds)
 {
-	advance(static_cast<CreditsSourceData *>(raw), seconds);
+	advance(static_cast<CreditsSourceData *>(raw), tickSeconds(seconds));
 }
 
 void drawBackground(const QColor &color, int width, int height)

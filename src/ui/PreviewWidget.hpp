@@ -39,6 +39,16 @@ public:
 
 	void setStrip(const Strip &strip, int canvasWidth, int canvasHeight, const QColor &background);
 
+	/*
+	 * The rectangles the layout placed things in, drawn over the roll when the overlay is on.
+	 * They are kept whether or not it is showing, so switching it on costs no re-render.
+	 */
+	void setLayoutBoxes(const LayoutBoxes &boxes);
+	void setLayoutBoxesVisible(bool visible);
+
+	/* The section drawn at full strength; every other one is dimmed. -1 highlights none. */
+	void setHighlightedSection(int index);
+
 	/* Scrolls so that `stripY` (in strip pixels) sits at the top of the visible area. */
 	void scrollToStripY(int stripY);
 
@@ -53,9 +63,16 @@ private:
 	/* Width the canvas is drawn at: the widget's, less the surround kept either side of it. */
 	int canvasScreenWidth() const;
 	qreal scaleFactor() const;
+	/* Height of the framed screenful at the top of the pane, in widget pixels. */
+	qreal onAirHeight() const;
 	int maxScroll() const;
 
+	void paintLayoutBoxes(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
+
 	Strip strip;
+	LayoutBoxes layoutBoxes;
+	bool layoutBoxesVisible = false;
+	int highlightedSection = -1;
 	int canvasWidth = 1920;
 	int canvasHeight = 1080;
 	QColor background = QColor(0, 0, 0, 0);

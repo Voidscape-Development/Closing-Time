@@ -105,7 +105,7 @@ side of the frame while still keeping a margin's worth of clear space off that s
 | | |
 |---|---|
 | `Edge` | the logo is pinned to the section edge and the text is handed everything left over |
-| `Hug` | logo, gap and text are measured as one group and aligned as one |
+| `Hug` | logo, gap and text are measured as one group and placed as one |
 | `Bridged` | the logo caps one end and the text the other, with the bridge running between |
 
 `Edge` came first and has a trap in it that is worth naming, because it looks like a bug and
@@ -113,9 +113,18 @@ is really a layout consequence: the text is given the *entire* remaining column 
 aligns inside it, so a centred title ends up halfway across the frame from its own logo.
 `logoGap` cannot pull them together, because under `Edge` it only ever sets the minimum
 distance between two columns, never the distance drawn. `Hug` is the fix — measuring the
-pair together and aligning the group is what makes the gap the real separation — and it is
+pair together and placing the group is what makes the gap the real separation — and it is
 what `Section::makeDefault` now hands out. `Edge` remains the *load-time* fallback, so
 documents written before the setting existed keep the layout they were built against.
+
+A `Hug` group is placed by **`sectionAlign`**, not by the style's own alignment. `Edge` and
+`Bridged` both consume the whole section box — the logo is pinned to one of its edges and the
+text runs to the other — so the box, and with it the section's placement, is what decides where
+they land. A `Hug` group is narrower than its box by construction, and aligning it by the text
+left the one setting named after placing a section unable to move it: a header placed hard left
+sat centred in that left-hand box because its title happened to be centred, which reads as the
+placement being ignored rather than as two settings interacting. The style's alignment keeps its
+own job inside the text column, which is where a wrapped or multi-line title needs it.
 
 `Bridged` reuses the Bridged section's machinery outright: `bridgeType`, `bridge` and
 `bridgeFill` mean exactly what they mean there, and the leader is hung off the text's own
@@ -354,6 +363,24 @@ offset 0 and travels upward, so the roll enters from the bottom. Total travel is
 `canvasHeight + stripHeight`; `leadIn`/`leadOut` are baked into the strip itself as blank
 space at its top and bottom.
 
+The distance travelled per tick comes from the **video's own frame interval**, not from the
+gap `video_tick` reports. That gap is wall-clock and jitters — a percent or two either side of
+the interval on an idle machine, more when anything else on the system takes a moment — while
+frames are composited on a fixed cadence regardless. Feeding the measured gap straight in moves
+the roll a slightly different distance in each equally-spaced frame, and on a page of type that
+reads as the roll catching: appearing to stall for an instant and then carry on, because the eye
+tracks the text and sees the spacing between successive positions change rather than the clock
+those positions came from. A gap close enough to the interval to be that jitter is therefore
+taken *as* the interval; one well outside the band is a real stall — a dropped frame, a scene
+collection loading — and is used as measured, so the roll keeps its timing over anything long
+enough to be worth keeping it over.
+
+**Layout boxes.** `render()` optionally fills a `LayoutBoxes` with the rectangle every section,
+content area, text block, logo and bridge was placed in, for the designer's layout overlay. They
+are collected in the measure pass, which each section goes through exactly once, so they cannot
+disagree with what was painted and a section straddling a tile seam is reported once rather than
+once per tile. The source passes nothing and pays for none of it.
+
 **Clipping.** Rather than a scissor rect — which lives in screen space and would fight the
 scene item's transform — each tile is drawn as the part of itself that actually falls inside
 the canvas. The background is a solid quad drawn underneath.
@@ -462,6 +489,15 @@ the three-digit pixel height beside it. The gradient stop table sizes itself the
 the stops it actually holds up to a cap, rather than at a fixed height that turned every sweep
 past four stops into a four-row window and gave a two-stop one empty rows it had no use for.
 
+Within that table a row is sized from the **position spin box** and nothing else, and the colour
+swatch beside it takes whatever height the row comes out at. A push button asks for more height
+than a spin box — several pixels more under the themes OBS ships — and sizing the row against
+the taller of the two made every row taller than the value it exists to sit beside, which cost a
+stop or two off the bottom of the table and gained nothing that was any easier to read. The
+position column is sized from that spin box too: `resizeColumnToContents` measures items, and
+every cell here holds a widget instead, so the column was coming out the width of its own header
+and clipping the value it was showing.
+
 Preview re-renders are debounced by
 250 ms so typing does not re-rasterise the strip on every keystroke, and the render itself
 happens off-thread, so even a roll that takes seconds to rasterise leaves the window usable.
@@ -528,7 +564,31 @@ the wheel moving through it. The dashed frame is the canvas: one screenful, held
 the pane, so the roll runs up through it the way it will on air, and everything below the frame
 is dimmed as content that has not reached the screen yet.
 
-Both halves of that are corrections to an outline that had stopped saying anything. The strip
+Scrolling therefore stops when the last pixel of the roll reaches the **bottom of that frame**,
+not the bottom of the pane. The frame is the only part of the pane that says anything about what
+goes to air; stopping at the pane's own edge left the end of the roll parked in the dimmed run
+below it and refused to bring it any further, so the closing sections could be looked at but
+never seen in the frame they are being designed for — and a roll shorter than the pane could not
+be scrolled at all.
+
+### Layout overlay
+
+A checkbox under the preview draws the layout's own rectangles over the roll: each section's
+box, the content area left inside its margins and padding, and every block of text, logo and
+bridge placed within it. It is the answer to "why is this section *there*" — a section box that
+turns out to be half the canvas, or a text column that turns out to be the width of its own
+words rather than the width of the section, names the setting responsible immediately, where the
+rendered pixels alone only show the result.
+
+It is a debugging view rather than part of the design, so it says as much as it can while
+getting in the way as little as it can: hairlines rather than fills, the section box dashed and
+the content area dotted so both read as bounds rather than as something drawn, and everything
+outside the selected section dimmed to a quarter strength. The boxes come back with **every**
+preview render rather than only while the overlay is showing, which is what lets it be switched
+on over the strip already on screen instead of waiting on a rebuild; the cost is a handful of
+rectangles per section against a full rasterisation.
+
+Both halves of the framing below are corrections to an outline that had stopped saying anything. The strip
 was drawn edge to edge, which put the canvas's left and right edges exactly on the pane's own
 border — an outline with nothing on the far side of it to mark it off against — and the dimming
 is what makes the frame's bottom edge a boundary rather than a line lying across the middle of
@@ -609,6 +669,15 @@ rows in place rather than rebuilding them, so a mapping the user has already set
   the roll below one screenful is dimmed.
 - Colour buttons paint their swatch instead of carrying a stylesheet that leaked into the colour
   dialog they opened.
+- A layout overlay in the designer, drawing every section box, content area, text block, logo and
+  bridge the layout placed.
+- A logo row that moves with its text is placed by the section's own placement, so the setting
+  named after placing a section can move one.
+- The roll advances by the video's frame interval rather than by a jittering wall-clock delta,
+  which is what made it appear to catch every few seconds.
+- The preview scrolls until the end of the roll reaches the canvas frame rather than the bottom
+  of the pane.
+- Gradient stop rows are sized from the value they hold rather than from the button beside it.
 
 ## Verifying changes
 
@@ -646,6 +715,19 @@ inside the box it was given while a full-width one still spans margin to margin;
 agreement over a document holding every section type; the `obs_data` round trip for the two new
 fields and a document written before them loading full width and centred; and a logo's shadow
 landing at its offset without changing the strip's height.
+
+The layout overlay, the logo row's placement and the two designer sizing fixes were checked
+offscreen against the previous build as well as the new one, so each case is known to fail before
+it passes: a Hug logo row landing hard left, centred and hard right as the section placement says,
+at full width as well as half; every combination of placement, logo side, alignment, margin and
+overlong text keeping its ink inside the section box it was given; one section box and one content
+box per visible section, contiguous from the lead-in to the strip's end, with every text, logo and
+bridge box inside its own section's content area, nothing reported for a hidden section, and a
+render that asks for no boxes coming out identical to one that does; the end of the roll reaching
+the canvas frame at full scroll for a strip longer than the pane and for one shorter than it,
+where the pane previously would not scroll at all; and a stop row staying the height of its
+position spin box under a theme whose buttons are taller than one, with the swatch filling that
+row and neither scroll bar appearing.
 
 The designer's layout was checked offscreen too, by giving the editor more height than it needs
 and measuring the largest run of empty space between its visible controls — 6 px for every
