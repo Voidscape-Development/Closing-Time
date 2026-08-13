@@ -485,6 +485,27 @@ void paintLogo(QPainter *painter, const QImage &image, const QRect &rect, const 
 	painter->drawImage(rect, image);
 }
 
+/*
+ * Gathers the boxes the layout puts things in, for the designer's overlay.
+ *
+ * Null everywhere except the one measure pass that is asked for them, so the layout code can
+ * report a rectangle without checking first whether anyone is listening, and the source's own
+ * renders carry no cost for a feature only the designer uses.
+ */
+struct BoxCollector {
+	LayoutBoxes *boxes = nullptr;
+	int section = -1;
+
+	void add(LayoutBox::Kind kind, const QRectF &rect)
+	{
+		/* Nothing was placed, so there is nothing to outline: an empty entry, a missing logo. */
+		if (rect.width() <= 0.0 || rect.height() <= 0.0)
+			return;
+
+		boxes->append(LayoutBox{kind, section, rect});
+	}
+};
+
 /* Where the logo and text of a "... w/ Logo" row sit horizontally. */
 struct LogoRow {
 	qreal logoX = 0.0;
@@ -502,6 +523,13 @@ struct LogoRow {
  * (Bridged). Hug is the one that makes `logoGap` mean what it looks like it means, because
  * the pair is measured together and then aligned as a unit -- under Edge the text aligns
  * inside the whole remaining column instead, and drifts away from the logo.
+ *
+ * A Hug group is placed by the section's own placement, not by the text's alignment. Edge and
+ * Bridged both consume the whole section box, so the box -- and therefore `sectionAlign` -- is
+ * what says where they land; a Hug group is narrower than its box, and aligning it by the text
+ * instead left the one setting named after placing a section unable to move it. The text's
+ * alignment still does its own job inside the column, which is where a wrapped or multi-line
+ * title needs it.
  */
 LogoRow placeLogoRow(const Section &section, const TextStyle &style, qreal contentX, qreal contentWidth,
 		     qreal logoWidth)
@@ -524,7 +552,7 @@ LogoRow placeLogoRow(const Section &section, const TextStyle &style, qreal conte
 			std::min(naturalTextWidth(section.text, style), std::max(0.0, contentWidth - logoWidth - gap));
 
 		const qreal groupWidth = logoWidth + gap + row.textWidth;
-		const qreal groupX = contentX + alignOffset(style.align, contentWidth, groupWidth);
+		const qreal groupX = contentX + alignOffset(section.sectionAlign, contentWidth, groupWidth);
 
 		row.logoX = onLeft ? groupX : groupX + row.textWidth + gap;
 		row.textX = onLeft ? groupX + logoWidth + gap : groupX;
@@ -782,10 +810,19 @@ int paintBridge(QPainter *painter, const PreparedBridge &bridge, const Section &
  * into the current tile; with `painter` null it only reports the height. `top` is the
  * section's Y position in strip space, which is also painter space -- callers translate
  * the painter by the tile offset before drawing.
+ *
+ * `boxes`, when given, collects the rectangles things were placed in for the designer's layout
+ * overlay. Only the measure pass is ever asked for them -- see BoxCollector.
  */
 int layoutSection(QPainter *painter, const Section &section, const Document &document, LogoCache *logos,
-		  BridgeArtCache *bridges, int top)
+		  BridgeArtCache *bridges, int top, BoxCollector *boxes = nullptr)
 {
+	/* Reads as one call at every site whether or not anyone is collecting. */
+	const auto record = [boxes](LayoutBox::Kind kind, const QRectF &rect) {
+		if (boxes)
+			boxes->add(kind, rect);
+	};
+
 	/*
 	 * The section's box: a share of the canvas width, placed within it by `sectionAlign`, with
 	 * `marginX` taken off each of the box's own edges. A margin alone can only ever centre the
@@ -813,16 +850,21 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		break;
 
 	case SectionType::Title:
-	case SectionType::Header:
-		y += layoutText(painter, section.text, style, contentX, y, contentWidth);
+	case SectionType::Header: {
+		const int height = layoutText(painter, section.text, style, contentX, y, contentWidth);
+		record(LayoutBox::Kind::Text, QRectF(contentX, y, contentWidth, height));
+		y += height;
 		break;
+	}
 
 	case SectionType::LogoTitle:
 	case SectionType::LogoHeader: {
 		const QImage image = logos->get(section.logo.path, section.logo.maxHeight);
 		const QSize size = logoDrawSize(image, section.logo, contentWidth);
 		const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
-		paintLogo(painter, image, QRect(QPoint(x, y), size), style);
+		const QRect box(QPoint(x, y), size);
+		paintLogo(painter, image, box, style);
+		record(LayoutBox::Kind::Logo, QRectF(box));
 		y += size.height();
 		break;
 	}
@@ -840,9 +882,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const qreal textTop = y + (rowHeight - textHeight) / 2.0;
 
 		/* The logo and the text are centred against each other within the row. */
-		paintLogo(painter, image,
-			  QRect(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize), style);
+		const QRect logoBox(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize);
+		paintLogo(painter, image, logoBox, style);
 		layoutText(painter, section.text, style, row.textX, textTop, row.textWidth);
+
+		record(LayoutBox::Kind::Logo, QRectF(logoBox));
+		record(LayoutBox::Kind::Text, QRectF(row.textX, textTop, row.textWidth, textHeight));
 
 		if (section.logoPlacement == LogoPlacement::Bridged) {
 			const PreparedBridge bridge = prepareBridge(section, style, bridges, row.bridgeWidth);
@@ -856,8 +901,10 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 							 ? QFontMetricsF(makeFont(style)).ascent()
 							 : firstBaseline(section.text, style, row.textWidth);
 			const qreal baseline = textTop + textAscent;
-			paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
-				    baseline - bridge.ascent(section), row.bridgeWidth);
+			const qreal bridgeTop = baseline - bridge.ascent(section);
+			const int bridgeHeight = paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
+							     bridgeTop, row.bridgeWidth);
+			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
 		}
 
 		y += rowHeight;
@@ -895,6 +942,10 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const int bridgeHeight = paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
 							     bridgeTop, row.bridgeWidth);
 
+			record(LayoutBox::Kind::Text, QRectF(row.leftX, leftTop, row.leftWidth, leftHeight));
+			record(LayoutBox::Kind::Text, QRectF(row.rightX, rightTop, row.rightWidth, rightHeight));
+			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
+
 			int rowHeight = 1;
 			const auto extend = [&rowHeight, y](qreal top, int height) {
 				/* An empty part has no height and must not push the row down. */
@@ -916,7 +967,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::TextList: {
 		for (const Entry &entry : section.entries) {
-			y += layoutText(painter, entry.text, style, contentX, y, contentWidth);
+			const int height = layoutText(painter, entry.text, style, contentX, y, contentWidth);
+			record(LayoutBox::Kind::Text, QRectF(contentX, y, contentWidth, height));
+			y += height;
 			y += section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -929,7 +982,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const QImage image = logos->get(entry.logo.path, entry.logo.maxHeight);
 			const QSize size = logoDrawSize(image, entry.logo, contentWidth);
 			const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
-			paintLogo(painter, image, QRect(QPoint(x, y), size), style);
+			const QRect box(QPoint(x, y), size);
+			paintLogo(painter, image, box, style);
+			record(LayoutBox::Kind::Logo, QRectF(box));
 			y += size.height() + section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -969,10 +1024,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					const QSize size = logoDrawSize(image, entry.logo, columnWidth);
 					const int logoX =
 						x + qRound(alignOffset(style.align, columnWidth, size.width()));
-					paintLogo(painter, image, QRect(QPoint(logoX, y), size), style);
+					const QRect box(QPoint(logoX, y), size);
+					paintLogo(painter, image, box, style);
+					record(LayoutBox::Kind::Logo, QRectF(box));
 					rowHeight = std::max(rowHeight, size.height());
 				} else {
 					const int height = layoutText(painter, entry.text, style, x, y, columnWidth);
+					record(LayoutBox::Kind::Text, QRectF(x, y, columnWidth, height));
 					rowHeight = std::max(rowHeight, height);
 				}
 			}
@@ -987,7 +1045,19 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	/* A section never collapses below its own padding, even with nothing in it. */
 	y = std::max(y, contentTop);
-	return (y - top) + section.paddingBottom;
+
+	const int height = (y - top) + section.paddingBottom;
+
+	/*
+	 * Recorded last, because both are only known once the content has been laid out: the box
+	 * spans the padding as well as the content, the content area only what sits between the
+	 * margins and inside the padding. The difference between the two is what a section's
+	 * spacing settings actually bought.
+	 */
+	record(LayoutBox::Kind::Section, QRectF(boxX, top, boxWidth, height));
+	record(LayoutBox::Kind::Content, QRectF(contentX, contentTop, contentWidth, y - contentTop));
+
+	return height;
 }
 
 struct PlacedSection {
@@ -1018,17 +1088,22 @@ int effectBleed(const Document &document)
 }
 
 QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos, BridgeArtCache *bridges,
-				     int *totalHeight)
+				     int *totalHeight, LayoutBoxes *boxes = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
 
+	BoxCollector collector{boxes, -1};
+
 	int y = document.leadIn;
-	for (const Section &section : document.sections) {
+	for (int index = 0; index < document.sections.size(); ++index) {
+		const Section &section = document.sections.at(index);
 		if (!section.visible)
 			continue;
 
-		const int height = layoutSection(nullptr, section, document, logos, bridges, y);
+		collector.section = index;
+		const int height =
+			layoutSection(nullptr, section, document, logos, bridges, y, boxes ? &collector : nullptr);
 		placed.append(PlacedSection{&section, y, height});
 		y += height;
 
@@ -1189,15 +1264,18 @@ int StripRenderer::measure(const Document &document) const
 	return total - document.leadIn - document.leadOut;
 }
 
-Strip StripRenderer::render(const Document &document) const
+Strip StripRenderer::render(const Document &document, LayoutBoxes *boxes) const
 {
 	Strip strip;
 	strip.width = std::max(1, document.width);
 
 	BridgeArtCache bridges;
 
+	if (boxes)
+		boxes->clear();
+
 	int total = 0;
-	const QVector<PlacedSection> placed = placeSections(document, logos, &bridges, &total);
+	const QVector<PlacedSection> placed = placeSections(document, logos, &bridges, &total, boxes);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
 	if (strip.height <= 0 || placed.isEmpty())

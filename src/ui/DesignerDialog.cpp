@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDropEvent>
 #include <QFile>
@@ -376,6 +377,13 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	preview = new PreviewWidget(previewPane);
 	preview->setToolTip(moduleText("Designer.Preview.Tip"));
 	previewLayout->addWidget(preview, 1);
+	/*
+	 * Off by default: this is a view of the layout rather than of the roll, wanted only while
+	 * a section is not landing where its settings say it should.
+	 */
+	layoutBoxesCheck = new QCheckBox(moduleText("Designer.LayoutBoxes"), previewPane);
+	layoutBoxesCheck->setToolTip(moduleText("Designer.LayoutBoxes.Tip"));
+	previewLayout->addWidget(layoutBoxesCheck);
 	durationLabel = new QLabel(previewPane);
 	previewLayout->addWidget(durationLabel);
 	fontWarningLabel = new QLabel(previewPane);
@@ -427,6 +435,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	editBurstTimer->setSingleShot(true);
 	editBurstTimer->setInterval(kEditBurstMs);
 
+	connect(layoutBoxesCheck, &QCheckBox::toggled, this, [this](bool on) { preview->setLayoutBoxesVisible(on); });
 	connect(refreshTimer, &QTimer::timeout, this, &DesignerDialog::refreshPreview);
 	connect(editBurstTimer, &QTimer::timeout, this, [this] { editBurstOpen = false; });
 	connect(collapseButton, &QToolButton::clicked, this, [this] { setSectionsCollapsed(!sectionsCollapsed); });
@@ -527,6 +536,8 @@ void DesignerDialog::refreshSectionList(int selectRow)
 	const int row = std::clamp(selectRow, -1, static_cast<int>(document.sections.size()) - 1);
 	sectionList->setCurrentRow(row);
 	currentIndex = row;
+	/* Set here as well as on selection: this path moves the row with the list's signals blocked. */
+	preview->setHighlightedSection(row);
 
 	if (row >= 0)
 		editor->setSection(document.sections.at(row));
@@ -653,6 +664,7 @@ void DesignerDialog::onSelectionChanged()
 	const int row = sectionList->currentRow();
 	currentIndex = row;
 	editorScroll->setEnabled(row >= 0);
+	preview->setHighlightedSection(row);
 
 	if (row >= 0 && row < document.sections.size())
 		editor->setSection(document.sections.at(row));
@@ -832,23 +844,31 @@ void DesignerDialog::refreshPreview()
 	 */
 	postRenderJob([rendered = document, cache = logos, target = sink] {
 		const StripRenderer renderer(cache.get());
-		Strip strip = renderer.render(rendered);
+		/*
+		 * Collected on every preview render rather than only while the overlay is showing,
+		 * so switching it on draws what is already on screen instead of waiting on a
+		 * rebuild. It is a few rectangles per section against a full rasterisation.
+		 */
+		LayoutBoxes boxes;
+		Strip strip = renderer.render(rendered, &boxes);
 
 		QMetaObject::invokeMethod(
 			qApp,
-			[rendered, strip = std::move(strip), target] {
+			[rendered, strip = std::move(strip), boxes = std::move(boxes), target] {
 				if (target->dialog)
-					target->dialog->applyPreview(rendered, strip);
+					target->dialog->applyPreview(rendered, strip, boxes);
 			},
 			Qt::QueuedConnection);
 	});
 }
 
-void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip)
+void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, const LayoutBoxes &boxes)
 {
 	previewInFlight = false;
 
 	preview->setStrip(strip, rendered.width, rendered.height, rendered.background);
+	preview->setLayoutBoxes(boxes);
+	preview->setHighlightedSection(currentIndex);
 
 	const double travel = rendered.height + strip.height;
 	const double seconds = rendered.scrollSpeed > 0.0 ? travel / rendered.scrollSpeed : 0.0;

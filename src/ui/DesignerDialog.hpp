@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "model/CreditsModel.hpp"
 #include "render/StripRenderer.hpp"
 
+class QCheckBox;
 class QDialogButtonBox;
 class QLabel;
 class QPushButton;
@@ -137,7 +138,7 @@ private:
 	 * document the strip was rendered from rather than reading the live one, so the canvas
 	 * outline and the readouts always describe the pixels actually on screen.
 	 */
-	void applyPreview(const Document &rendered, const Strip &strip);
+	void applyPreview(const Document &rendered, const Strip &strip, const LayoutBoxes &boxes);
 
 	/* Commits the editor's current state into `document` at `currentIndex`. */
 	void commitCurrentSection();
@@ -230,6 +231,8 @@ private:
 	SectionEditor *editor = nullptr;
 	QScrollArea *editorScroll = nullptr;
 	PreviewWidget *preview = nullptr;
+	/* Switches the layout overlay on; the boxes themselves come with every render. */
+	QCheckBox *layoutBoxesCheck = nullptr;
 	QLabel *durationLabel = nullptr;
 	/* Hidden unless the roll asks for a font this machine does not have. */
 	QLabel *fontWarningLabel = nullptr;

@@ -107,6 +107,39 @@ struct Strip {
 };
 
 /*
+ * One rectangle the layout put something in, in strip space.
+ *
+ * Nothing in the roll is drawn from these -- they are what the designer's layout overlay draws
+ * on top of the preview, so that a section landing somewhere unexpected can be read off the
+ * screen instead of guessed at from the settings that produced it. A section box that turns out
+ * to be half the canvas, or a text column that turns out to be the width of its own words rather
+ * than the width of the section, says immediately which setting is doing it.
+ *
+ * They are collected during the measure pass, which every section goes through exactly once, so
+ * the boxes cannot disagree with what was painted and a section straddling a tile seam is
+ * reported once rather than once per tile.
+ */
+struct LayoutBox {
+	enum class Kind {
+		/* The section's share of the canvas width, over the full height it occupies. */
+		Section,
+		/* What is left of that box once the side margins and the padding are taken off. */
+		Content,
+		/* The column a run of text was laid out into -- not the ink, which may be narrower. */
+		Text,
+		Logo,
+		Bridge,
+	};
+
+	Kind kind = Kind::Section;
+	/* Index into Document::sections, so the overlay can pick the selected section out. */
+	int section = -1;
+	QRectF rect;
+};
+
+using LayoutBoxes = QVector<LayoutBox>;
+
+/*
  * Lays a document out into a strip of tiles.
  *
  * Painting is into a QImage, which Qt supports off the GUI thread, so this runs on the
@@ -121,7 +154,12 @@ public:
 	/* Maximum tile height in pixels. Tiles are also capped to the strip's own height. */
 	static constexpr int kTileHeight = 2048;
 
-	Strip render(const Document &document) const;
+	/*
+	 * Rasterises the document. When `boxes` is given it is filled with the rectangles the
+	 * layout placed things in, for the designer's overlay; the source passes nothing and
+	 * pays for none of it.
+	 */
+	Strip render(const Document &document, LayoutBoxes *boxes = nullptr) const;
 
 	/*
 	 * Total content height in pixels, excluding lead-in and lead-out. Cheaper than a full

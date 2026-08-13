@@ -62,6 +62,9 @@ constexpr int kMaxStopTableHeight = 320;
 /* Breathing room around a stop's own controls, so a row is not the exact height of a spin box. */
 constexpr int kStopRowPadding = 4;
 
+/* Slack added to the position column, so the spin box is not drawn hard against the grid line. */
+constexpr int kStopColumnPadding = 8;
+
 /* Checkerboard cell size behind a swatch carrying alpha. */
 constexpr int kSwatchCheckerSize = 5;
 
@@ -244,6 +247,12 @@ GradientEditor::GradientEditor(QWidget *parent) : QWidget(parent)
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
 	table->setSelectionMode(QAbstractItemView::SingleSelection);
 	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	/*
+	 * Two columns, one of them fixed to what a percentage needs and the other taking the rest:
+	 * there is never anything off to the side to scroll to, and a bar along the bottom would
+	 * only eat into the height the rows are sized against.
+	 */
+	table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	/* Height follows the stop count -- see updateTableHeight -- rather than being fixed here. */
 	layout->addWidget(table);
 
@@ -327,6 +336,14 @@ void GradientEditor::rebuildTable()
 		table->setCellWidget(row, StopPosition, position);
 
 		auto *colour = new ColourButton(table);
+		/*
+		 * The swatch takes the height the row is given rather than asking for one of its own.
+		 * A push button asks for more height than a spin box, and letting it have that made
+		 * every row taller than the value it exists to sit beside -- which cost a stop or two
+		 * off the bottom of the table and gained nothing that was any easier to read.
+		 */
+		colour->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+		colour->setMinimumHeight(0);
 		colour->setColour(stop.color);
 		colour->setDialogTitle(moduleText("Designer.GradientStop.Colour"));
 		connect(colour, &ColourButton::colourChanged, this, [this] {
@@ -343,15 +360,24 @@ void GradientEditor::rebuildTable()
 		}
 
 		/*
-		 * Rows are sized from the controls they hold. A cell widget is stretched to whatever
-		 * the row happens to be, so leaving the row at the header's default height is what
-		 * decides whether a spin box is drawn at its own size or squashed into less.
+		 * Rows are sized from the position spin box and nothing else. A cell widget is
+		 * stretched to whatever the row happens to be, so this one number decides both
+		 * whether the spin box is drawn at its own size and how tall the swatch beside it
+		 * comes out -- and the spin box, being the control with a value to read, is the one
+		 * worth sizing the row against.
 		 */
-		table->setRowHeight(row, std::max(position->sizeHint().height(), colour->sizeHint().height()) +
-						 kStopRowPadding);
+		table->setRowHeight(row, position->sizeHint().height() + kStopRowPadding);
 	}
 
-	table->resizeColumnToContents(StopPosition);
+	/*
+	 * resizeColumnToContents measures items, and every cell here holds a widget instead, so the
+	 * position column has to be sized from the spin box itself or it comes out the width of its
+	 * own header and clips the value it is showing.
+	 */
+	if (table->rowCount() > 0) {
+		const QWidget *position = table->cellWidget(0, StopPosition);
+		table->setColumnWidth(StopPosition, position->sizeHint().width() + kStopColumnPadding);
+	}
 	updateTableHeight();
 	removeButton->setEnabled(false);
 	preview->setSpec(fill, current);
