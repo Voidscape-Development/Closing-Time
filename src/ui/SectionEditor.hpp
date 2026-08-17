@@ -196,6 +196,8 @@ private:
 	QSpinBox *columnGap = nullptr;
 	QComboBox *fillOrder = nullptr;
 	QSpinBox *entryGap = nullptr;
+	QSpinBox *subtitleGap = nullptr;
+	QComboBox *subtitleOrder = nullptr;
 
 	QSpinBox *paddingTop = nullptr;
 	QSpinBox *paddingBottom = nullptr;

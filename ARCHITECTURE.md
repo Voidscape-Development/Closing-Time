@@ -65,12 +65,14 @@ A `Document` is a canvas (`width`, `height`, `background`), playback settings
 (`scrollSpeed`, `leadIn`, `leadOut`, `loop`, `startOnShow`, `startDelay`), an
 `EndingActionConfig`, a list of `StylePreset`s, and an ordered list of `Section`s.
 
-`Section` is a single struct covering all twelve types rather than a class hierarchy. The
-fields a given type actually uses are described by four predicates —
-`sectionUsesText/Logos/Entries/Columns` — which drive both the layout switch and the
-editor's field visibility. One struct keeps serialisation trivial and makes changing a
-section's type in the designer a non-destructive operation: nothing is thrown away, the
-unused fields simply stop being read.
+`Section` is a single struct covering all fourteen types rather than a class hierarchy. The
+fields a given type actually uses are described by five predicates —
+`sectionUsesText/Logos/Entries/Columns/Subtitles` — which drive both the layout switch and the
+editor's field visibility, plus `sectionUsesSecondaryText`, derived from two of them rather than
+tabulated because "the entry carries two texts" is true of a bridged row and a title/subtitle
+pair alike however differently they are laid out. One struct keeps serialisation trivial and
+makes changing a section's type in the designer a non-destructive operation: nothing is thrown
+away, the unused fields simply stop being read.
 
 ### The section box
 
@@ -93,8 +95,9 @@ side of the frame while still keeping a margin's worth of clear space off that s
 | `LogoTitle`, `LogoHeader` | a logo, no text | for wordmarks used as the heading itself |
 | `Bridged` | entry list of left/right pairs | joined by `bridge`, e.g. `Director . . . . . . Jane Doe`; see below |
 | `TextList` | entry list, one column | |
+| `TitleSubtitleList` | entry list of stacked text pairs | e.g. a position over the name that holds it; see below |
 | `LogoList` | entry list of logos, one column | |
-| `MultiTextList`, `MultiLogoList` | entry list over `columns` columns | `fillAcross` picks row-major vs column-major |
+| `MultiTextList`, `MultiLogoList`, `MultiTitleSubtitleList` | entry list over `columns` columns | `fillAcross` picks row-major vs column-major |
 | `Spacer` | nothing | a blank run of `spacerHeight` px |
 
 ### Logo rows
@@ -253,6 +256,46 @@ markup, so the cache exists to avoid re-parsing once per *row*, not once per ren
 rebuilding it each time is what makes a custom SVG edited on disk show up in the next rebuild
 with nothing having to watch the file.
 
+### Title and subtitle rows
+
+A `TitleSubtitleList` entry is two texts stacked rather than two texts on a line: `text` above
+`secondaryText`, drawn in the section's primary and secondary styles respectively. It is the
+same pair of fields a `Bridged` row carries, and deliberately so — the two types are the two
+ways the same content wants to be set, so switching between them keeps every entry intact,
+which is the whole reason `Section` is one struct. `MultiTitleSubtitleList` is that entry
+placed into columns, sharing the multi-list's `columns`, `columnGap` and `fillAcross` and
+folded into the same layout branch; a row is as tall as the tallest pair in it, so a title
+that wraps pushes the next row down rather than overlapping the pair beneath it.
+
+Three things decide how a pair reads:
+
+**`subtitleGap` is a separate number from `entryGap`,** because the two say opposite things:
+one binds the two lines of an entry together, the other holds consecutive entries apart. A list
+where they are equal is not a list of pairs at all — it is a single run of alternating lines,
+with nothing but the styles saying which line belongs to which. That is also why
+`makeDefault` hands out a wider `entryGap` than the other list types get, and turns
+`useSecondaryStyle` on with a smaller size behind it: a pair drawn in one style at one spacing
+is a `TextList` with twice as many rows.
+
+**`subtitleFirst` moves the placement and nothing else.** `text` is still the title in
+`style` and `secondaryText` still the subtitle in `secondaryStyle` when it is set, so flipping
+the order never migrates content between the two fields and never relabels the columns of the
+editor's table. Name-over-role and role-over-name are the same document with one flag between
+them.
+
+**Each line is aligned by its own style,** within the full section (or column) width, rather
+than the two being measured and placed as one group the way a `Hug` logo row is. A pair is
+already the full width of what it is given — unlike that logo row, which is narrower than its
+box by construction — so there is no group left to place, and aligning them separately is what
+lets a title sit hard left with its subtitle under the right-hand end of it. `sectionAlign`
+still moves the whole list, since it moves the box both lines are laid out in.
+
+An empty line takes neither height nor gap with it, so an entry carrying only one of its two
+texts occupies exactly what that one line does. That is what lets a heading row sit in an
+otherwise paired list without reserving a blank line's worth of space for the text that is
+not there — the same courtesy `bridgeSpanEmpty` extends to a bridged row, arrived at without
+needing a setting because a stack has nothing to redistribute.
+
 ### Text fills, outlines and shadows
 
 A `TextStyle` says what the glyphs are *filled* with as well as what font they are set in.
@@ -306,8 +349,9 @@ thread, not per frame — playback still draws the same tiles it always did.
 ### Style presets
 
 A `StylePreset` is a named `TextStyle` on the document. A section may bind to one by name
-(`stylePresetName`, and `secondaryStylePresetName` for the right-hand side of a `Bridged`
-section); everything that lays text out goes through `Document::effectiveStyle` /
+(`stylePresetName`, and `secondaryStylePresetName` for whichever second text the type carries
+— the right-hand side of a `Bridged` row, or the subtitle of a title/subtitle list);
+everything that lays text out goes through `Document::effectiveStyle` /
 `effectiveSecondaryStyle` rather than reading `Section::style` directly, so a binding cannot
 be bypassed by forgetting to resolve it in one branch of the layout switch.
 
@@ -622,8 +666,11 @@ common column count, weighted by that count, so a separator that never actually 
 anything loses to one that yields a consistent table.
 
 The dialog offers the fields that make sense for the target section type — left/right for
-Bridged, path/height for logo lists, text otherwise — defaulting to mapping columns onto
-those fields in order. Import replaces or appends, per a checkbox.
+Bridged, title/subtitle for a title/subtitle list, path/height for logo lists, text otherwise
+— defaulting to mapping columns onto those fields in order. The two-text types share one
+branch off `sectionUsesSecondaryText` and differ only in what the fields are called, which is
+what makes a spreadsheet of roles and names import into either shape unchanged. Import
+replaces or appends, per a checkbox.
 
 The mapping sits in a panel beside the preview rather than in a strip above it: one row per
 column, scrolling down as far as the file is wide, so a dozen-column spreadsheet needs no
@@ -678,12 +725,14 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 - The preview scrolls until the end of the roll reaches the canvas frame rather than the bottom
   of the pane.
 - Gradient stop rows are sized from the value they hold rather than from the button beside it.
+- Title/subtitle lists, in one column and over several, for the run of pairs — a position over
+  the name that holds it — that the bridged row was the only way to set.
 
 ## Verifying changes
 
 The plugin builds clean against libobs and Qt 6 with `-Wextra -Werror`. There is no test
 target in the template yet; renderer and parser changes were validated with an offscreen
-harness covering the `obs_data` round trip for all twelve section types, measure/render
+harness covering the `obs_data` round trip for all fourteen section types, measure/render
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
 
@@ -728,6 +777,23 @@ the canvas frame at full scroll for a strip longer than the pane and for one sho
 where the pane previously would not scroll at all; and a stop row staying the height of its
 position spin box under a theme whose buttons are taller than one, with the swatch filling that
 row and neither scroll bar appearing.
+
+Title/subtitle lists were checked the same way, each case against the previous build as well as
+the new one so that it is known to fail before it passes: the two lines of an entry separated by
+`subtitleGap` exactly and consecutive entries by `entryGap`, over a list whose two styles are set
+at different sizes; every line staying inside the content area it was given; `subtitleFirst`
+swapping both which style is drawn on top and which *text* is — checked separately, since a list
+whose styles swap without its texts measures identically to one where both do, and only a title
+wrapped to two lines against a single-line subtitle at the same size tells them apart — while
+leaving the section's height unchanged; an entry with no subtitle measuring exactly as tall as
+the same text in a plain `TextList`, and one with no title drawing a single line; a title set
+left against a subtitle set right inking opposite halves of the column, read off the rendered
+pixels because the layout boxes report the column rather than the ink; a multi-list filling
+across and filling down putting the same entries in demonstrably different columns, with each row
+clearing the tallest pair above it; the `obs_data` round trip for both new fields across every
+section type; a document written before either existed loading title-first with the default gap,
+and a stored gap of zero surviving as zero rather than being read back as that default; and
+measure/render agreement plus tile contiguity over a document holding all fourteen types.
 
 The designer's layout was checked offscreen too, by giving the editor more height than it needs
 and measuring the largest run of empty space between its visible controls — 6 px for every

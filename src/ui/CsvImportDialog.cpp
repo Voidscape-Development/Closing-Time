@@ -174,26 +174,31 @@ bool CsvImportDialog::replaceExisting() const
 QVector<CsvImportDialog::Field> CsvImportDialog::availableFields() const
 {
 	switch (targetType) {
-	case SectionType::Bridged:
-		return {Field::Ignore, Field::Text, Field::SecondaryText};
-
 	case SectionType::LogoList:
 	case SectionType::MultiLogoList:
 		return {Field::Ignore, Field::LogoPath, Field::LogoHeight};
 
 	default:
+		/* Two texts per entry -- a bridged row's two sides, or a title and its subtitle. */
+		if (sectionUsesSecondaryText(targetType))
+			return {Field::Ignore, Field::Text, Field::SecondaryText};
+
 		return {Field::Ignore, Field::Text};
 	}
 }
 
 QString CsvImportDialog::fieldLabel(Field field) const
 {
+	const bool subtitles = sectionUsesSubtitles(targetType);
+
 	switch (field) {
 	case Field::Text:
+		if (subtitles)
+			return moduleText("Designer.Column.EntryTitle");
 		return targetType == SectionType::Bridged ? moduleText("Designer.Column.Left")
 							  : moduleText("Designer.Column.Text");
 	case Field::SecondaryText:
-		return moduleText("Designer.Column.Right");
+		return subtitles ? moduleText("Designer.Column.Subtitle") : moduleText("Designer.Column.Right");
 	case Field::LogoPath:
 		return moduleText("Designer.Column.Logo");
 	case Field::LogoHeight:

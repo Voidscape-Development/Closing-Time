@@ -45,8 +45,10 @@ enum class SectionType {
 	LogoHeader,
 	Bridged,
 	TextList,
+	TitleSubtitleList,
 	LogoList,
 	MultiTextList,
+	MultiTitleSubtitleList,
 	MultiLogoList,
 	Spacer,
 };
@@ -68,6 +70,14 @@ bool sectionUsesLogos(SectionType type);
 bool sectionUsesEntries(SectionType type);
 /* True when the type spreads its entries over a configurable number of columns. */
 bool sectionUsesColumns(SectionType type);
+/* True when the type stacks a subtitle against each entry's title. */
+bool sectionUsesSubtitles(SectionType type);
+/*
+ * True when an entry carries two texts rather than one, whatever the type does with them --
+ * the two sides of a bridged row, or a title and the subtitle under it. This is what decides
+ * that the entry table has a second column and that the secondary style is worth offering.
+ */
+bool sectionUsesSecondaryText(SectionType type);
 
 enum class HAlign { Left, Center, Right };
 
@@ -272,11 +282,13 @@ struct LogoRef {
 /*
  * One entry inside a list-shaped section. Which fields matter depends on the owning
  * section's type:
- *   Bridged        -> text (left) and secondaryText (right), joined by the bridge string
- *   TextList       -> text
- *   MultiTextList  -> text, placed into columns in the section's fill order
- *   LogoList       -> logo
- *   MultiLogoList  -> logo, placed into columns in the section's fill order
+ *   Bridged                -> text (left) and secondaryText (right), joined by the bridge string
+ *   TextList               -> text
+ *   MultiTextList          -> text, placed into columns in the section's fill order
+ *   TitleSubtitleList      -> text (title) and secondaryText (subtitle), stacked one over the other
+ *   MultiTitleSubtitleList -> the same pair, placed into columns in the section's fill order
+ *   LogoList               -> logo
+ *   MultiLogoList          -> logo, placed into columns in the section's fill order
  */
 struct Entry {
 	QString text;
@@ -309,6 +321,21 @@ struct Section {
 	QVector<Entry> entries;
 	/* Vertical gap between consecutive entries (or rows, for multi-lists), in pixels. */
 	int entryGap = 8;
+
+	/*
+	 * Title/subtitle lists only: the gap between the two lines of one entry, in pixels. Kept
+	 * separate from `entryGap` because the two say opposite things -- this one binds a pair
+	 * together, that one holds consecutive pairs apart -- and a list where both are the same
+	 * number reads as a single run of alternating lines rather than as a list of pairs.
+	 */
+	int subtitleGap = 4;
+	/*
+	 * Title/subtitle lists only: draw the subtitle above the title rather than below it. The
+	 * fields keep their meaning either way -- `text` is still the title and `secondaryText`
+	 * still the subtitle, styled by `style` and `secondaryStyle` respectively -- so flipping
+	 * this is purely a placement change and never moves content between fields.
+	 */
+	bool subtitleFirst = false;
 
 	/*
 	 * Bridged sections only: what the separator between the two texts is drawn from. Text is
@@ -375,7 +402,11 @@ struct Section {
 	 */
 	bool fillAcross = false;
 
-	/* Styling. `secondaryStyle` is used for the right-hand side of Bridged sections. */
+	/*
+	 * Styling. `secondaryStyle` is the second text a section carries: the right-hand side of a
+	 * Bridged section, or the subtitle of a title/subtitle list. Left off, both are drawn in
+	 * the primary style.
+	 */
 	TextStyle style;
 	TextStyle secondaryStyle;
 	bool useSecondaryStyle = false;

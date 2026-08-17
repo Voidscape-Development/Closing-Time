@@ -39,22 +39,27 @@ struct SectionTypeInfo {
 	bool logos;
 	bool entries;
 	bool columns;
+	bool subtitles;
 };
 
 /* Listed in the order the designer's "Add Section" menu presents them. */
 const SectionTypeInfo kSectionTypes[] = {
-	{SectionType::Title, "title", "Title", true, false, false, false},
-	{SectionType::TitleWithLogo, "title_with_logo", "Title w/ Logo", true, true, false, false},
-	{SectionType::LogoTitle, "logo_title", "Logo Title", false, true, false, false},
-	{SectionType::Header, "header", "Header", true, false, false, false},
-	{SectionType::HeaderWithLogo, "header_with_logo", "Header w/ Logo", true, true, false, false},
-	{SectionType::LogoHeader, "logo_header", "Logo Header", false, true, false, false},
-	{SectionType::Bridged, "bridged", "Text to Text Bridged", true, false, true, false},
-	{SectionType::TextList, "text_list", "Text List", true, false, true, false},
-	{SectionType::LogoList, "logo_list", "Logo List", false, true, true, false},
-	{SectionType::MultiTextList, "multi_text_list", "Multi-List of Text", true, false, true, true},
-	{SectionType::MultiLogoList, "multi_logo_list", "Multi-List of Logos", false, true, true, true},
-	{SectionType::Spacer, "spacer", "Spacer", false, false, false, false},
+	{SectionType::Title, "title", "Title", true, false, false, false, false},
+	{SectionType::TitleWithLogo, "title_with_logo", "Title w/ Logo", true, true, false, false, false},
+	{SectionType::LogoTitle, "logo_title", "Logo Title", false, true, false, false, false},
+	{SectionType::Header, "header", "Header", true, false, false, false, false},
+	{SectionType::HeaderWithLogo, "header_with_logo", "Header w/ Logo", true, true, false, false, false},
+	{SectionType::LogoHeader, "logo_header", "Logo Header", false, true, false, false, false},
+	{SectionType::Bridged, "bridged", "Text to Text Bridged", true, false, true, false, false},
+	{SectionType::TextList, "text_list", "Text List", true, false, true, false, false},
+	{SectionType::TitleSubtitleList, "title_subtitle_list", "Title and Subtitle List", true, false, true, false,
+	 true},
+	{SectionType::LogoList, "logo_list", "Logo List", false, true, true, false, false},
+	{SectionType::MultiTextList, "multi_text_list", "Multi-List of Text", true, false, true, true, false},
+	{SectionType::MultiTitleSubtitleList, "multi_title_subtitle_list", "Title and Subtitle Multi-List", true, false,
+	 true, true, true},
+	{SectionType::MultiLogoList, "multi_logo_list", "Multi-List of Logos", false, true, true, true, false},
+	{SectionType::Spacer, "spacer", "Spacer", false, false, false, false, false},
 };
 
 const SectionTypeInfo &sectionTypeInfo(SectionType type)
@@ -136,6 +141,16 @@ bool sectionUsesEntries(SectionType type)
 bool sectionUsesColumns(SectionType type)
 {
 	return sectionTypeInfo(type).columns;
+}
+
+bool sectionUsesSubtitles(SectionType type)
+{
+	return sectionTypeInfo(type).subtitles;
+}
+
+bool sectionUsesSecondaryText(SectionType type)
+{
+	return type == SectionType::Bridged || sectionUsesSubtitles(type);
 }
 
 const char *hAlignId(HAlign align)
@@ -515,6 +530,8 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_int(data, "columns", columns);
 	obs_data_set_int(data, "column_gap", columnGap);
 	obs_data_set_int(data, "entry_gap", entryGap);
+	obs_data_set_int(data, "subtitle_gap", subtitleGap);
+	obs_data_set_bool(data, "subtitle_first", subtitleFirst);
 	obs_data_set_bool(data, "fill_across", fillAcross);
 	obs_data_set_int(data, "padding_top", paddingTop);
 	obs_data_set_int(data, "padding_bottom", paddingBottom);
@@ -588,6 +605,14 @@ void Section::load(obs_data_t *data)
 	columns = static_cast<int>(obs_data_get_int(data, "columns"));
 	columnGap = static_cast<int>(obs_data_get_int(data, "column_gap"));
 	entryGap = static_cast<int>(obs_data_get_int(data, "entry_gap"));
+	/*
+	 * 0 is a legitimate gap -- a subtitle set tight under its title -- so a missing key has to
+	 * be told apart from a stored zero rather than inferred from the value.
+	 */
+	subtitleGap = obs_data_has_user_value(data, "subtitle_gap")
+			      ? static_cast<int>(obs_data_get_int(data, "subtitle_gap"))
+			      : 4;
+	subtitleFirst = obs_data_get_bool(data, "subtitle_first");
 	fillAcross = obs_data_get_bool(data, "fill_across");
 	paddingTop = static_cast<int>(obs_data_get_int(data, "padding_top"));
 	paddingBottom = static_cast<int>(obs_data_get_int(data, "padding_bottom"));
@@ -613,6 +638,8 @@ void Section::load(obs_data_t *data)
 		spacerHeight = 0;
 	if (entryGap < 0)
 		entryGap = 0;
+	if (subtitleGap < 0)
+		subtitleGap = 0;
 
 	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");
 	if (logoData)
@@ -692,6 +719,37 @@ Section Section::makeDefault(SectionType type)
 		section.style.pixelSize = 32;
 		section.entries.append(Entry{QStringLiteral("Name"), {}, {}});
 		break;
+
+	case SectionType::TitleSubtitleList:
+	case SectionType::MultiTitleSubtitleList: {
+		/*
+		 * The subtitle is handed its own style set a size down from the title, and turned
+		 * on, because a pair drawn in one style is a Text List with twice as many rows: it
+		 * is the difference between the two lines that says which is which. Both are the
+		 * section's own styles rather than presets, so either can be retyped or bound to a
+		 * preset without disturbing the other.
+		 */
+		section.style.pixelSize = 32;
+		section.style.bold = true;
+		section.secondaryStyle = section.style;
+		section.secondaryStyle.pixelSize = 26;
+		section.secondaryStyle.bold = false;
+		section.useSecondaryStyle = true;
+		/*
+		 * Wider than the default so the space between one pair and the next reads as larger
+		 * than the space inside a pair, which is what groups the two lines together.
+		 */
+		section.entryGap = 24;
+
+		const int count = type == SectionType::MultiTitleSubtitleList ? 3 : 1;
+		if (type == SectionType::MultiTitleSubtitleList) {
+			section.columns = 3;
+			section.marginX = 120;
+		}
+		for (int i = 0; i < count; ++i)
+			section.entries.append(Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}});
+		break;
+	}
 
 	case SectionType::LogoList:
 		section.entries.append(Entry{});
