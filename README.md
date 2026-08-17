@@ -19,10 +19,20 @@ out of sections:
 | Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
 | Text to Text Bridged | `Director ······ Jane Doe` role-to-person pairs, joined by a leader of dots, dashes, diamonds, a rule, your own SVG, or plain text |
 | Text List | A single column of names |
+| Title and Subtitle List | Pairs stacked one over the other — a position with the name that holds it under it |
 | Logo List | A single column of logos |
 | Multi-List of Text | Names across a configurable number of columns |
+| Title and Subtitle Multi-List | The same stacked pairs, across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
 | Spacer | A blank run, for pacing |
+
+A **title and subtitle** list is the other way to set what a bridged row sets on one line: the
+position on top and the name under it, each with its own font, size, weight, colour and
+alignment, so the pair reads as one item. The gap inside a pair is set separately from the gap
+between pairs — that difference is what groups the two lines together — and the whole list can
+be flipped to put the name on top instead without retyping anything. Leave one of the two blank
+and the entry takes only the height of the line you did fill in, which is how a heading sits in
+the middle of a list. Import a spreadsheet of roles and names straight into either shape.
 
 In a bridged row the **bridge** joining the two texts is drawn from artwork rather than from
 characters, so a leader is a real shape at a thickness you set instead of whatever full stops

@@ -806,6 +806,53 @@ int paintBridge(QPainter *painter, const PreparedBridge &bridge, const Section &
 }
 
 /*
+ * One entry of a title/subtitle list: two lines stacked inside the column they are given,
+ * separated by `subtitleGap`, and returning the height the pair occupies.
+ *
+ * Each line is aligned by its own style within the full column rather than the two being
+ * measured and placed as one group, which is what lets a title sit left with its subtitle
+ * right, or either of them be centred against a run of names of differing lengths.
+ *
+ * `subtitleFirst` swaps only the placement. The title is still `text` drawn in `titleStyle`
+ * and the subtitle still `secondaryText` drawn in `subtitleStyle`, so flipping the order
+ * never moves content between the two fields.
+ */
+template<typename Record>
+int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextStyle &titleStyle,
+			const TextStyle &subtitleStyle, const Entry &entry, int x, int y, int width,
+			const Record &record)
+{
+	const QString &first = section.subtitleFirst ? entry.secondaryText : entry.text;
+	const QString &second = section.subtitleFirst ? entry.text : entry.secondaryText;
+	const TextStyle &firstStyle = section.subtitleFirst ? subtitleStyle : titleStyle;
+	const TextStyle &secondStyle = section.subtitleFirst ? titleStyle : subtitleStyle;
+
+	int cursor = y;
+
+	/*
+	 * A line with no text has no height and takes no gap with it, so an entry carrying only
+	 * one of its two texts occupies exactly what that one line does -- a heading row in an
+	 * otherwise paired list sits where a single line would rather than reserving space for
+	 * the line that is not there.
+	 */
+	const int firstHeight = layoutText(painter, first, firstStyle, x, cursor, width);
+	if (firstHeight > 0) {
+		record(LayoutBox::Kind::Text, QRectF(x, cursor, width, firstHeight));
+		cursor += firstHeight + section.subtitleGap;
+	}
+
+	const int secondHeight = layoutText(painter, second, secondStyle, x, cursor, width);
+	if (secondHeight > 0) {
+		record(LayoutBox::Kind::Text, QRectF(x, cursor, width, secondHeight));
+		cursor += secondHeight;
+	} else if (firstHeight > 0) {
+		cursor -= section.subtitleGap;
+	}
+
+	return cursor - y;
+}
+
+/*
  * Both passes of the layout run through this one function. With `painter` set it draws
  * into the current tile; with `painter` null it only reports the height. `top` is the
  * section's Y position in strip space, which is also painter space -- callers translate
@@ -977,6 +1024,19 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		break;
 	}
 
+	case SectionType::TitleSubtitleList: {
+		const TextStyle &subtitleStyle = document.effectiveSecondaryStyle(section);
+
+		for (const Entry &entry : section.entries) {
+			y += layoutTitleSubtitle(painter, section, style, subtitleStyle, entry, contentX, y,
+						 contentWidth, record);
+			y += section.entryGap;
+		}
+		if (!section.entries.isEmpty())
+			y -= section.entryGap;
+		break;
+	}
+
 	case SectionType::LogoList: {
 		for (const Entry &entry : section.entries) {
 			const QImage image = logos->get(entry.logo.path, entry.logo.maxHeight);
@@ -993,6 +1053,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	}
 
 	case SectionType::MultiTextList:
+	case SectionType::MultiTitleSubtitleList:
 	case SectionType::MultiLogoList: {
 		const int columns = std::max(1, section.columns);
 		const int count = section.entries.size();
@@ -1002,6 +1063,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const int columnWidth = std::max(1, (contentWidth - (columns - 1) * section.columnGap) / columns);
 		const int rows = (count + columns - 1) / columns;
 		const bool logoMode = section.type == SectionType::MultiLogoList;
+		const bool subtitleMode = sectionUsesSubtitles(section.type);
+		const TextStyle &subtitleStyle = document.effectiveSecondaryStyle(section);
 
 		for (int row = 0; row < rows; ++row) {
 			int rowHeight = 0;
@@ -1028,6 +1091,15 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					paintLogo(painter, image, box, style);
 					record(LayoutBox::Kind::Logo, QRectF(box));
 					rowHeight = std::max(rowHeight, size.height());
+				} else if (subtitleMode) {
+					/*
+					 * A row is as tall as the tallest pair in it, so a wrapped title
+					 * in one column pushes the next row down rather than overlapping
+					 * the entry beneath it.
+					 */
+					const int height = layoutTitleSubtitle(painter, section, style, subtitleStyle,
+									       entry, x, y, columnWidth, record);
+					rowHeight = std::max(rowHeight, height);
 				} else {
 					const int height = layoutText(painter, entry.text, style, x, y, columnWidth);
 					record(LayoutBox::Kind::Text, QRectF(x, y, columnWidth, height));

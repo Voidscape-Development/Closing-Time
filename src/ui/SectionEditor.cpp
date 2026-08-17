@@ -582,6 +582,18 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	entryGap->setSuffix(QStringLiteral(" px"));
 	form->addRow(moduleText("Designer.EntryGap"), entryGap);
 
+	subtitleGap = new QSpinBox(this);
+	subtitleGap->setRange(0, 2048);
+	subtitleGap->setSuffix(QStringLiteral(" px"));
+	subtitleGap->setToolTip(moduleText("Designer.SubtitleGap.Tip"));
+	form->addRow(moduleText("Designer.SubtitleGap"), subtitleGap);
+
+	subtitleOrder = new QComboBox(this);
+	subtitleOrder->addItem(moduleText("Designer.SubtitleOrder.TitleFirst"), 0);
+	subtitleOrder->addItem(moduleText("Designer.SubtitleOrder.SubtitleFirst"), 1);
+	subtitleOrder->setToolTip(moduleText("Designer.SubtitleOrder.Tip"));
+	form->addRow(moduleText("Designer.SubtitleOrder"), subtitleOrder);
+
 	spacerHeight = new QSpinBox(this);
 	spacerHeight->setRange(0, 20000);
 	spacerHeight->setSuffix(QStringLiteral(" px"));
@@ -719,6 +731,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(entryGap, &QSpinBox::valueChanged, this, notify);
+	connect(subtitleGap, &QSpinBox::valueChanged, this, notify);
+	connect(subtitleOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(spacerHeight, &QSpinBox::valueChanged, this, notify);
 	connect(paddingTop, &QSpinBox::valueChanged, this, notify);
 	connect(paddingBottom, &QSpinBox::valueChanged, this, notify);
@@ -782,6 +796,8 @@ void SectionEditor::setSection(const Section &source)
 	columnGap->setValue(source.columnGap);
 	selectByData(fillOrder, source.fillAcross ? 1 : 0);
 	entryGap->setValue(source.entryGap);
+	subtitleGap->setValue(source.subtitleGap);
+	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
 	spacerHeight->setValue(source.spacerHeight);
 	paddingTop->setValue(source.paddingTop);
 	paddingBottom->setValue(source.paddingBottom);
@@ -832,6 +848,8 @@ Section SectionEditor::section() const
 	result.columnGap = columnGap->value();
 	result.fillAcross = fillOrder->currentData().toInt() == 1;
 	result.entryGap = entryGap->value();
+	result.subtitleGap = subtitleGap->value();
+	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
 	result.paddingTop = paddingTop->value();
 	result.paddingBottom = paddingBottom->value();
@@ -912,10 +930,19 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(columnGap, hasColumns);
 	form->setRowVisible(fillOrder, hasColumns);
 	form->setRowVisible(entryGap, hasEntries);
+	const bool hasSubtitles = sectionUsesSubtitles(type);
+	form->setRowVisible(subtitleGap, hasSubtitles);
+	form->setRowVisible(subtitleOrder, hasSubtitles);
 	form->setRowVisible(spacerHeight, type == SectionType::Spacer);
 
 	primaryStyle->parentWidget()->setVisible(hasText || hasLogos);
-	secondaryGroup->setVisible(type == SectionType::Bridged);
+	/*
+	 * The same style serves whichever second text the type carries, so the group is titled
+	 * after the one being edited rather than after the Bridged section it was written for.
+	 */
+	secondaryGroup->setVisible(sectionUsesSecondaryText(type));
+	secondaryGroup->setTitle(hasSubtitles ? moduleText("Designer.SubtitleStyle")
+					      : moduleText("Designer.SecondaryStyle"));
 	entriesGroup->setVisible(hasEntries);
 	/* Nothing for a file picker to fill in when the entries are lines of text. */
 	setLogoButton->setVisible(hasEntries && hasLogos);
@@ -940,6 +967,17 @@ void SectionEditor::rebuildEntryTable(SectionType type)
 		entryTable->setColumnCount(2);
 		entryTable->setHorizontalHeaderLabels(
 			{moduleText("Designer.Column.Left"), moduleText("Designer.Column.Right")});
+		break;
+
+	case SectionType::TitleSubtitleList:
+	case SectionType::MultiTitleSubtitleList:
+		/*
+		 * Headed by what the two texts are rather than by where they end up, so swapping the
+		 * order does not relabel the columns the entries were typed into.
+		 */
+		entryTable->setColumnCount(2);
+		entryTable->setHorizontalHeaderLabels(
+			{moduleText("Designer.Column.EntryTitle"), moduleText("Designer.Column.Subtitle")});
 		break;
 
 	case SectionType::LogoList:
@@ -989,7 +1027,7 @@ void SectionEditor::writeEntriesToTable(const Section &source)
 		}
 
 		entryTable->setItem(row, 0, new QTableWidgetItem(entry.text));
-		if (source.type == SectionType::Bridged)
+		if (sectionUsesSecondaryText(source.type))
 			entryTable->setItem(row, 1, new QTableWidgetItem(entry.secondaryText));
 	}
 }
@@ -1014,7 +1052,7 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 			entry.logo.maxHeight = height > 0 ? height : 96;
 		} else {
 			entry.text = cell(0);
-			if (target->type == SectionType::Bridged)
+			if (sectionUsesSecondaryText(target->type))
 				entry.secondaryText = cell(1);
 		}
 
