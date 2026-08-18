@@ -541,8 +541,10 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_int(data, "spacer_height", spacerHeight);
 	obs_data_set_bool(data, "visible", visible);
 	obs_data_set_bool(data, "use_secondary_style", useSecondaryStyle);
+	obs_data_set_bool(data, "use_bridge_style", useBridgeStyle);
 	obs_data_set_string(data, "style_preset", stylePresetName.toUtf8().constData());
 	obs_data_set_string(data, "secondary_style_preset", secondaryStylePresetName.toUtf8().constData());
+	obs_data_set_string(data, "bridge_style_preset", bridgeStylePresetName.toUtf8().constData());
 
 	OBSDataAutoRelease logoData = obs_data_create();
 	logo.save(logoData);
@@ -555,6 +557,10 @@ void Section::save(obs_data_t *data) const
 	OBSDataAutoRelease secondaryData = obs_data_create();
 	secondaryStyle.save(secondaryData);
 	obs_data_set_obj(data, "secondary_style", secondaryData);
+
+	OBSDataAutoRelease bridgeStyleData = obs_data_create();
+	bridgeStyle.save(bridgeStyleData);
+	obs_data_set_obj(data, "bridge_style", bridgeStyleData);
 
 	saveArray(
 		data, "entries", entries.size(),
@@ -629,8 +635,11 @@ void Section::load(obs_data_t *data)
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
 	visible = obs_data_get_bool(data, "visible");
 	useSecondaryStyle = obs_data_get_bool(data, "use_secondary_style");
+	/* Absent in every document written before the bridge had ink of its own, all of which took the row's. */
+	useBridgeStyle = obs_data_get_bool(data, "use_bridge_style");
 	stylePresetName = QString::fromUtf8(obs_data_get_string(data, "style_preset"));
 	secondaryStylePresetName = QString::fromUtf8(obs_data_get_string(data, "secondary_style_preset"));
+	bridgeStylePresetName = QString::fromUtf8(obs_data_get_string(data, "bridge_style_preset"));
 
 	if (columns < 1)
 		columns = 1;
@@ -654,6 +663,18 @@ void Section::load(obs_data_t *data)
 		secondaryStyle.load(secondaryData);
 	else
 		secondaryStyle = style;
+
+	/*
+	 * Seeded from the row's own style when absent, so switching the override on starts from the
+	 * leader as it is drawn now and the first edit is the one the user meant to make. Only the
+	 * ink of it is ever read (see Document::effectiveBridgeStyle); the font it carries along is
+	 * what keeps a preset saved from this editor a whole style rather than a half of one.
+	 */
+	OBSDataAutoRelease bridgeStyleData = obs_data_get_obj(data, "bridge_style");
+	if (bridgeStyleData)
+		bridgeStyle.load(bridgeStyleData);
+	else
+		bridgeStyle = style;
 
 	entries.clear();
 	OBSDataArrayAutoRelease array = obs_data_get_array(data, "entries");
@@ -851,6 +872,31 @@ const TextStyle &Document::effectiveSecondaryStyle(const Section &section) const
 	return preset ? *preset : section.secondaryStyle;
 }
 
+TextStyle Document::effectiveBridgeStyle(const Section &section) const
+{
+	TextStyle style = effectiveStyle(section);
+	if (!section.useBridgeStyle)
+		return style;
+
+	const TextStyle *preset = findStylePreset(section.bridgeStylePresetName);
+	const TextStyle &ink = preset ? *preset : section.bridgeStyle;
+
+	/*
+	 * Ink only. Everything the layout measures with -- family, size, weight, alignment, line
+	 * spacing -- is left as the row's, so a bridge that has been recoloured occupies exactly the
+	 * space it did before and nothing else in the row moves for it. It also means a preset
+	 * written for a run of headings can be pointed at a leader without dragging a heading's font
+	 * size across with it.
+	 */
+	style.color = ink.color;
+	style.fill = ink.fill;
+	style.gradient = ink.gradient;
+	style.outline = ink.outline;
+	style.shadow = ink.shadow;
+
+	return style;
+}
+
 void Document::setStylePreset(const QString &name, const TextStyle &style)
 {
 	if (name.isEmpty())
@@ -888,6 +934,8 @@ void Document::removeStylePreset(const QString &name)
 			section.stylePresetName.clear();
 		if (section.secondaryStylePresetName == name)
 			section.secondaryStylePresetName.clear();
+		if (section.bridgeStylePresetName == name)
+			section.bridgeStylePresetName.clear();
 	}
 }
 
@@ -902,6 +950,8 @@ void Document::save(obs_data_t *data) const
 	obs_data_set_bool(data, "loop", loop);
 	obs_data_set_bool(data, "start_on_show", startOnShow);
 	obs_data_set_double(data, "start_delay", startDelay);
+	obs_data_set_bool(data, "manual_scroll", manualScroll);
+	obs_data_set_double(data, "scroll_position", scrollPosition);
 
 	endingAction.save(data);
 
@@ -931,6 +981,8 @@ void Document::load(obs_data_t *data)
 	loop = obs_data_get_bool(data, "loop");
 	startOnShow = obs_data_get_bool(data, "start_on_show");
 	startDelay = obs_data_get_double(data, "start_delay");
+	manualScroll = obs_data_get_bool(data, "manual_scroll");
+	scrollPosition = std::clamp(obs_data_get_double(data, "scroll_position"), 0.0, 100.0);
 
 	/* Guard against hand-edited or truncated scene collections. */
 	if (width < 1)
@@ -986,6 +1038,8 @@ void Document::defaults(obs_data_t *data)
 	obs_data_set_default_bool(data, "loop", false);
 	obs_data_set_default_bool(data, "start_on_show", true);
 	obs_data_set_default_double(data, "start_delay", 0.0);
+	obs_data_set_default_bool(data, "manual_scroll", false);
+	obs_data_set_default_double(data, "scroll_position", 0.0);
 
 	EndingActionConfig::defaults(data);
 }
