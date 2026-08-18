@@ -18,7 +18,7 @@ action live in the normal OBS properties dialog.
 | Persistence | The document lives in the source's `obs_data` settings, so it saves with the scene collection |
 | Ending actions | Built-in actions, named-hotkey trigger, filter toggle, and a signal/frontend event — all four |
 | Logo variants | "… w/ Logo" = text **with a logo beside it**; "Logo …" = the heading **is** an image, no text |
-| Playback | Starts on source visibility, plus start/pause/restart hotkeys, an optional loop, and lead-in/lead-out padding |
+| Playback | Starts on source visibility, plus start/pause/restart hotkeys, an optional loop, lead-in/lead-out padding, and a manual mode that parks the roll at a position instead of scrolling it |
 | Import | Delimited files (CSV/TSV) with a preview and per-column field mapping |
 | Style reuse | Named presets on the document; sections bind by name and fall back to their own style |
 
@@ -62,8 +62,9 @@ serve both the designer preview and the video output.
 ## Data model
 
 A `Document` is a canvas (`width`, `height`, `background`), playback settings
-(`scrollSpeed`, `leadIn`, `leadOut`, `loop`, `startOnShow`, `startDelay`), an
-`EndingActionConfig`, a list of `StylePreset`s, and an ordered list of `Section`s.
+(`scrollSpeed`, `leadIn`, `leadOut`, `loop`, `startOnShow`, `startDelay`, `manualScroll`,
+`scrollPosition`), an `EndingActionConfig`, a list of `StylePreset`s, and an ordered list of
+`Section`s.
 
 `Section` is a single struct covering all fourteen types rather than a class hierarchy. The
 fields a given type actually uses are described by five predicates —
@@ -229,12 +230,14 @@ cannot drift. One number — `bridgeThickness`, in pixels — then sizes the who
 because it is vector art it is as crisp at 3 px as at 30 without a font to supply it.
 
 **Art is a stencil, not a picture.** The built-in tiles are painted white so the renderer can
-rasterise them and fill the silhouette with the section's own `TextStyle`: the same colour,
-the same gradient mapped over the same block, the same outline, the same shadow the words either
-side get. That parity is the point — a leader belongs to the row rather than sitting on it. The
-one thing there is no path left to stroke, so an outline grows the silhouette by a ring of
-offset copies instead, dense enough that consecutive ones overlap within half a pixel. Only a
-custom file has colours of its own worth keeping, so only there does `bridgeTint` get a say.
+rasterise them and fill the silhouette with a `TextStyle`, by default the section's own: the same
+colour, the same gradient mapped over the same block, the same outline, the same shadow the words
+either side get. That parity is the default because a leader belongs to the row rather than
+sitting on it — and it is exactly what gets in the way when the leader is the part meant to stand
+out, which is what `bridgeStyle` is for; see *The bridge's own ink* below. The one thing there is
+no path left to stroke, so an outline grows the silhouette by a ring of offset copies instead,
+dense enough that consecutive ones overlap within half a pixel. Only a custom file has colours of
+its own worth keeping, so only there does `bridgeTint` get a say.
 
 **Tiling belongs to the type.** `Spread` types (dots, dashes, diamonds) keep whole tiles at
 their own size and open up the space between them, so a leader's dots stay round however long
@@ -249,6 +252,40 @@ in the string the user typed, and applying either to it would move every bridged
 document written before this existed. `Text` is likewise the **load-time** fallback for
 `bridgeType`, while `Section::makeDefault` hands out `Dots` — the same bargain `logoPlacement`
 struck, and for the same reason.
+
+### The bridge's own ink
+
+A bridge drawn in the section's style is a leader that belongs to its row, which is right up to
+the moment the leader is the thing being designed: yellow dots under white names, a rule carrying
+a sweep the words do not. `useBridgeStyle` turns the section's `bridgeStyle` on for that, and
+`Document::effectiveBridgeStyle` is the one place the two are reconciled — nothing paints a bridge
+without going through it, the same guarantee `effectiveStyle` gives the text.
+
+**It merges rather than replaces, and it merges only the ink.** The fill, the gradient, the
+outline and the shadow come from the bridge style; the family, size, weight, alignment and line
+spacing stay the row's. That split is not a simplification, it is what makes the feature free:
+every width, baseline and height a bridged row is built from is measured off the fields the merge
+leaves alone, so a leader that has been recoloured reserves exactly the width it did before and
+nothing else in the row moves for it. A text bridge is still set in the face the words either side
+of it are, at their size — the string is what the user typed, drawn in a different colour.
+
+It follows that a preset written for a run of headings can be pointed at a leader without dragging
+a heading's font size across with it, which is why `bridgeStylePresetName` binds to the same
+document presets everything else does rather than to a second, ink-only library. The designer's
+editor for it hides the rows it does not use (`StyleEditor::setInkOnly`) and carries their values
+straight through rather than reading them back off the hidden widgets, so editing a bound preset
+from there cannot quietly rewrite the font of every section following it.
+
+The override is resolved per section rather than hoisted beside `effectiveStyle`, because it
+returns by value — a merge has nothing to return a reference to — and only the two bridged shapes
+have any use for it. `effectBleed` is the exception and asks every section for it: a separately
+inked bridge can carry a heavier shadow than either text beside it, and letting the bleed's
+predicate disagree with the layout switch about which types draw bridges would clip that shadow at
+a tile seam for exactly the sections it was wrong about.
+
+The one place it does not reach is a custom tile with `bridgeTint` off, which is painted to the
+strip in the colours it was authored with before any of this runs. The designer hides the whole
+group in that case rather than offering settings that do nothing.
 
 Tiles are parsed into a `BridgeArtCache` that lives for the length of one measure or render
 rather than being kept between them, unlike `LogoCache`. A tile is a few hundred bytes of
@@ -418,6 +455,36 @@ those positions came from. A gap close enough to the interval to be that jitter 
 taken *as* the interval; one well outside the band is a real stall — a dropped frame, a scene
 collection loading — and is used as measured, so the roll keeps its timing over anything long
 enough to be worth keeping it over.
+
+**Manual scrolling.** `manualScroll` parks the roll at `scrollPosition` instead of advancing it,
+for looking at a section in the middle of a long roll without waiting for the roll to scroll
+there. `video_tick` scrubs and returns before any of the playback machinery, so nothing moves
+while it is on: the roll cannot reach the finished phase, the ending action cannot fire, and the
+start and pause hotkeys have nothing to act on. The phase itself is left exactly as playback set
+it, so switching the mode back off resumes from a state `update()` already knows how to re-arm.
+
+The position is a **share of the full travel**, not a pixel offset and not a number of seconds.
+Pixels would be re-scaled by every content edit, and OBS cannot re-range a slider without the
+properties window being reopened; seconds would move under a change of scroll speed. A percentage
+of `canvasHeight + stripHeight` means the same thing after either. It is re-applied every tick
+rather than once when the setting changes, because a rebuild finishing or a canvas resize changes
+the travel underneath it, and a roll parked halfway through should stay halfway through.
+
+It saves with the scene collection like every other setting here, so it is possible to leave it on
+and go live with a roll that never moves. The properties window says so in a warning beside the
+slider, and that is the whole of the guard: turning the setting off at some later moment of the
+plugin's choosing would be its own surprise, and would mean the source watching frontend events it
+otherwise has no use for.
+
+**Rebuilds are gated on content.** Every setting reaches the source through the same `update()`,
+and scrubbing sends one per frame of the drag. `renderKey()` reduces the document to everything
+the strip is rasterised from — by blanking the playback fields rather than by listing the content
+ones, so a field added later counts towards it by default — and a rebuild is queued only when that
+string changes. Wrong in the direction the default takes, that costs a redundant rebuild; wrong
+the other way it would leave a stale strip on screen. The same comparison decides whether a
+running roll restarts, which is what the restart was always for: content moved under the roll, so
+its position no longer means anything. A playback setting changing is not that, and a roll now
+keeps its place when the scroll speed is adjusted under it.
 
 **Layout boxes.** `render()` optionally fills a `LayoutBoxes` with the rectangle every section,
 content area, text block, logo and bridge was placed in, for the designer's layout overlay. They
@@ -727,6 +794,12 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 - Gradient stop rows are sized from the value they hold rather than from the button beside it.
 - Title/subtitle lists, in one column and over several, for the run of pairs — a position over
   the name that holds it — that the bridged row was the only way to set.
+- A bridge can be inked separately from the text either side of it — colour, gradient, outline and
+  shadow — without any of the row's geometry moving for it.
+- A manual scroll mode on the source, parking the roll at a position on a slider instead of
+  playing it, so a section in the middle of a long roll can be looked at while it is being written.
+- Rebuilds are queued only when the document's *content* changes, rather than on every settings
+  edit, so a slider drag no longer re-rasterises the whole strip once a frame.
 
 ## Verifying changes
 
@@ -800,6 +873,37 @@ and measuring the largest run of empty space between its visible controls — 6 
 section type with the trailing spacer, against 22 px for a Title and 123 px for a Logo Title
 without it — along with the entry table holding its minimum height and the section box surviving
 a round trip through the editor's widgets.
+
+The bridge's own ink and the manual scroll mode were checked offscreen the same way, each case
+against a deliberately broken build as well as the working one so that it is known to fail before
+it passes — a merge that replaces the whole style, a renderer still passing the section's style to
+`paintBridge`, a `renderKey` that does not blank the scrub fields, and a `video_tick` that falls
+through to playback anyway.
+
+For the ink: that switching `useBridgeStyle` on changes **no** measurement anywhere — `measure()`,
+every layout box and the strip's own tiling all identical — against a bridge style deliberately
+unlike the row's in family, size, weight, alignment, line spacing, fill, gradient, outline and
+shadow at once, over the whole bridge type × fill × sizing × one-sided matrix and for a `Bridged`
+logo row, since that invariant is the entire justification for merging only the ink; that the
+leader really is recoloured, read off the rendered pixels, while the pixels of the text either side
+of it come out byte-identical, for a text bridge as well as for dots and diamonds; that
+`effectiveBridgeStyle` takes each ink field from the override and each layout field from the row;
+that a preset bound to the bridge contributes its colour and not its font size, and that deleting
+that preset unbinds the bridge rather than leaving it dangling; that the bridge style's own bleed
+is the one `effectBleed` reports when it is the heaviest, with a fixture long enough to be tiled
+keeping ink either side of the seam; and the `obs_data` round trip for all three new fields, with a
+section written before they existed loading with the override off and its bridge style seeded from
+the section's own.
+
+For manual scrolling: that `renderKey()` is unchanged by every one of the playback fields and
+changed by every content one, which is the property the whole rebuild gate rests on; that the
+parked offset is the right share of the travel at each end and the middle, clamps outside 0–100,
+and re-resolves against a strip that has since been rebuilt taller; and that a hundred and twenty
+ticks in manual mode leave the offset, the phase and the pending action exactly as they were, with
+a control fixture that advances under the same ticks.
+
+What is still unverified: the designer's own wiring, since nothing here drives Qt Widgets, and
+`update()`'s re-arm and park paths, which want a live `obs_source_t` rather than a document.
 
 Two pieces can already be tested without libobs at all, which is the shape the rest of the
 harness should take:

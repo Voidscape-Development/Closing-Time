@@ -69,6 +69,8 @@ struct CreditsSourceData {
 	obs_source_t *source = nullptr;
 
 	Document document;
+	/* What the last rebuild was rasterised from; see renderKey(). Graphics thread only. */
+	QString renderedFrom;
 	/*
 	 * Owned by the render thread: only the rebuild job reads or writes it, and jobs run
 	 * one at a time, so neither of these needs a lock.
@@ -117,6 +119,34 @@ struct RebuildTask {
 	/* Copied rather than read back later, so the render thread never touches the source. */
 	QString sourceName;
 };
+
+/*
+ * Everything the strip is rasterised from, as a string two documents can be compared by.
+ *
+ * Playback settings reach the source through the same update() every content edit does, and
+ * scrubbing moves a slider that fires one per frame of the drag. Rasterising a long roll on each
+ * of those would keep the render thread busy for the whole gesture and hand back a stream of
+ * strips identical to the one already on the GPU, so a rebuild is queued only when this changes.
+ *
+ * Built by blanking the fields that move the finished strip rather than by listing the ones that
+ * make it: a field added later counts towards the key by default, which costs an unnecessary
+ * rebuild if it turns out to be a playback setting and never a stale one if it is not. Lead-in
+ * and lead-out are deliberately not blanked -- they are baked into the strip as blank space.
+ */
+QString renderKey(const Document &document)
+{
+	Document content = document;
+
+	content.scrollSpeed = 0.0;
+	content.loop = false;
+	content.startOnShow = false;
+	content.startDelay = 0.0;
+	content.manualScroll = false;
+	content.scrollPosition = 0.0;
+	content.endingAction = EndingActionConfig();
+
+	return content.toJson();
+}
 
 void runRebuild(const std::shared_ptr<RebuildTask> &task);
 
@@ -262,6 +292,35 @@ void resetRoll(CreditsSourceData *data)
 }
 
 /*
+ * The distance the roll travels in full: the strip's own height plus the canvas it enters from
+ * below and leaves through the top.
+ */
+double rollTravel(const CreditsSourceData *data)
+{
+	return static_cast<double>(std::max(1, data->document.height)) + data->stripHeight;
+}
+
+/*
+ * Parks the roll at the scrub position instead of advancing it.
+ *
+ * The position is a share of the full travel rather than a pixel offset or a number of seconds,
+ * so it means the same thing after the content is edited or the scroll speed is changed -- which
+ * is the whole point of a control used while the roll is still being written.
+ *
+ * The phase is deliberately left alone. Nothing advances while this is on, so the roll cannot
+ * reach the finished phase and the ending action cannot fire; leaving the phase as playback set
+ * it means switching manual scrolling back off resumes from a state update() already knows how
+ * to re-arm rather than from one invented here.
+ */
+void scrubTo(CreditsSourceData *data, double percent)
+{
+	const double offset = rollTravel(data) * std::clamp(percent, 0.0, 100.0) / 100.0;
+
+	std::lock_guard<std::mutex> lock(data->stateMutex);
+	data->offset = offset;
+}
+
+/*
  * How far to advance the roll for one tick, in seconds.
  *
  * `video_tick` reports the wall-clock gap since the last tick, and that gap jitters: a percent or
@@ -297,7 +356,7 @@ void advance(CreditsSourceData *data, double seconds)
 	 * The strip starts one canvas-height below the top of the frame, so the distance it
 	 * has to travel before the last pixel clears the top is canvas + strip.
 	 */
-	const double travel = static_cast<double>(std::max(1, document.height)) + data->stripHeight;
+	const double travel = rollTravel(data);
 
 	bool fireAction = false;
 	bool finished = false;
@@ -388,15 +447,39 @@ void update(void *raw, obs_data_t *settings)
 	auto *data = static_cast<CreditsSourceData *>(raw);
 
 	data->document.load(settings);
-	queueRebuild(data);
+
+	/*
+	 * Only a change to what the strip is made of is worth rasterising again -- see renderKey().
+	 * Everything else here arrives through the same call: a scrub sends one per frame of the
+	 * drag, and rebuilding for those would keep the render thread busy producing strips
+	 * identical to the one already uploaded.
+	 */
+	const QString key = renderKey(data->document);
+	const bool contentChanged = key != data->renderedFrom;
+	if (contentChanged) {
+		data->renderedFrom = key;
+		queueRebuild(data);
+	}
 
 	/*
 	 * Geometry and content edits invalidate the current scroll position, so a roll that is
-	 * already running restarts instead of jumping to a stale offset in new content.
+	 * already running restarts instead of jumping to a stale offset in new content. A playback
+	 * setting changing is not that: a roll keeps its position when the scroll speed is adjusted
+	 * under it, and dragging the scrub slider does not re-arm the roll once per frame.
 	 */
 	std::lock_guard<std::mutex> lock(data->stateMutex);
-	if (data->phase != Phase::Idle)
+	if (data->phase == Phase::Idle) {
+		/*
+		 * An idle roll draws at whatever offset it is holding, and scrubbing leaves one
+		 * there. Without this, turning manual scrolling off on a source that is hidden -- or
+		 * that does not start on show -- would leave the roll frozen wherever the slider was
+		 * rather than parked at its start, waiting to run from a position nothing chose.
+		 */
+		if (!data->document.manualScroll)
+			data->offset = 0.0;
+	} else if (contentChanged) {
 		armRollLocked(data, data->document.startDelay);
+	}
 }
 
 void *create(obs_data_t *settings, obs_source_t *source)
@@ -523,7 +606,19 @@ void onHide(void *raw)
 
 void videoTick(void *raw, float seconds)
 {
-	advance(static_cast<CreditsSourceData *>(raw), tickSeconds(seconds));
+	auto *data = static_cast<CreditsSourceData *>(raw);
+
+	/*
+	 * Re-applied every tick rather than once when the setting changes, because the position it
+	 * resolves to depends on the strip: a rebuild finishing, or a canvas resize, changes the
+	 * travel underneath it, and a roll parked halfway through should stay halfway through.
+	 */
+	if (data->document.manualScroll) {
+		scrubTo(data, data->document.scrollPosition);
+		return;
+	}
+
+	advance(data, tickSeconds(seconds));
 }
 
 void drawBackground(const QColor &color, int width, int height)
@@ -646,6 +741,22 @@ bool onOpenDesigner(obs_properties_t *, obs_property_t *, void *raw)
 	return false;
 }
 
+/*
+ * The scrub position and its warning are only worth showing while the roll is actually parked;
+ * with playback running they describe nothing.
+ */
+bool onManualScrollChanged(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
+{
+	const bool manual = obs_data_get_bool(settings, "manual_scroll");
+
+	for (const char *name : {"scroll_position", "manual_scroll_warning"}) {
+		if (obs_property_t *property = obs_properties_get(props, name))
+			obs_property_set_visible(property, manual);
+	}
+
+	return true;
+}
+
 /* Shows only the fields the selected ending action actually uses. */
 bool onEndingActionChanged(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
 {
@@ -756,6 +867,29 @@ obs_properties_t *getProperties(void *raw)
 	obs_properties_add_bool(props, "start_on_show", obs_module_text("StartOnShow"));
 	obs_properties_add_float(props, "start_delay", obs_module_text("StartDelay"), 0.0, 600.0, 0.1);
 	obs_properties_add_bool(props, "loop", obs_module_text("Loop"));
+
+	/*
+	 * Scrubbing by hand, for looking at a section in the middle of a long roll without waiting
+	 * for the roll to scroll there. The slider is a share of the full travel rather than a pixel
+	 * offset, so it keeps its meaning as the content underneath it is edited.
+	 */
+	obs_property_t *manual = obs_properties_add_bool(props, "manual_scroll", obs_module_text("ManualScroll"));
+	obs_property_set_long_description(manual, obs_module_text("ManualScroll.Tip"));
+	obs_property_set_modified_callback(manual, onManualScrollChanged);
+
+	obs_property_t *position = obs_properties_add_float_slider(props, "scroll_position",
+								   obs_module_text("ScrollPosition"), 0.0, 100.0, 0.1);
+	obs_property_float_set_suffix(position, " %");
+	obs_property_set_long_description(position, obs_module_text("ScrollPosition.Tip"));
+
+	/*
+	 * The setting saves with the scene collection like every other one here, so it is perfectly
+	 * possible to leave it on and go live with a roll that never moves. Saying so is the whole
+	 * of the guard: silently turning it off at some later moment would be its own surprise.
+	 */
+	obs_property_t *warning = obs_properties_add_text(props, "manual_scroll_warning",
+							  obs_module_text("ManualScroll.Warning"), OBS_TEXT_INFO);
+	obs_property_text_set_info_type(warning, OBS_TEXT_INFO_WARNING);
 
 	obs_properties_t *ending = obs_properties_create();
 

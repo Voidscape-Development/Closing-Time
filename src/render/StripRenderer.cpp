@@ -937,7 +937,14 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		record(LayoutBox::Kind::Text, QRectF(row.textX, textTop, row.textWidth, textHeight));
 
 		if (section.logoPlacement == LogoPlacement::Bridged) {
-			const PreparedBridge bridge = prepareBridge(section, style, bridges, row.bridgeWidth);
+			/*
+			 * The bridge's own ink over the row's own font, so recolouring a leader cannot
+			 * move the row it runs through. Resolved here rather than beside `style`
+			 * because it is a merge and costs a copy, which only the two bridged shapes
+			 * have any use for.
+			 */
+			const TextStyle bridgeStyle = document.effectiveBridgeStyle(section);
+			const PreparedBridge bridge = prepareBridge(section, bridgeStyle, bridges, row.bridgeWidth);
 			/*
 			 * Hung off the text's own baseline, so a leader lands on it whatever the
 			 * bridge is made of: text in the same font needs no offset at all, and art
@@ -949,8 +956,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 							 : firstBaseline(section.text, style, row.textWidth);
 			const qreal baseline = textTop + textAscent;
 			const qreal bridgeTop = baseline - bridge.ascent(section);
-			const int bridgeHeight = paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
-							     bridgeTop, row.bridgeWidth);
+			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
+							     row.bridgeX, bridgeTop, row.bridgeWidth);
 			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
 		}
 
@@ -960,12 +967,18 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::Bridged: {
 		const TextStyle &rightStyle = document.effectiveSecondaryStyle(section);
-		const qreal naturalBridge = naturalBridgeWidth(section, style, bridges);
+		/*
+		 * The bridge's own ink over the row's own font. Everything below measures from the
+		 * fields the merge leaves alone -- the string is set in the row's face at the row's
+		 * size -- so a leader given a colour of its own reserves exactly the width it did.
+		 */
+		const TextStyle bridgeStyle = document.effectiveBridgeStyle(section);
+		const qreal naturalBridge = naturalBridgeWidth(section, bridgeStyle, bridges);
 
 		for (const Entry &entry : section.entries) {
 			const BridgedRow row = placeBridgedRow(section, style, rightStyle, entry, contentX,
 							       contentWidth, naturalBridge);
-			const PreparedBridge bridge = prepareBridge(section, style, bridges, row.bridgeWidth);
+			const PreparedBridge bridge = prepareBridge(section, bridgeStyle, bridges, row.bridgeWidth);
 
 			/*
 			 * The three parts share a baseline rather than a top edge, which is what
@@ -986,8 +999,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 				layoutText(painter, entry.text, style, row.leftX, leftTop, row.leftWidth);
 			const int rightHeight = layoutText(painter, entry.secondaryText, rightStyle, row.rightX,
 							   rightTop, row.rightWidth);
-			const int bridgeHeight = paintBridge(painter, bridge, section, style, bridges, row.bridgeX,
-							     bridgeTop, row.bridgeWidth);
+			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
+							     row.bridgeX, bridgeTop, row.bridgeWidth);
 
 			record(LayoutBox::Kind::Text, QRectF(row.leftX, leftTop, row.leftWidth, leftHeight));
 			record(LayoutBox::Kind::Text, QRectF(row.rightX, rightTop, row.rightWidth, rightHeight));
@@ -1154,6 +1167,13 @@ int effectBleed(const Document &document)
 
 		bleed = std::max(bleed, document.effectiveStyle(section).effectBleed());
 		bleed = std::max(bleed, document.effectiveSecondaryStyle(section).effectBleed());
+		/*
+		 * A bridge inked separately can carry a heavier shadow than either text beside it, and
+		 * it is counted for every section rather than only the bridged shapes: the override
+		 * costs nothing to resolve for a section that never draws a bridge, and the alternative
+		 * is this predicate and the layout switch's having to agree on which types those are.
+		 */
+		bleed = std::max(bleed, document.effectiveBridgeStyle(section).effectBleed());
 	}
 
 	return qCeil(bleed);

@@ -412,14 +412,32 @@ struct Section {
 	bool useSecondaryStyle = false;
 
 	/*
+	 * The bridge's own ink, when `useBridgeStyle` is set. A bridge otherwise takes the whole of
+	 * the section's primary style, which is what makes a leader belong to the row rather than
+	 * sit on it -- and is exactly what gets in the way when the leader is the thing meant to
+	 * stand out: yellow dots under white names, a rule carrying a sweep the words do not.
+	 *
+	 * Only the *ink* is taken from here -- the fill, the gradient, the outline and the shadow.
+	 * Font, size, alignment and line spacing stay the row's own, so a text bridge is still set in
+	 * the face the words either side of it are and nothing about a bridged row's geometry moves
+	 * when this is switched on. See Document::effectiveBridgeStyle.
+	 */
+	TextStyle bridgeStyle;
+	bool useBridgeStyle = false;
+
+	/*
 	 * Names of the document style presets this section follows, or empty to use the
-	 * section's own `style`/`secondaryStyle`. A name that no longer resolves falls back to
-	 * the section's own style as well, so deleting a preset degrades rather than breaks.
+	 * section's own `style`/`secondaryStyle`/`bridgeStyle`. A name that no longer resolves falls
+	 * back to the section's own style as well, so deleting a preset degrades rather than breaks.
 	 * The section's own style is never overwritten by a binding, which keeps binding and
 	 * unbinding non-destructive in the same way changing a section's type is.
+	 *
+	 * A preset bound to the bridge contributes its ink and nothing else, the same way the
+	 * section's own `bridgeStyle` does.
 	 */
 	QString stylePresetName;
 	QString secondaryStylePresetName;
+	QString bridgeStylePresetName;
 
 	/* Vertical padding above and below the section's content, in pixels. */
 	int paddingTop = 16;
@@ -471,6 +489,25 @@ struct Document {
 	double scrollSpeed = 90.0;
 
 	/*
+	 * Park the roll at `scrollPosition` instead of advancing it, so a position in the middle of
+	 * a long roll can be looked at in the OBS canvas without waiting for the roll to scroll
+	 * there. Playback is suspended outright while this is set: the roll does not move, the
+	 * ending action cannot fire, and the start/pause hotkeys have nothing to act on.
+	 *
+	 * It saves with the scene collection like everything else here, which is what makes it an
+	 * editing aid the properties window warns about rather than a mode that quietly resets.
+	 */
+	bool manualScroll = false;
+	/*
+	 * Where the roll is parked while `manualScroll` is set, as a percentage of the distance it
+	 * travels in full -- one canvas height plus the strip, the same distance playback covers. At
+	 * 0 the roll is at its start position with nothing on screen yet and at 100 it has cleared
+	 * the frame, so both ends are deliberately empty: a percentage of the travel is the only
+	 * measure of position that survives an edit to the content or a change of scroll speed.
+	 */
+	double scrollPosition = 0.0;
+
+	/*
 	 * Blank space before the first section and after the last, in pixels. Lead-in is
 	 * measured from the bottom edge of the canvas, so a lead-in of 0 means the first
 	 * section is already touching the bottom edge when the roll starts.
@@ -495,6 +532,17 @@ struct Document {
 	 */
 	const TextStyle &effectiveStyle(const Section &section) const;
 	const TextStyle &effectiveSecondaryStyle(const Section &section) const;
+
+	/*
+	 * The style a section's bridge is drawn with, once its own preset binding is resolved.
+	 *
+	 * Returned by value rather than by reference because this is a merge rather than a choice:
+	 * the bridge keeps the row's font, size, alignment and line spacing and takes only the ink
+	 * -- fill, gradient, outline and shadow -- from the bridge style. That split is what lets a
+	 * leader be coloured separately without any of a bridged row's geometry moving, since every
+	 * width, baseline and height in the row is measured from the fields the merge leaves alone.
+	 */
+	TextStyle effectiveBridgeStyle(const Section &section) const;
 
 	/* Adds `name`, or replaces the style of the preset already carrying that name. */
 	void setStylePreset(const QString &name, const TextStyle &style);

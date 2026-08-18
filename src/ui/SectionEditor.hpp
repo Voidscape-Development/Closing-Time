@@ -53,6 +53,18 @@ public:
 	TextStyle style() const;
 
 	/*
+	 * Hides the rows a bridge has no say over -- font, size, weight, alignment, line spacing --
+	 * leaving the fill, outline and shadow its ink is made of. A bridge is laid out in the row's
+	 * own font whatever this editor holds (see Document::effectiveBridgeStyle), so showing those
+	 * rows would offer settings that do nothing.
+	 *
+	 * What they hold is still carried straight through to style(), rather than read back off the
+	 * hidden widgets, so a preset saved or edited from here keeps the font it already had
+	 * instead of picking up whatever a hidden font box happened to resolve the family to.
+	 */
+	void setInkOnly(bool inkOnly);
+
+	/*
 	 * Rebinds the preset picker. `selected` is dropped when no preset carries that name,
 	 * which is what makes deleting a preset unbind the editors that were showing it.
 	 * `applySelectedStyle` writes the bound preset's values back into the fields; the
@@ -120,6 +132,13 @@ private:
 
 	/* Kept alongside the widgets so a gradient's stops survive a trip through Solid. */
 	GradientSpec gradient;
+
+	/*
+	 * The style the fields were last filled from. style() is built on top of it, which is what
+	 * carries the rows an ink-only editor hides through unchanged.
+	 */
+	TextStyle loaded;
+	bool inkOnly = false;
 
 	bool loading = false;
 };
@@ -209,6 +228,9 @@ private:
 	StyleEditor *primaryStyle = nullptr;
 	QGroupBox *secondaryGroup = nullptr;
 	StyleEditor *secondaryStyle = nullptr;
+	/* Shown for the two shapes that draw a bridge, and only ever edits that bridge's ink. */
+	QGroupBox *bridgeStyleGroup = nullptr;
+	StyleEditor *bridgeStyle = nullptr;
 
 	QGroupBox *entriesGroup = nullptr;
 	QTableWidget *entryTable = nullptr;

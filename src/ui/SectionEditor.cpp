@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -242,6 +243,8 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 
 void StyleEditor::writeFields(const TextStyle &style)
 {
+	loaded = style;
+
 	family->setCurrentFont(QFont(style.family));
 	pixelSize->setValue(style.pixelSize);
 	bold->setChecked(style.bold);
@@ -376,14 +379,23 @@ void StyleEditor::deletePreset()
 
 TextStyle StyleEditor::style() const
 {
-	TextStyle style;
-	style.family = family->currentFont().family();
-	style.pixelSize = pixelSize->value();
-	style.bold = bold->isChecked();
-	style.italic = italic->isChecked();
+	/*
+	 * Built on top of what the fields were filled from rather than from a default style, so the
+	 * rows an ink-only editor hides come back out exactly as they went in. With every row on
+	 * show the widgets below overwrite all of it and the starting point makes no difference.
+	 */
+	TextStyle style = loaded;
+
+	if (!inkOnly) {
+		style.family = family->currentFont().family();
+		style.pixelSize = pixelSize->value();
+		style.bold = bold->isChecked();
+		style.italic = italic->isChecked();
+		style.align = static_cast<HAlign>(alignment->currentData().toInt());
+		style.lineSpacing = lineSpacing->value();
+	}
+
 	style.color = colourButton->colour();
-	style.align = static_cast<HAlign>(alignment->currentData().toInt());
-	style.lineSpacing = lineSpacing->value();
 
 	style.fill = static_cast<TextFill>(fillBox->currentData().toInt());
 	/*
@@ -403,6 +415,22 @@ TextStyle StyleEditor::style() const
 	style.shadow.color = shadowColour->colour();
 
 	return style;
+}
+
+void StyleEditor::setInkOnly(bool value)
+{
+	inkOnly = value;
+
+	form->setRowVisible(family, !inkOnly);
+	form->setRowVisible(pixelSize, !inkOnly);
+	/* The bold and italic boxes share one row, hidden by the widget that holds them. */
+	form->setRowVisible(bold->parentWidget(), !inkOnly);
+	form->setRowVisible(alignment, !inkOnly);
+	form->setRowVisible(lineSpacing, !inkOnly);
+
+	/* "Font Color" is the wrong name for the colour of a run of dots. */
+	if (auto *label = qobject_cast<QLabel *>(form->labelForField(colourButton)))
+		label->setText(moduleText(inkOnly ? "Designer.InkColor" : "Designer.FontColor"));
 }
 
 void StyleEditor::applyFillVisibility()
@@ -638,6 +666,20 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	secondaryLayout->addWidget(secondaryStyle);
 	outer->addWidget(secondaryGroup);
 
+	/*
+	 * Unchecked, the bridge is drawn in the section's own style, which is what makes a leader
+	 * read as part of the row. Checked, it keeps the row's font and takes its ink from here --
+	 * yellow dots under white names, or a gradient across a run of diamonds.
+	 */
+	bridgeStyleGroup = new QGroupBox(moduleText("Designer.BridgeStyle"), this);
+	bridgeStyleGroup->setCheckable(true);
+	bridgeStyleGroup->setToolTip(moduleText("Designer.BridgeStyle.Tip"));
+	auto *bridgeStyleLayout = new QVBoxLayout(bridgeStyleGroup);
+	bridgeStyle = new StyleEditor(bridgeStyleGroup);
+	bridgeStyle->setInkOnly(true);
+	bridgeStyleLayout->addWidget(bridgeStyle);
+	outer->addWidget(bridgeStyleGroup);
+
 	entriesGroup = new QGroupBox(moduleText("Designer.Entries"), this);
 	auto *entriesLayout = new QVBoxLayout(entriesGroup);
 
@@ -712,21 +754,24 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(bridgeThickness, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeOffset, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeGap, &QSpinBox::valueChanged, this, notify);
-	connect(bridgeTint, &QCheckBox::toggled, this, notify);
 	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
 
 	/* These decide which of the other bridge rows are worth showing. */
-	for (QComboBox *box : {bridgeType, bridgeFill, bridgeSizing, logoPlacement}) {
-		connect(box, &QComboBox::currentIndexChanged, this, [this] {
-			if (loading)
-				return;
+	const auto revisitVisibility = [this] {
+		if (loading)
+			return;
 
-			applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
-			emitChanged();
-		});
-	}
+		applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+		emitChanged();
+	};
+
+	for (QComboBox *box : {bridgeType, bridgeFill, bridgeSizing, logoPlacement})
+		connect(box, &QComboBox::currentIndexChanged, this, revisitVisibility);
+
+	/* Untinting a custom bridge leaves nothing for the bridge's own colours to reach. */
+	connect(bridgeTint, &QCheckBox::toggled, this, revisitVisibility);
 	connect(columns, &QSpinBox::valueChanged, this, notify);
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
@@ -741,13 +786,14 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(sectionAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(primaryStyle, &StyleEditor::changed, this, notify);
 	connect(secondaryStyle, &StyleEditor::changed, this, notify);
+	connect(bridgeStyle, &StyleEditor::changed, this, notify);
 
 	/*
 	 * Preset edits are routed up to the designer, which owns the document the presets live
 	 * on. `presetOrigin` marks the editor mid-signal so the synchronous round trip back
 	 * through setPresets() leaves the fields being typed into alone.
 	 */
-	for (StyleEditor *editor : {primaryStyle, secondaryStyle}) {
+	for (StyleEditor *editor : {primaryStyle, secondaryStyle, bridgeStyle}) {
 		connect(editor, &StyleEditor::presetSaveRequested, this,
 			[this, editor](const QString &name, const TextStyle &style) {
 				presetOrigin = editor;
@@ -761,6 +807,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		});
 	}
 	connect(secondaryGroup, &QGroupBox::toggled, this, notify);
+	connect(bridgeStyleGroup, &QGroupBox::toggled, this, notify);
 	connect(entryTable, &QTableWidget::cellChanged, this, notify);
 	connect(logoBrowse, &QToolButton::clicked, this, &SectionEditor::browseForSectionLogo);
 	connect(bridgeSvgBrowse, &QToolButton::clicked, this, &SectionEditor::browseForBridgeSvg);
@@ -807,10 +854,13 @@ void SectionEditor::setSection(const Section &source)
 
 	primaryStyle->setStyle(source.style);
 	secondaryStyle->setStyle(source.secondaryStyle);
+	bridgeStyle->setStyle(source.bridgeStyle);
 	/* After setStyle, so a bound preset's values win over the section's own copy. */
 	primaryStyle->setPresets(presets, source.stylePresetName);
 	secondaryStyle->setPresets(presets, source.secondaryStylePresetName);
+	bridgeStyle->setPresets(presets, source.bridgeStylePresetName);
 	secondaryGroup->setChecked(source.useSecondaryStyle);
+	bridgeStyleGroup->setChecked(source.useBridgeStyle);
 
 	applyTypeVisibility(source.type);
 	rebuildEntryTable(source.type);
@@ -858,9 +908,12 @@ Section SectionEditor::section() const
 	result.sectionAlign = static_cast<HAlign>(sectionAlign->currentData().toInt());
 	result.style = primaryStyle->style();
 	result.secondaryStyle = secondaryStyle->style();
+	result.bridgeStyle = bridgeStyle->style();
 	result.useSecondaryStyle = secondaryGroup->isChecked();
+	result.useBridgeStyle = bridgeStyleGroup->isChecked();
 	result.stylePresetName = primaryStyle->presetName();
 	result.secondaryStylePresetName = secondaryStyle->presetName();
+	result.bridgeStylePresetName = bridgeStyle->presetName();
 
 	readEntriesFromTable(&result);
 	return result;
@@ -870,7 +923,7 @@ void SectionEditor::setPresets(const QVector<StylePreset> &newPresets)
 {
 	presets = newPresets;
 
-	for (StyleEditor *editor : {primaryStyle, secondaryStyle})
+	for (StyleEditor *editor : {primaryStyle, secondaryStyle, bridgeStyle})
 		editor->setPresets(presets, editor->presetName(), editor != presetOrigin);
 }
 
@@ -943,6 +996,12 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	secondaryGroup->setVisible(sectionUsesSecondaryText(type));
 	secondaryGroup->setTitle(hasSubtitles ? moduleText("Designer.SubtitleStyle")
 					      : moduleText("Designer.SecondaryStyle"));
+	/*
+	 * Both shapes that draw a bridge have one to ink separately -- except a custom file left in
+	 * the colours it was authored with, which is painted straight to the strip with nothing here
+	 * getting a say over it.
+	 */
+	bridgeStyleGroup->setVisible(usesBridge && !(artFromFile && !bridgeTint->isChecked()));
 	entriesGroup->setVisible(hasEntries);
 	/* Nothing for a file picker to fill in when the entries are lines of text. */
 	setLogoButton->setVisible(hasEntries && hasLogos);
