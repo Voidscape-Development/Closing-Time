@@ -62,6 +62,10 @@ constexpr int kEntryTableMinimumHeight = 260;
 /* Width of a logo list's height column, which never holds more than four digits and a suffix. */
 constexpr int kEntryHeightColumnWidth = 80;
 
+/* Height the divider's centre table asks for before it starts scrolling, in pixels. A centre
+ * stack is a handful of pieces where an entry list is a cast, so it asks for less. */
+constexpr int kCentreTableMinimumHeight = 150;
+
 /* Image formats QImageReader can decode without extra plugins on every OBS platform. */
 QString imageFilter()
 {
@@ -87,6 +91,43 @@ QString bridgeTypeText(BridgeType type)
 	/* obs_module_text hands the key back when nothing carries it; the table has a name. */
 	return text == key ? QString::fromUtf8(bridgeTypeName(type)) : text;
 }
+
+/*
+ * A divider shape's name for the pickers, built from the same id the shape table already
+ * carries -- so adding a shape needs a string and needs nothing here, exactly as with bridges.
+ */
+QString dividerShapeText(DividerShape shape)
+{
+	const QString key = QStringLiteral("Designer.DividerShape.") + QString::fromLatin1(dividerShapeId(shape));
+	const QString text = QString::fromUtf8(obs_module_text(key.toUtf8().constData()));
+
+	return text == key ? QString::fromUtf8(dividerShapeName(shape)) : text;
+}
+
+QString dividerPieceKindText(DividerPiece::Kind kind)
+{
+	const QString key = QStringLiteral("Designer.DividerPiece.") + QString::fromLatin1(dividerPieceKindId(kind));
+	const QString text = QString::fromUtf8(obs_module_text(key.toUtf8().constData()));
+
+	return text == key ? QString::fromUtf8(dividerPieceKindName(kind)) : text;
+}
+
+/* Columns of the divider's centre-piece table. */
+enum CentreColumn {
+	/* Ornament, text or logo. */
+	CentreKind = 0,
+	/* Ornament pieces only: which shape from the library. */
+	CentreShape,
+	/* The word, for a text piece; the file, for a logo or a custom ornament. */
+	CentreValue,
+	/* Ornament pieces only: a multiplier on the size its shape asks for. */
+	CentreSize,
+	CentreColumnCount,
+};
+
+/* Width of the centre table's two narrow columns, neither of which holds a long word. */
+constexpr int kCentreKindColumnWidth = 110;
+constexpr int kCentreSizeColumnWidth = 70;
 
 void addAlignmentOptions(QComboBox *box)
 {
@@ -591,6 +632,78 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	bridgeSpanEmpty = new QCheckBox(moduleText("Designer.BridgeSpanEmpty"), this);
 	form->addRow(QString(), bridgeSpanEmpty);
 
+	/*
+	 * The divider's three artwork slots. Each picker is filled from the shape library filtered
+	 * by the slot it serves, so a shape offered in two places is one row in that table rather
+	 * than one entry per picker here.
+	 */
+	const auto addShapeRow = [&](QComboBox **box, QLineEdit **path, DividerRole role, const char *boxKey,
+				     const char *pathKey) {
+		*box = new QComboBox(this);
+		for (DividerShape shape : dividerShapesForRole(role))
+			(*box)->addItem(dividerShapeText(shape), static_cast<int>(shape));
+		form->addRow(moduleText(boxKey), *box);
+
+		auto *row = new QWidget(this);
+		auto *layout = new QHBoxLayout(row);
+		layout->setContentsMargins(0, 0, 0, 0);
+		*path = new QLineEdit(row);
+		auto *browse = new QToolButton(row);
+		browse->setText(QStringLiteral("..."));
+		layout->addWidget(*path);
+		layout->addWidget(browse);
+		form->addRow(moduleText(pathKey), row);
+
+		QLineEdit *target = *path;
+		connect(browse, &QToolButton::clicked, this, [this, target] { browseForDividerSvg(target); });
+	};
+
+	addShapeRow(&dividerCap, &dividerCapSvgPath, DividerRoleCap, "Designer.DividerCap", "Designer.DividerCapSvg");
+
+	dividerMirrorEnds = new QCheckBox(moduleText("Designer.DividerMirrorEnds"), this);
+	dividerMirrorEnds->setToolTip(moduleText("Designer.DividerMirrorEnds.Tip"));
+	form->addRow(QString(), dividerMirrorEnds);
+
+	addShapeRow(&dividerEndCap, &dividerEndCapSvgPath, DividerRoleCap, "Designer.DividerEndCap",
+		    "Designer.DividerEndCapSvg");
+	addShapeRow(&dividerArm, &dividerArmSvgPath, DividerRoleArm, "Designer.DividerArm", "Designer.DividerArmSvg");
+
+	dividerThickness = new QSpinBox(this);
+	dividerThickness->setRange(1, 1024);
+	dividerThickness->setSuffix(QStringLiteral(" px"));
+	dividerThickness->setToolTip(moduleText("Designer.DividerThickness.Tip"));
+	form->addRow(moduleText("Designer.DividerThickness"), dividerThickness);
+
+	dividerGap = new QSpinBox(this);
+	dividerGap->setRange(0, 2048);
+	dividerGap->setSuffix(QStringLiteral(" px"));
+	dividerGap->setToolTip(moduleText("Designer.DividerGap.Tip"));
+	form->addRow(moduleText("Designer.DividerGap"), dividerGap);
+
+	dividerPieceGap = new QSpinBox(this);
+	dividerPieceGap->setRange(0, 2048);
+	dividerPieceGap->setSuffix(QStringLiteral(" px"));
+	form->addRow(moduleText("Designer.DividerPieceGap"), dividerPieceGap);
+
+	dividerRules = new QSpinBox(this);
+	dividerRules->setRange(1, 16);
+	dividerRules->setToolTip(moduleText("Designer.DividerRules.Tip"));
+	form->addRow(moduleText("Designer.DividerRules"), dividerRules);
+
+	dividerRuleGap = new QSpinBox(this);
+	dividerRuleGap->setRange(0, 2048);
+	dividerRuleGap->setSuffix(QStringLiteral(" px"));
+	form->addRow(moduleText("Designer.DividerRuleGap"), dividerRuleGap);
+
+	dividerRuleInset = new QSpinBox(this);
+	dividerRuleInset->setRange(0, 4096);
+	dividerRuleInset->setSuffix(QStringLiteral(" px"));
+	dividerRuleInset->setToolTip(moduleText("Designer.DividerRuleInset.Tip"));
+	form->addRow(moduleText("Designer.DividerRuleInset"), dividerRuleInset);
+
+	dividerTint = new QCheckBox(moduleText("Designer.DividerTint"), this);
+	form->addRow(QString(), dividerTint);
+
 	columns = new QSpinBox(this);
 	columns->setRange(1, 12);
 	form->addRow(moduleText("Designer.Columns"), columns);
@@ -724,6 +837,65 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	outer->addWidget(entriesGroup, 1);
 
 	/*
+	 * The divider's centre stack. A table of its own rather than a second mode of the entry
+	 * table above: a centre piece is a kind, a shape, a word and a size, which shares no column
+	 * with a credit, and the two are never shown at the same time anyway.
+	 */
+	centreGroup = new QGroupBox(moduleText("Designer.DividerCentre"), this);
+	centreGroup->setToolTip(moduleText("Designer.DividerCentre.Tip"));
+	auto *centreLayout = new QVBoxLayout(centreGroup);
+
+	centreTable = new QTableWidget(centreGroup);
+	centreTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+	centreTable->verticalHeader()->setVisible(false);
+	centreTable->setColumnCount(CentreColumnCount);
+	centreTable->setHorizontalHeaderLabels(
+		{moduleText("Designer.Column.PieceKind"), moduleText("Designer.Column.PieceShape"),
+		 moduleText("Designer.Column.PieceValue"), moduleText("Designer.Column.PieceSize")});
+	centreTable->setMinimumHeight(kCentreTableMinimumHeight);
+
+	/*
+	 * The value column is the one thing in a row long enough to need reading -- a word, or a
+	 * path to a file -- so it takes the slack and the other three keep only what they need.
+	 */
+	QHeaderView *centreHeader = centreTable->horizontalHeader();
+	centreHeader->setStretchLastSection(false);
+	centreHeader->setSectionResizeMode(QHeaderView::Interactive);
+	centreHeader->setSectionResizeMode(CentreValue, QHeaderView::Stretch);
+	centreTable->setColumnWidth(CentreKind, kCentreKindColumnWidth);
+	centreTable->setColumnWidth(CentreSize, kCentreSizeColumnWidth);
+
+	centreLayout->addWidget(centreTable);
+
+	auto *centreButtons = new QHBoxLayout();
+	const auto addCentreButton = [&](QToolButton *button, auto slot) {
+		centreButtons->addWidget(button);
+		connect(button, &QToolButton::clicked, this, slot);
+		return button;
+	};
+
+	addCentreButton(makeGlyphButton(centreGroup, QStringLiteral("+"), moduleText("Designer.AddPiece")),
+			&SectionEditor::addCentrePiece);
+	addCentreButton(makeGlyphButton(centreGroup, QStringLiteral("−"), moduleText("Designer.RemovePiece")),
+			&SectionEditor::removeSelectedCentrePieces);
+	addCentreButton(makeArrowButton(centreGroup, Qt::UpArrow, moduleText("Designer.MoveUp")),
+			[this] { moveSelectedCentrePiece(-1); });
+	addCentreButton(makeArrowButton(centreGroup, Qt::DownArrow, moduleText("Designer.MoveDown")),
+			[this] { moveSelectedCentrePiece(1); });
+	/*
+	 * One button for both kinds of file a piece can carry, because which one it opens follows
+	 * from the row it is pointed at: a logo piece wants an image, a custom ornament an SVG.
+	 */
+	centreFileButton = addCentreButton(makeLabelledButton(centreGroup, moduleText("Designer.SetPieceFile")),
+					   &SectionEditor::browseForCentreFile);
+	centreButtons->addStretch();
+
+	centreLayout->addLayout(centreButtons);
+	outer->addWidget(centreGroup, 1);
+
+	connect(centreTable, &QTableWidget::itemChanged, this, [this] { emitChanged(); });
+
+	/*
 	 * Whatever height is left over when the editor is shorter than the pane it sits in. A
 	 * QVBoxLayout with nothing to give the slack to shares it out between the items it has, so
 	 * without this a type carrying few fields -- Title especially -- has its handful of rows
@@ -772,6 +944,27 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	/* Untinting a custom bridge leaves nothing for the bridge's own colours to reach. */
 	connect(bridgeTint, &QCheckBox::toggled, this, revisitVisibility);
+
+	connect(dividerCapSvgPath, &QLineEdit::textChanged, this, notify);
+	connect(dividerEndCapSvgPath, &QLineEdit::textChanged, this, notify);
+	connect(dividerArmSvgPath, &QLineEdit::textChanged, this, notify);
+	connect(dividerThickness, &QSpinBox::valueChanged, this, notify);
+	connect(dividerGap, &QSpinBox::valueChanged, this, notify);
+	connect(dividerPieceGap, &QSpinBox::valueChanged, this, notify);
+	connect(dividerRules, &QSpinBox::valueChanged, this, notify);
+	connect(dividerRuleGap, &QSpinBox::valueChanged, this, notify);
+	connect(dividerRuleInset, &QSpinBox::valueChanged, this, notify);
+
+	/*
+	 * Each of these decides which of the other divider rows is worth showing: a slot set to a
+	 * custom shape reveals its file picker, mirroring hides the second end, and untinting a
+	 * custom file leaves nothing for the artwork's own colours to reach.
+	 */
+	for (QComboBox *box : {dividerCap, dividerEndCap, dividerArm})
+		connect(box, &QComboBox::currentIndexChanged, this, revisitVisibility);
+
+	connect(dividerMirrorEnds, &QCheckBox::toggled, this, revisitVisibility);
+	connect(dividerTint, &QCheckBox::toggled, this, revisitVisibility);
 	connect(columns, &QSpinBox::valueChanged, this, notify);
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
@@ -839,6 +1032,20 @@ void SectionEditor::setSection(const Section &source)
 	bridgeSplit->setValue(qRound(source.bridgeSplit * 100.0));
 	selectByData(bridgeRowAlign, static_cast<int>(source.bridgeRowAlign));
 	bridgeSpanEmpty->setChecked(source.bridgeSpanEmpty);
+	selectByData(dividerCap, static_cast<int>(source.dividerCap));
+	dividerCapSvgPath->setText(source.dividerCapSvg);
+	dividerMirrorEnds->setChecked(source.dividerMirrorEnds);
+	selectByData(dividerEndCap, static_cast<int>(source.dividerEndCap));
+	dividerEndCapSvgPath->setText(source.dividerEndCapSvg);
+	selectByData(dividerArm, static_cast<int>(source.dividerArm));
+	dividerArmSvgPath->setText(source.dividerArmSvg);
+	dividerThickness->setValue(qRound(source.dividerThickness));
+	dividerGap->setValue(qRound(source.dividerGap));
+	dividerPieceGap->setValue(qRound(source.dividerPieceGap));
+	dividerRules->setValue(source.dividerRules);
+	dividerRuleGap->setValue(qRound(source.dividerRuleGap));
+	dividerRuleInset->setValue(qRound(source.dividerRuleInset));
+	dividerTint->setChecked(source.dividerTint);
 	columns->setValue(source.columns);
 	columnGap->setValue(source.columnGap);
 	selectByData(fillOrder, source.fillAcross ? 1 : 0);
@@ -862,6 +1069,12 @@ void SectionEditor::setSection(const Section &source)
 	secondaryGroup->setChecked(source.useSecondaryStyle);
 	bridgeStyleGroup->setChecked(source.useBridgeStyle);
 
+	/*
+	 * The centre table is filled before the visibility pass rather than after it, because that
+	 * pass asks the table whether any piece is drawn from a file. Filling it afterwards would
+	 * have the question answered from the section the user just clicked away from.
+	 */
+	writeCentreToTable(source);
 	applyTypeVisibility(source.type);
 	rebuildEntryTable(source.type);
 	writeEntriesToTable(source);
@@ -894,6 +1107,20 @@ Section SectionEditor::section() const
 	result.bridgeSplit = bridgeSplit->value() / 100.0;
 	result.bridgeRowAlign = static_cast<HAlign>(bridgeRowAlign->currentData().toInt());
 	result.bridgeSpanEmpty = bridgeSpanEmpty->isChecked();
+	result.dividerCap = static_cast<DividerShape>(dividerCap->currentData().toInt());
+	result.dividerCapSvg = dividerCapSvgPath->text();
+	result.dividerMirrorEnds = dividerMirrorEnds->isChecked();
+	result.dividerEndCap = static_cast<DividerShape>(dividerEndCap->currentData().toInt());
+	result.dividerEndCapSvg = dividerEndCapSvgPath->text();
+	result.dividerArm = static_cast<DividerShape>(dividerArm->currentData().toInt());
+	result.dividerArmSvg = dividerArmSvgPath->text();
+	result.dividerThickness = dividerThickness->value();
+	result.dividerGap = dividerGap->value();
+	result.dividerPieceGap = dividerPieceGap->value();
+	result.dividerRules = dividerRules->value();
+	result.dividerRuleGap = dividerRuleGap->value();
+	result.dividerRuleInset = dividerRuleInset->value();
+	result.dividerTint = dividerTint->isChecked();
 	result.columns = columns->value();
 	result.columnGap = columnGap->value();
 	result.fillAcross = fillOrder->currentData().toInt() == 1;
@@ -916,6 +1143,7 @@ Section SectionEditor::section() const
 	result.bridgeStylePresetName = bridgeStyle->presetName();
 
 	readEntriesFromTable(&result);
+	readCentreFromTable(&result);
 	return result;
 }
 
@@ -979,6 +1207,44 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(bridgeRowAlign, bridged && sizing == BridgeSizing::Natural && fill == BridgeFill::Fixed);
 	/* A fixed bridge has nothing to run into the space an empty column would free. */
 	form->setRowVisible(bridgeSpanEmpty, bridged && fill != BridgeFill::Fixed);
+	/*
+	 * The divider's own rows. A slot's file picker follows the shape picked for it, and the
+	 * second end follows the mirror toggle: a divider whose two ends are the same shape has one
+	 * cap setting, and a second one on screen saying nothing invites the reader to look for a
+	 * difference that is not there.
+	 */
+	const bool divider = type == SectionType::SectionDivider;
+	const auto slotShape = [](QComboBox *box) {
+		return static_cast<DividerShape>(box->currentData().toInt());
+	};
+
+	const bool separateEnds = divider && !dividerMirrorEnds->isChecked();
+	const bool capFromFile = divider && dividerShapeUsesFile(slotShape(dividerCap));
+	const bool endCapFromFile = separateEnds && dividerShapeUsesFile(slotShape(dividerEndCap));
+	const bool armFromFile = divider && dividerShapeUsesFile(slotShape(dividerArm));
+
+	form->setRowVisible(dividerCap, divider);
+	form->setRowVisible(dividerCapSvgPath->parentWidget(), capFromFile);
+	form->setRowVisible(dividerMirrorEnds, divider);
+	form->setRowVisible(dividerEndCap, separateEnds);
+	form->setRowVisible(dividerEndCapSvgPath->parentWidget(), endCapFromFile);
+	form->setRowVisible(dividerArm, divider);
+	form->setRowVisible(dividerArmSvgPath->parentWidget(), armFromFile);
+	form->setRowVisible(dividerThickness, divider);
+	form->setRowVisible(dividerGap, divider);
+	form->setRowVisible(dividerPieceGap, divider);
+	form->setRowVisible(dividerRules, divider);
+	/* One rule has nothing to be spaced from and nothing to taper against. */
+	form->setRowVisible(dividerRuleGap, divider && dividerRules->value() > 1);
+	form->setRowVisible(dividerRuleInset, divider && dividerRules->value() > 1);
+
+	/*
+	 * The built-in shapes are drawn white to be tinted, so the flag only means anything once
+	 * some slot -- an end, an arm, or a piece of the centre stack -- is pointed at a file.
+	 */
+	const bool dividerFiles = capFromFile || endCapFromFile || armFromFile || (divider && centreUsesFile());
+	form->setRowVisible(dividerTint, dividerFiles);
+
 	form->setRowVisible(columns, hasColumns);
 	form->setRowVisible(columnGap, hasColumns);
 	form->setRowVisible(fillOrder, hasColumns);
@@ -988,7 +1254,11 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(subtitleOrder, hasSubtitles);
 	form->setRowVisible(spacerHeight, type == SectionType::Spacer);
 
-	primaryStyle->parentWidget()->setVisible(hasText || hasLogos);
+	/*
+	 * A divider has a style even though it carries no section text: the artwork is inked from
+	 * it, and a word or a mark in the centre stack is drawn with it.
+	 */
+	primaryStyle->parentWidget()->setVisible(hasText || hasLogos || divider);
 	/*
 	 * The same style serves whichever second text the type carries, so the group is titled
 	 * after the one being edited rather than after the Bridged section it was written for.
@@ -1001,17 +1271,28 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * the colours it was authored with, which is painted straight to the strip with nothing here
 	 * getting a say over it.
 	 */
-	bridgeStyleGroup->setVisible(usesBridge && !(artFromFile && !bridgeTint->isChecked()));
+	/*
+	 * A divider's artwork is the same thing to ink apart from the text as a bridge is, and takes
+	 * the same override -- so the group is on show for both, and titled after whichever is being
+	 * edited. It goes away for artwork left in a file's own colours, which nothing here reaches.
+	 */
+	const bool inkableDivider = divider && !(dividerFiles && !dividerTint->isChecked());
+	bridgeStyleGroup->setVisible((usesBridge && !(artFromFile && !bridgeTint->isChecked())) || inkableDivider);
+	bridgeStyleGroup->setTitle(divider ? moduleText("Designer.DividerArtStyle")
+					   : moduleText("Designer.BridgeStyle"));
+
 	entriesGroup->setVisible(hasEntries);
 	/* Nothing for a file picker to fill in when the entries are lines of text. */
 	setLogoButton->setVisible(hasEntries && hasLogos);
 
+	centreGroup->setVisible(divider);
+
 	/*
-	 * The entry table is the one thing here worth growing, so it takes the leftover height
-	 * whenever it is on show. With no table the trailing spacer takes it instead, which is what
-	 * keeps the rows packed at the top rather than spread down the pane.
+	 * Whichever table is on show is the one thing here worth growing, so it takes the leftover
+	 * height. With no table at all the trailing spacer takes it instead, which is what keeps the
+	 * rows packed at the top rather than spread down the pane.
 	 */
-	outerLayout->setStretch(trailingStretchIndex, hasEntries ? 0 : 1);
+	outerLayout->setStretch(trailingStretchIndex, hasEntries || divider ? 0 : 1);
 }
 
 void SectionEditor::rebuildEntryTable(SectionType type)
@@ -1119,6 +1400,286 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 	}
 
 	target->entries = entries;
+}
+
+void SectionEditor::writeCentreToTable(const Section &source)
+{
+	const QSignalBlocker blocker(centreTable);
+
+	/*
+	 * Cleared for every other type, and read back only for a divider (see readCentreFromTable),
+	 * so a section switched to something else and back keeps the stack it was built with rather
+	 * than being handed an empty table's worth of nothing.
+	 */
+	centreTable->setRowCount(0);
+	if (source.type != SectionType::SectionDivider)
+		return;
+
+	/*
+	 * A change to either picker can change which of the other cells in the row mean anything,
+	 * and whether the divider draws from a file at all -- which is a row of the form above.
+	 */
+	const auto onPickerChanged = [this](int row) {
+		return [this, row] {
+			if (loading)
+				return;
+			applyCentreRowVisibility(row);
+			applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+			emitChanged();
+		};
+	};
+
+	centreTable->setRowCount(source.dividerCentre.size());
+	for (int row = 0; row < source.dividerCentre.size(); ++row) {
+		const DividerPiece &piece = source.dividerCentre.at(row);
+
+		auto *kindBox = new QComboBox(centreTable);
+		for (DividerPiece::Kind kind : allDividerPieceKinds())
+			kindBox->addItem(dividerPieceKindText(kind), static_cast<int>(kind));
+		selectByData(kindBox, static_cast<int>(piece.kind));
+		centreTable->setCellWidget(row, CentreKind, kindBox);
+		connect(kindBox, &QComboBox::currentIndexChanged, this, onPickerChanged(row));
+
+		auto *shapeBox = new QComboBox(centreTable);
+		for (DividerShape shape : dividerShapesForRole(DividerRoleOrnament))
+			shapeBox->addItem(dividerShapeText(shape), static_cast<int>(shape));
+		selectByData(shapeBox, static_cast<int>(piece.shape));
+		centreTable->setCellWidget(row, CentreShape, shapeBox);
+		connect(shapeBox, &QComboBox::currentIndexChanged, this, onPickerChanged(row));
+
+		/*
+		 * One column for the three things a piece can be given: the word, the image, or the
+		 * artwork. They are mutually exclusive by construction -- a piece is one kind -- so
+		 * three columns would mean two empty ones on every row.
+		 */
+		QString value;
+		QString size;
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament:
+			value = piece.svgPath;
+			size = QString::number(piece.scale, 'g', 3);
+			break;
+		case DividerPiece::Kind::Text:
+			value = piece.text;
+			break;
+		case DividerPiece::Kind::Logo:
+			value = piece.logo.path;
+			size = QString::number(piece.logo.maxHeight);
+			break;
+		}
+
+		centreTable->setItem(row, CentreValue, new QTableWidgetItem(value));
+		centreTable->setItem(row, CentreSize, new QTableWidgetItem(size));
+
+		applyCentreRowVisibility(row);
+	}
+}
+
+void SectionEditor::readCentreFromTable(Section *target) const
+{
+	/* Only a divider's table is ever filled, so only a divider's is ever believed. */
+	if (target->type != SectionType::SectionDivider)
+		return;
+
+	QVector<DividerPiece> pieces;
+	pieces.reserve(centreTable->rowCount());
+
+	for (int row = 0; row < centreTable->rowCount(); ++row) {
+		const auto *kindBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreKind));
+		const auto *shapeBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreShape));
+		if (!kindBox || !shapeBox)
+			continue;
+
+		const auto cell = [this, row](int column) {
+			const QTableWidgetItem *item = centreTable->item(row, column);
+			return item ? item->text() : QString();
+		};
+
+		DividerPiece piece;
+		piece.kind = static_cast<DividerPiece::Kind>(kindBox->currentData().toInt());
+		piece.shape = static_cast<DividerShape>(shapeBox->currentData().toInt());
+
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament: {
+			piece.svgPath = cell(CentreValue);
+			const double scale = cell(CentreSize).toDouble();
+			piece.scale = scale > 0.0 ? scale : 1.0;
+			break;
+		}
+		case DividerPiece::Kind::Text:
+			piece.text = cell(CentreValue);
+			break;
+		case DividerPiece::Kind::Logo: {
+			piece.logo.path = cell(CentreValue);
+			const int height = cell(CentreSize).toInt();
+			piece.logo.maxHeight = height > 0 ? height : 96;
+			break;
+		}
+		}
+
+		pieces.append(piece);
+	}
+
+	target->dividerCentre = pieces;
+}
+
+void SectionEditor::applyCentreRowVisibility(int row)
+{
+	const auto *kindBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreKind));
+	auto *shapeBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreShape));
+	if (!kindBox || !shapeBox)
+		return;
+
+	const auto kind = static_cast<DividerPiece::Kind>(kindBox->currentData().toInt());
+	const auto shape = static_cast<DividerShape>(shapeBox->currentData().toInt());
+
+	/* Only an ornament comes out of the shape library; a word and a mark are their own shapes. */
+	shapeBox->setEnabled(kind == DividerPiece::Kind::Ornament);
+
+	/*
+	 * A built-in ornament has nothing to fill in: its artwork is in the table. Everything else
+	 * carries either a word, a file, or both a file and a height.
+	 */
+	const bool hasValue = kind != DividerPiece::Kind::Ornament || dividerShapeUsesFile(shape);
+	const bool hasSize = kind != DividerPiece::Kind::Text;
+
+	/*
+	 * Greyed rather than blanked, so a cell that stops applying keeps what was typed into it
+	 * and gives it back when the kind is switched round again.
+	 */
+	const auto setEditable = [this, row](int column, bool editable) {
+		QTableWidgetItem *item = centreTable->item(row, column);
+		if (!item)
+			return;
+
+		Qt::ItemFlags flags = Qt::ItemIsSelectable;
+		if (editable)
+			flags |= Qt::ItemIsEnabled | Qt::ItemIsEditable;
+		item->setFlags(flags);
+	};
+
+	setEditable(CentreValue, hasValue);
+	setEditable(CentreSize, hasSize);
+}
+
+bool SectionEditor::centreUsesFile() const
+{
+	for (int row = 0; row < centreTable->rowCount(); ++row) {
+		const auto *kindBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreKind));
+		const auto *shapeBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreShape));
+		if (!kindBox || !shapeBox)
+			continue;
+
+		if (static_cast<DividerPiece::Kind>(kindBox->currentData().toInt()) != DividerPiece::Kind::Ornament)
+			continue;
+
+		if (dividerShapeUsesFile(static_cast<DividerShape>(shapeBox->currentData().toInt())))
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * The three that follow go through the model rather than shuffling cells, because the rows carry
+ * combo boxes and QTableWidget::takeItem knows nothing about those. Round-tripping through
+ * setSection is the same move importCsv makes, and for the same reason: it is the one path that
+ * cannot leave the table and the section disagreeing.
+ */
+void SectionEditor::addCentrePiece()
+{
+	Section updated = section();
+	updated.dividerCentre.append(DividerPiece{});
+	setSection(updated);
+
+	centreTable->setCurrentCell(updated.dividerCentre.size() - 1, CentreKind);
+	emitChanged();
+}
+
+void SectionEditor::removeSelectedCentrePieces()
+{
+	QList<int> rows;
+	for (const QModelIndex &index : centreTable->selectionModel()->selectedRows())
+		rows.append(index.row());
+
+	if (rows.isEmpty())
+		return;
+
+	Section updated = section();
+
+	/* Remove from the bottom up so earlier indices stay valid. */
+	std::sort(rows.begin(), rows.end(), std::greater<int>());
+	for (int row : rows) {
+		if (row >= 0 && row < updated.dividerCentre.size())
+			updated.dividerCentre.removeAt(row);
+	}
+
+	setSection(updated);
+	emitChanged();
+}
+
+void SectionEditor::moveSelectedCentrePiece(int delta)
+{
+	const int row = centreTable->currentRow();
+	const int target = row + delta;
+
+	Section updated = section();
+	if (row < 0 || row >= updated.dividerCentre.size() || target < 0 || target >= updated.dividerCentre.size())
+		return;
+
+	std::swap(updated.dividerCentre[row], updated.dividerCentre[target]);
+	setSection(updated);
+
+	centreTable->setCurrentCell(target, CentreKind);
+	emitChanged();
+}
+
+void SectionEditor::browseForCentreFile()
+{
+	const int row = centreTable->currentRow();
+	if (row < 0)
+		return;
+
+	const auto *kindBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreKind));
+	const auto *shapeBox = qobject_cast<QComboBox *>(centreTable->cellWidget(row, CentreShape));
+	if (!kindBox || !shapeBox)
+		return;
+
+	const auto kind = static_cast<DividerPiece::Kind>(kindBox->currentData().toInt());
+	const auto shape = static_cast<DividerShape>(shapeBox->currentData().toInt());
+
+	/* Which dialog to open follows from the row: a mark wants an image, an ornament artwork. */
+	const bool logo = kind == DividerPiece::Kind::Logo;
+	if (!logo && !(kind == DividerPiece::Kind::Ornament && dividerShapeUsesFile(shape)))
+		return;
+
+	const QTableWidgetItem *existing = centreTable->item(row, CentreValue);
+	const QString path = QFileDialog::getOpenFileName(
+		this, logo ? moduleText("Designer.ChooseLogo") : moduleText("Designer.ChooseDividerSvg"),
+		existing ? existing->text() : QString(), logo ? imageFilter() : svgFilter());
+
+	if (path.isEmpty())
+		return;
+
+	centreTable->setItem(row, CentreValue, new QTableWidgetItem(path));
+
+	const QTableWidgetItem *size = centreTable->item(row, CentreSize);
+	if (logo && (!size || size->text().toInt() <= 0))
+		centreTable->setItem(row, CentreSize, new QTableWidgetItem(QStringLiteral("96")));
+
+	/* setItem hands back a fresh item, so the row's flags are reapplied over the top of it. */
+	applyCentreRowVisibility(row);
+}
+
+void SectionEditor::browseForDividerSvg(QLineEdit *target)
+{
+	if (!target)
+		return;
+
+	const QString path = QFileDialog::getOpenFileName(this, moduleText("Designer.ChooseDividerSvg"), target->text(),
+							  svgFilter());
+	if (!path.isEmpty())
+		target->setText(path);
 }
 
 void SectionEditor::addEntry()

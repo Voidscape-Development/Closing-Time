@@ -25,8 +25,8 @@ endif()
 find_package(obs-frontend-api REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 
-# Svg is here for the bridge artwork: bridges are drawn from SVG tiles rather than from
-# glyphs, so QSvgRenderer is part of the render path and not just an icon loader.
+# Svg is here for the bridge and divider artwork: both are drawn from SVG tiles rather than
+# from glyphs, so QSvgRenderer is part of the render path and not just an icon loader.
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg)
 target_compile_options(
@@ -45,17 +45,23 @@ target_sources(
     src/model/BridgeArt.hpp
     src/model/CreditsModel.cpp
     src/model/CreditsModel.hpp
+    src/model/DividerArt.cpp
+    src/model/DividerArt.hpp
     src/model/EndingAction.cpp
     src/model/EndingAction.hpp
     src/plugin-main.cpp
     src/render/BridgeArtRenderer.cpp
     src/render/BridgeArtRenderer.hpp
+    src/render/DividerArtRenderer.cpp
+    src/render/DividerArtRenderer.hpp
     src/render/ImageEffects.cpp
     src/render/ImageEffects.hpp
     src/render/RenderThread.cpp
     src/render/RenderThread.hpp
     src/render/StripRenderer.cpp
     src/render/StripRenderer.hpp
+    src/render/SvgArt.cpp
+    src/render/SvgArt.hpp
     src/source/CreditsSource.cpp
     src/source/CreditsSource.hpp
     src/ui/CsvImportDialog.cpp

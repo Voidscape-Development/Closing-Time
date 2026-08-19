@@ -61,6 +61,8 @@ QColor layoutBoxColour(LayoutBox::Kind kind)
 		return QColor(255, 170, 60);
 	case LayoutBox::Kind::Bridge:
 		return QColor(235, 225, 110);
+	case LayoutBox::Kind::Divider:
+		return QColor(180, 140, 255);
 	case LayoutBox::Kind::Text:
 	default:
 		return QColor(255, 120, 200);
@@ -313,6 +315,7 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 	draw(LayoutBox::Kind::Text);
 	draw(LayoutBox::Kind::Logo);
 	draw(LayoutBox::Kind::Bridge);
+	draw(LayoutBox::Kind::Divider);
 
 	painter.restore();
 }

@@ -36,11 +36,14 @@ src/
   model/
     CreditsModel.{hpp,cpp} TextStyle, StylePreset, LogoRef, Entry, Section, Document + obs_data (de)serialisation
     BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
+    DividerArt.{hpp,cpp}   the table of divider shapes, and which of the three slots each serves
     EndingAction.{hpp,cpp} ending-action config and execution
   render/
     RenderThread.{hpp,cpp} the shared rasterisation thread and its job queue
     StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterisation
-    BridgeArtRenderer.{hpp,cpp} SVG tile cache, bridge tiling and painting
+    SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
+    BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
+    DividerArtRenderer.{hpp,cpp} divider part sizing and arm tiling, on top of SvgArt
     ImageEffects.{hpp,cpp} box blur and tinting, shared by both shadow paths
   source/
     CreditsSource.{hpp,cpp} obs_source_info: playback, GPU upload, draw, hotkeys, properties
@@ -66,7 +69,7 @@ A `Document` is a canvas (`width`, `height`, `background`), playback settings
 `scrollPosition`), an `EndingActionConfig`, a list of `StylePreset`s, and an ordered list of
 `Section`s.
 
-`Section` is a single struct covering all fourteen types rather than a class hierarchy. The
+`Section` is a single struct covering all fifteen types rather than a class hierarchy. The
 fields a given type actually uses are described by five predicates —
 `sectionUsesText/Logos/Entries/Columns/Subtitles` — which drive both the layout switch and the
 editor's field visibility, plus `sectionUsesSecondaryText`, derived from two of them rather than
@@ -99,6 +102,7 @@ side of the frame while still keeping a margin's worth of clear space off that s
 | `TitleSubtitleList` | entry list of stacked text pairs | e.g. a position over the name that holds it; see below |
 | `LogoList` | entry list of logos, one column | |
 | `MultiTextList`, `MultiLogoList`, `MultiTitleSubtitleList` | entry list over `columns` columns | `fillAcross` picks row-major vs column-major |
+| `SectionDivider` | no entries; a `dividerCentre` stack of its own | an ornamental rule composed from a cap, an arm and a centre; see below |
 | `Spacer` | nothing | a blank run of `spacerHeight` px |
 
 ### Logo rows
@@ -292,6 +296,91 @@ rather than being kept between them, unlike `LogoCache`. A tile is a few hundred
 markup, so the cache exists to avoid re-parsing once per *row*, not once per render — and
 rebuilding it each time is what makes a custom SVG edited on disk show up in the next rebuild
 with nothing having to watch the file.
+
+### Section dividers
+
+An ornamental rule is not one picture. Look at any sheet of them and the same anatomy repeats:
+an **end cap**, an **arm** running inward from it, something in the **middle**, then the whole
+thing mirrored. `SectionDivider` is built that way rather than as a list of finished dividers,
+because three slots drawn from one library of two dozen shapes is a great many more dividers
+than there are rows in the library — and adding a shape adds it to every divider that could use
+it rather than to one.
+
+`model/DividerArt.{hpp,cpp}` is a table on the same pattern as `BridgeArt`, with one field the
+bridge table has no use for: **`roles`**, a mask of which slots a shape may be picked for. A
+diamond is a perfectly good end cap *and* a perfectly good centrepiece, and saying so once beats
+a second Diamond in a second table that has to be kept looking like the first. The pickers are
+built by filtering the table on the slot they serve, so a shape is offered wherever it belongs
+without anything enumerating the combinations.
+
+Two things about the geometry are worth naming, because both are what let one number size a
+whole divider:
+
+**A cap is authored pointing outward along -x, and the right-hand end is that same tile
+mirrored.** Mirroring is a painter transform on the artwork rather than a second tile, so a cap
+cannot come out subtly different at the two ends of the same rule. `dividerMirrorEnds` is on by
+default and true of every ornamental rule that is not an arrow pointing somewhere; switching it
+off reveals `dividerEndCap`, which is *kept* either way so the toggle is non-destructive. The
+same mirror applies to the right-hand **arm**, unconditionally: a taper running from a hairline
+up to full thickness, or a rule ticked at one edge of each tile, would otherwise point the same
+way on both sides and leave the divider lopsided. Mirroring a symmetric tile costs a transform
+and changes nothing, which is why it is not a property each shape has to remember to declare.
+
+**Every shape declares its own height as a multiple of the rule it belongs to.** `height` in the
+table is that proportion — an arrowhead some four and a half times the rule, a centre diamond
+three and a half — so `dividerThickness` scales all of it and an arrowhead stays an arrowhead
+when a divider is made heavier. The one exception is the **arm**, whose height is *always* the
+thickness whatever its row says: an arm is the rule, and a rule has no proportion to itself.
+
+An arm has no fill setting, unlike a bridge. A bridge has three because the user is choosing how
+a leader sits between two words; an arm has two fixed ends and only one sensible answer, so a
+`Scale` shape covers its span exactly and a `Spread` shape lays whole tiles and shares the
+leftover out *between* them rather than at the ends, meeting the cap outside it and the centre
+inside it.
+
+**The middle is a list, not a choice.** `dividerCentre` is a `QVector<DividerPiece>`, each an
+ornament, a word or an image, drawn in order. The figures that actually turn up in the middle of
+a rule are compounds — a diamond with a dot either side of it, `PART II` between two curls — and
+offering a single slot would mean shipping every one of those as its own tile or making the user
+draw it. An empty list is the ordinary case rather than a degenerate one: it is the unbroken
+rule, and the two arms become one arm spanning the whole width, so a scaling shape is stretched
+once across it instead of twice across two halves. A piece that measures to nothing — an empty
+word, a logo that would not decode, an ornament whose file is missing — is dropped along with the
+gap that would have sat beside it, rather than left as a hole in the rule.
+
+A word and an image in the centre go through **exactly the helpers that draw a section's own
+title and its own logo**, which is why they can be there at all: they pick up the style's
+gradient, outline and shadow with no second implementation of any of it. That is also why the
+composition lives in `StripRenderer.cpp` beside the other section geometry while
+`DividerArtRenderer` handles only the artwork — the same split `prepareBridge`/`paintBridge`
+already make.
+
+`dividerRules` runs two or more rules in parallel about the midline, and the caps and the centre
+are drawn **once** across the whole stack rather than once per rule: three lines broken by one
+ornament is the deco figure, where three complete dividers touching is not. `dividerRuleInset`
+makes each rule shorter than the one nearer the midline by a fixed amount, so a stack tapers to
+a wedge; an even-numbered stack has no middle rule to measure from, so its two innermost sit half
+a step out and the figure stays symmetric either way.
+
+Ink comes from the **bridge's** override. `useBridgeStyle`/`bridgeStyle` are reused outright
+rather than duplicated under a divider name, because "colour the artwork apart from the text" is
+one want with two names: a divider whose rule carries the title's gold sweep while its own label
+stays white is the same edit as yellow leader dots under white names. The designer retitles the
+group by section type, the way it already retitles the secondary style group.
+
+Every tinted part of a divider is rasterised into **one** silhouette and inked once — not part by
+part — so an outline surrounds the divider rather than each diamond in it, and one gradient runs
+the whole way across instead of restarting at every piece. That is what `render/SvgArt.{hpp,cpp}`
+exists for: the tile cache and the paint-through-ink path (shadow, grown outline, gradient
+stencil) were lifted out of `BridgeArtRenderer` so both callers ink identically rather than by
+two implementations that agree today. `paintInkedArt` takes a callback that draws the silhouette,
+which is what lets the bridge hand over a run of tiles and the divider hand over a whole figure
+made of different artwork.
+
+Every load-time fallback is `None` — a divider whose keys a document does not carry draws the
+plainest thing the library can, rather than whatever happens to sit first in the table — except
+the arm, where `None` would mean a divider with no rule in it at all, so that one falls back to
+`Rule`.
 
 ### Title and subtitle rows
 
@@ -800,12 +889,15 @@ rows in place rather than rebuilding them, so a mapping the user has already set
   playing it, so a section in the middle of a long roll can be looked at while it is being written.
 - Rebuilds are queued only when the document's *content* changes, rather than on every settings
   edit, so a slider drag no longer re-rasterises the whole strip once a frame.
+- A Section Divider type: an ornamental rule composed from an end cap, a rule and a list of
+  centrepieces, drawn from a shape library that takes a new shape without the renderer, the
+  editor or the persistence format changing.
 
 ## Verifying changes
 
 The plugin builds clean against libobs and Qt 6 with `-Wextra -Werror`. There is no test
 target in the template yet; renderer and parser changes were validated with an offscreen
-harness covering the `obs_data` round trip for all fourteen section types, measure/render
+harness covering the `obs_data` round trip for all fifteen section types, measure/render
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
 
@@ -826,6 +918,19 @@ with no effects and no bleed; a bridged row's leader picking up the same sweep a
 outline as the text either side of it; and a 30 px blur straddling the 2048 px tile seam,
 where the summed alpha of the rows either side of the boundary has to stay continuous rather
 than dropping to zero on one side.
+
+Section dividers were validated offscreen the same way, over roughly four thousand checks: the
+`obs_data` round trip for every new field and every kind of centre piece, including through the
+designer's JSON export, and with a stored zero for each of the three gaps told apart from a
+missing key; a section written before dividers existed loading with `None` in both end slots,
+`Rule` in the arm, mirrored ends, one rule, an empty centre and a drawable thickness; every
+built-in shape in every slot it serves, crossed against every other, checking measure/render
+agreement and that nothing is drawn outside the content box or into the padding; a stack of one
+to five rules drawing one run of rows per rule, symmetric about its midline and never widening
+outward; custom artwork taking the section's colour with `dividerTint` on and keeping its own
+with it off, and a missing file leaving the rest of the divider drawn; and the degenerate cases
+— a divider with no cap, no arm and no centre, one narrower than its own parts, one whose only
+centre piece is an empty word, and a hidden one taking no height at all.
 
 Row geometry and the section box were checked the same way, against the previous build as well
 as the new one so that each case is known to fail before it passes: every bridged row staying on
@@ -866,7 +971,7 @@ across and filling down putting the same entries in demonstrably different colum
 clearing the tallest pair above it; the `obs_data` round trip for both new fields across every
 section type; a document written before either existed loading title-first with the default gap,
 and a stored gap of zero surviving as zero rather than being read back as that default; and
-measure/render agreement plus tile contiguity over a document holding all fourteen types.
+measure/render agreement plus tile contiguity over a document holding all fifteen types.
 
 The designer's layout was checked offscreen too, by giving the editor more height than it needs
 and measuring the largest run of empty space between its visible controls — 6 px for every

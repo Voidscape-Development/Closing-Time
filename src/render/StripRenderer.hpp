@@ -129,6 +129,12 @@ struct LayoutBox {
 		Text,
 		Logo,
 		Bridge,
+		/*
+		 * A Section Divider's own box, over the height its artwork occupies -- which is not
+		 * the same as its content box, since a divider narrower than its section sits
+		 * centred in it and a stack of rules is taller than any one of them.
+		 */
+		Divider,
 	};
 
 	Kind kind = Kind::Section;
