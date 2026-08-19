@@ -24,6 +24,7 @@ out of sections:
 | Multi-List of Text | Names across a configurable number of columns |
 | Title and Subtitle Multi-List | The same stacked pairs, across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
+| Section Divider | An ornamental rule between sections, composed from end caps, a rule and a centrepiece |
 | Spacer | A blank run, for pacing |
 
 A **title and subtitle** list is the other way to set what a bridged row sets on one line: the
@@ -47,6 +48,31 @@ spread to span whatever gap the two texts leave; the columns can be fixed (so th
 at the same place on every row) or sized to the text (so the row reaches both edges); a short
 row can hug either edge or sit centred; and a row with only one side filled in can run its
 leader out to the far edge, for a heading inside an otherwise bridged list.
+
+A **section divider** is the ornamental rule that separates one part of a roll from the next,
+and it is *composed* rather than picked from a list of finished pictures: an end cap, a rule
+running inward from it, and a centre — then the same again mirrored, so the two ends of a rule
+cannot drift apart while you work on it. Each of the three is drawn from a small library of
+vector shapes — arrowheads, spearpoints, teardrops, scrolled ends and deco steps for the ends;
+plain, double, tapered, dotted, dashed, diamond-chained and ticked rules; diamonds, nested
+diamonds, four- and five-point stars, hearts, scrolls, filigree curls and deco interlocks for
+the middle — and any of the three can instead be an SVG of your own. Two dozen shapes across
+three slots is a great many more dividers than there are shapes.
+
+The middle is a *list* rather than a single choice, because the figures that turn up there are
+compounds: a diamond with a dot either side of it, `PART II` between two curls, a monogram
+between a pair of scrolls. Pieces can be ornaments, a word set in the section's own font, or an
+image, in whatever order you put them; leave the list empty and you get an unbroken rule. Two
+or three rules can run in parallel with a single ornament breaking all of them, and they can be
+tapered so the stack forms a wedge. One thickness sizes the whole thing — every shape knows its
+own proportion to the rule it belongs to, so an arrowhead stays an arrowhead when a divider is
+made heavier.
+
+Because the artwork is a stencil rather than a picture, a divider takes the section's own fill:
+the gold sweep on your titles runs across the whole divider as one figure rather than
+restarting at every diamond, and it carries the same outline and shadow. Its artwork can also
+be inked separately from a word in its middle, the same way a bridge can be inked apart from
+the names either side of it.
 
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
 plus padding and side margins. Text can be filled with a flat colour or with a **linear or
@@ -91,7 +117,7 @@ and ending actions are mutually exclusive — a looping roll never ends.
 ## Building
 
 Requires CMake 3.28+, a C++17 compiler, Qt 6 (Core, Gui, Widgets and Svg — Svg is what draws
-the bridge artwork), and the OBS Studio sources/dependencies. The plugin needs both
+the bridge and divider artwork), and the OBS Studio sources/dependencies. The plugin needs both
 `ENABLE_QT` and `ENABLE_FRONTEND_API`, which are on by default.
 
 ```bash

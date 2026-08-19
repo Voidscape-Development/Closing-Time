@@ -40,6 +40,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cmath>
 
 #include "render/BridgeArtRenderer.hpp"
+#include "render/DividerArtRenderer.hpp"
 #include "render/ImageEffects.hpp"
 
 namespace closingtime {
@@ -853,6 +854,244 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 }
 
 /*
+ * Where every part of one Section Divider goes, in strip space.
+ *
+ * The artwork is separated from the text and the logos because the three are painted by
+ * different machinery: art goes through the divider renderer's stencil, while a word and a mark
+ * in the middle of a divider are drawn by exactly the helpers that draw a section's own title
+ * and its own logo -- which is the point of letting the centre hold them at all.
+ */
+struct DividerLayout {
+	struct TextPiece {
+		QString text;
+		QRectF rect;
+	};
+	struct LogoPiece {
+		QImage image;
+		QRect rect;
+	};
+
+	QVector<DividerArtPlacement> art;
+	QVector<TextPiece> texts;
+	QVector<LogoPiece> logos;
+
+	/* Total height the divider occupies. Zero when it draws nothing at all. */
+	qreal height = 0.0;
+};
+
+/* One centre piece, measured but not yet placed. */
+struct MeasuredPiece {
+	const DividerPiece *piece;
+	QSizeF size;
+	/* Logo pieces only, decoded once here so the paint pass does not look it up again. */
+	QImage image;
+};
+
+/*
+ * Composes a divider across `width`, starting at `x`, with its content beginning at `top`.
+ *
+ * Nothing is painted here: the whole figure is measured and placed, and the caller paints from
+ * the result. That is what keeps the measure pass and the render pass in agreement -- they are
+ * the same call, and a divider whose height is reported as one thing and drawn as another would
+ * shift every section under it by the difference.
+ */
+DividerLayout layoutDivider(const Section &section, const TextStyle &style, LogoCache *logoCache,
+			    DividerArtCache *dividers, qreal x, qreal top, qreal width)
+{
+	DividerLayout layout;
+
+	const qreal thickness = section.dividerThickness;
+	if (!dividers || thickness <= 0.0 || width <= 0.0)
+		return layout;
+
+	/* --- Measure the centre stack ---------------------------------------------------- */
+
+	QVector<MeasuredPiece> centre;
+	centre.reserve(section.dividerCentre.size());
+
+	for (const DividerPiece &piece : section.dividerCentre) {
+		MeasuredPiece measured{&piece, QSizeF(), QImage()};
+
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament:
+			measured.size = dividerShapeSize(piece.shape, piece.svgPath, dividers, thickness, piece.scale);
+			break;
+
+		case DividerPiece::Kind::Text: {
+			if (piece.text.isEmpty())
+				break;
+			/*
+			 * Measured at its natural width and then laid out into exactly that, so the
+			 * word occupies the room it needs and never wraps inside a divider. A centre
+			 * piece has no column to wrap into -- the arms are what the space either
+			 * side of it is for.
+			 */
+			const qreal textWidth = naturalTextWidth(piece.text, style);
+			const qreal textHeight = layoutText(nullptr, piece.text, style, 0, 0, textWidth);
+			measured.size = QSizeF(textWidth, textHeight);
+			break;
+		}
+
+		case DividerPiece::Kind::Logo: {
+			measured.image = logoCache ? logoCache->get(piece.logo.path, piece.logo.maxHeight) : QImage();
+			measured.size = QSizeF(logoDrawSize(measured.image, piece.logo, qRound(width)));
+			break;
+		}
+		}
+
+		/*
+		 * A piece that measures to nothing -- an empty word, a logo that would not decode, a
+		 * shape whose file is missing -- is dropped along with the gap that would have sat
+		 * beside it, rather than left as a hole in the middle of the rule.
+		 */
+		if (measured.size.width() > 0.0 && measured.size.height() > 0.0)
+			centre.append(measured);
+	}
+
+	qreal centreWidth = 0.0;
+	qreal centreHeight = 0.0;
+	for (int i = 0; i < centre.size(); ++i) {
+		centreWidth += centre.at(i).size.width();
+		if (i > 0)
+			centreWidth += section.dividerPieceGap;
+		centreHeight = std::max(centreHeight, centre.at(i).size.height());
+	}
+
+	/* --- Measure the ends ------------------------------------------------------------ */
+
+	/*
+	 * Both caps are authored pointing outward along -x, so the right-hand one is the same
+	 * artwork drawn mirrored whether it is the left cap repeated or a second shape of its own.
+	 */
+	const DividerShape rightShape = section.dividerMirrorEnds ? section.dividerCap : section.dividerEndCap;
+	const QString &rightFile = section.dividerMirrorEnds ? section.dividerCapSvg : section.dividerEndCapSvg;
+
+	const QSizeF leftCap = dividerShapeSize(section.dividerCap, section.dividerCapSvg, dividers, thickness);
+	const QSizeF rightCap = dividerShapeSize(rightShape, rightFile, dividers, thickness);
+
+	const int rules = std::clamp(section.dividerRules, 1, 16);
+	const qreal stackHeight = rules * thickness + (rules - 1) * section.dividerRuleGap;
+
+	layout.height = std::max({stackHeight, leftCap.height(), rightCap.height(), centreHeight});
+	if (layout.height <= 0.0)
+		return layout;
+
+	const qreal midY = top + layout.height / 2.0;
+
+	/* --- Place the ends -------------------------------------------------------------- */
+
+	/*
+	 * The caps sit at the divider's full extent and on its midline, and are drawn once however
+	 * many rules run between them: three lines meeting one arrowhead is the figure the deco
+	 * rules draw, where three arrowheads stacked on top of each other is not.
+	 */
+	const auto placeCap = [&](DividerShape shape, const QString &file, const QSizeF &size, qreal left,
+				  bool mirrored) {
+		if (size.isEmpty())
+			return;
+		layout.art.append(DividerArtPlacement{
+			QRectF(left, midY - size.height() / 2.0, size.width(), size.height()), shape, file, mirrored});
+	};
+
+	placeCap(section.dividerCap, section.dividerCapSvg, leftCap, x, false);
+	placeCap(rightShape, rightFile, rightCap, x + width - rightCap.width(), true);
+
+	/* Nothing to keep clear of at an end with no cap on it. */
+	const qreal armLeft = x + leftCap.width() + (leftCap.width() > 0.0 ? section.dividerGap : 0.0);
+	const qreal armRight = x + width - rightCap.width() - (rightCap.width() > 0.0 ? section.dividerGap : 0.0);
+
+	/* --- Place the centre ------------------------------------------------------------ */
+
+	/*
+	 * Centred on the section's own box rather than between the two arms, so a divider whose
+	 * ends differ still has its ornament on the middle of the line the eye follows.
+	 */
+	const qreal centreLeft = x + (width - centreWidth) / 2.0;
+
+	qreal cursor = centreLeft;
+	for (const MeasuredPiece &measured : centre) {
+		const DividerPiece &piece = *measured.piece;
+		const qreal pieceTop = midY - measured.size.height() / 2.0;
+
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament:
+			layout.art.append(DividerArtPlacement{QRectF(cursor, pieceTop, measured.size.width(),
+								     measured.size.height()),
+							      piece.shape, piece.svgPath, false});
+			break;
+
+		case DividerPiece::Kind::Text:
+			layout.texts.append(DividerLayout::TextPiece{
+				piece.text, QRectF(cursor, pieceTop, measured.size.width(), measured.size.height())});
+			break;
+
+		case DividerPiece::Kind::Logo:
+			layout.logos.append(DividerLayout::LogoPiece{
+				measured.image,
+				QRectF(cursor, pieceTop, measured.size.width(), measured.size.height()).toRect()});
+			break;
+		}
+
+		cursor += measured.size.width() + section.dividerPieceGap;
+	}
+
+	/* --- Place the arms -------------------------------------------------------------- */
+
+	const qreal stackTop = midY - stackHeight / 2.0;
+
+	for (int rule = 0; rule < rules; ++rule) {
+		/*
+		 * Distance from the middle of the stack in rule steps, so each rule is shorter than
+		 * the one nearer the midline by exactly the inset. An even stack has no middle rule
+		 * to measure from and its two innermost sit half a step out, which keeps the wedge
+		 * symmetric either way.
+		 */
+		const qreal steps = std::abs(rule - (rules - 1) / 2.0);
+		const qreal inset = steps * section.dividerRuleInset;
+
+		const qreal ruleTop = stackTop + rule * (thickness + section.dividerRuleGap);
+		const qreal left = armLeft + inset;
+		const qreal right = armRight - inset;
+
+		/*
+		 * The right-hand arm is mirrored for the same reason the right-hand cap is: an arm
+		 * that is not symmetric in itself -- a taper running from a hairline up to full
+		 * thickness, a rule ticked off at one edge of each tile -- would otherwise point the
+		 * same way on both sides and leave the divider lopsided. Mirroring a tile that *is*
+		 * symmetric costs a transform and changes nothing, which is why it is unconditional
+		 * rather than a property some shapes declare and others forget to.
+		 */
+		const auto placeArm = [&](qreal from, qreal to, bool mirrored) {
+			if (to <= from)
+				return;
+			const QVector<QRectF> tiles = layoutDividerArm(section.dividerArm, section.dividerArmSvg,
+								       dividers,
+								       QRectF(from, ruleTop, to - from, thickness));
+			for (const QRectF &tile : tiles) {
+				layout.art.append(
+					DividerArtPlacement{tile, section.dividerArm, section.dividerArmSvg, mirrored});
+			}
+		};
+
+		if (centre.isEmpty()) {
+			/*
+			 * Nothing in the way, so the rule runs from one cap straight to the other --
+			 * as one arm, not two touching, so a scaling shape is stretched once across
+			 * the whole span and a spreading one is not made to meet in the middle.
+			 * A shape with a direction to it points one way along the whole rule, which
+			 * for an unbroken line is the only reading there is.
+			 */
+			placeArm(left, right, false);
+		} else {
+			placeArm(left, centreLeft - section.dividerGap, false);
+			placeArm(centreLeft + centreWidth + section.dividerGap, right, true);
+		}
+	}
+
+	return layout;
+}
+
+/*
  * Both passes of the layout run through this one function. With `painter` set it draws
  * into the current tile; with `painter` null it only reports the height. `top` is the
  * section's Y position in strip space, which is also painter space -- callers translate
@@ -862,7 +1101,7 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
  * overlay. Only the measure pass is ever asked for them -- see BoxCollector.
  */
 int layoutSection(QPainter *painter, const Section &section, const Document &document, LogoCache *logos,
-		  BridgeArtCache *bridges, int top, BoxCollector *boxes = nullptr)
+		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes = nullptr)
 {
 	/* Reads as one call at every site whether or not anyone is collecting. */
 	const auto record = [boxes](LayoutBox::Kind kind, const QRectF &rect) {
@@ -895,6 +1134,45 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	case SectionType::Spacer:
 		y += section.spacerHeight;
 		break;
+
+	case SectionType::SectionDivider: {
+		const DividerLayout divider = layoutDivider(section, style, logos, dividers, contentX, y, contentWidth);
+
+		if (painter && divider.height > 0.0) {
+			const QRectF fillBox(contentX, y, contentWidth, divider.height);
+
+			/*
+			 * The artwork takes the bridge's ink override, because "colour the art
+			 * apart from the words" is one want with two names: a divider whose rule
+			 * carries the title's gold sweep while its own label stays white is the
+			 * same edit as yellow leader dots under white names.
+			 */
+			paintDividerArt(painter, divider.art, section, document.effectiveBridgeStyle(section), dividers,
+					fillBox);
+
+			/*
+			 * A word and a mark in the middle of a divider go through the very helpers
+			 * that draw a section's own title and its own logo, so they pick up the
+			 * style's gradient, outline and shadow without a second implementation of
+			 * any of it.
+			 */
+			for (const DividerLayout::TextPiece &piece : divider.texts)
+				layoutText(painter, piece.text, style, piece.rect.left(), piece.rect.top(),
+					   piece.rect.width());
+
+			for (const DividerLayout::LogoPiece &piece : divider.logos)
+				paintLogo(painter, piece.image, piece.rect, style);
+		}
+
+		for (const DividerLayout::TextPiece &piece : divider.texts)
+			record(LayoutBox::Kind::Text, piece.rect);
+		for (const DividerLayout::LogoPiece &piece : divider.logos)
+			record(LayoutBox::Kind::Logo, QRectF(piece.rect));
+
+		record(LayoutBox::Kind::Divider, QRectF(contentX, y, contentWidth, divider.height));
+		y += qRound(divider.height);
+		break;
+	}
 
 	case SectionType::Title:
 	case SectionType::Header: {
@@ -1161,8 +1439,13 @@ int effectBleed(const Document &document)
 	double bleed = 0.0;
 
 	for (const Section &section : document.sections) {
-		/* Logos cast the style's shadow as well, so a section that only places art counts too. */
-		if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type)))
+		/*
+		 * Logos cast the style's shadow as well, so a section that only places art counts
+		 * too -- and a divider counts whatever its centre holds, since its rule is inked by
+		 * the same style and can carry the same shadow with nothing but artwork in it.
+		 */
+		if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
+					  section.type == SectionType::SectionDivider))
 			continue;
 
 		bleed = std::max(bleed, document.effectiveStyle(section).effectBleed());
@@ -1180,7 +1463,7 @@ int effectBleed(const Document &document)
 }
 
 QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos, BridgeArtCache *bridges,
-				     int *totalHeight, LayoutBoxes *boxes = nullptr)
+				     DividerArtCache *dividers, int *totalHeight, LayoutBoxes *boxes = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
@@ -1194,8 +1477,8 @@ QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos,
 			continue;
 
 		collector.section = index;
-		const int height =
-			layoutSection(nullptr, section, document, logos, bridges, y, boxes ? &collector : nullptr);
+		const int height = layoutSection(nullptr, section, document, logos, bridges, dividers, y,
+						 boxes ? &collector : nullptr);
 		placed.append(PlacedSection{&section, y, height});
 		y += height;
 
@@ -1281,7 +1564,22 @@ QStringList missingFontFamilies(const Document &document)
 	};
 
 	for (const Section &section : document.sections) {
-		if (!section.visible || !sectionUsesText(section.type))
+		if (!section.visible)
+			continue;
+
+		/*
+		 * A divider draws text only when its centre stack holds some, so it is asked rather
+		 * than assumed: reporting a missing font for a roll whose every divider is pure
+		 * artwork would send the user hunting for a substitution that never happened.
+		 */
+		const bool dividerText = section.type == SectionType::SectionDivider &&
+					 std::any_of(section.dividerCentre.cbegin(), section.dividerCentre.cend(),
+						     [](const DividerPiece &piece) {
+							     return piece.kind == DividerPiece::Kind::Text &&
+								    !piece.text.isEmpty();
+						     });
+
+		if (!sectionUsesText(section.type) && !dividerText)
 			continue;
 
 		consider(document.effectiveStyle(section).family);
@@ -1350,9 +1648,10 @@ int StripRenderer::measure(const Document &document) const
 	 * on disk show up in the next rebuild without anything having to watch the file.
 	 */
 	BridgeArtCache bridges;
+	DividerArtCache dividers;
 
 	int total = 0;
-	placeSections(document, logos, &bridges, &total);
+	placeSections(document, logos, &bridges, &dividers, &total);
 	return total - document.leadIn - document.leadOut;
 }
 
@@ -1362,12 +1661,13 @@ Strip StripRenderer::render(const Document &document, LayoutBoxes *boxes) const
 	strip.width = std::max(1, document.width);
 
 	BridgeArtCache bridges;
+	DividerArtCache dividers;
 
 	if (boxes)
 		boxes->clear();
 
 	int total = 0;
-	const QVector<PlacedSection> placed = placeSections(document, logos, &bridges, &total, boxes);
+	const QVector<PlacedSection> placed = placeSections(document, logos, &bridges, &dividers, &total, boxes);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
 	if (strip.height <= 0 || placed.isEmpty())
@@ -1392,7 +1692,7 @@ Strip StripRenderer::render(const Document &document, LayoutBoxes *boxes) const
 			if (entry.top - bleed >= bottom || entry.top + entry.height + bleed <= top)
 				continue;
 
-			layoutSection(&painter, *entry.section, document, logos, &bridges, entry.top);
+			layoutSection(&painter, *entry.section, document, logos, &bridges, &dividers, entry.top);
 		}
 
 		painter.end();

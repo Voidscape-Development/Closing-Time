@@ -174,6 +174,23 @@ private:
 	void readEntriesFromTable(Section *target) const;
 	void writeEntriesToTable(const Section &source);
 
+	/*
+	 * The divider's centre stack. Unlike the entry table these go through the model rather than
+	 * shuffling cells: the rows carry combo boxes, which QTableWidget::takeItem knows nothing
+	 * about, and rebuilding from a reordered vector cannot leave a row's widgets behind while
+	 * its text moves.
+	 */
+	void writeCentreToTable(const Section &source);
+	void readCentreFromTable(Section *target) const;
+	void addCentrePiece();
+	void removeSelectedCentrePieces();
+	void moveSelectedCentrePiece(int delta);
+	void browseForCentreFile();
+	/* Shows the fields that apply to the piece in `row` and hides the rest. */
+	void applyCentreRowVisibility(int row);
+	/* True when any piece of the centre stack draws its artwork from a file. */
+	bool centreUsesFile() const;
+
 	void addEntry();
 	void removeSelectedEntries();
 	void moveSelectedEntry(int delta);
@@ -181,6 +198,8 @@ private:
 	void browseForSectionLogo();
 	void browseForEntryLogo();
 	void browseForBridgeSvg();
+	/* Points `target` at a file the user picks, for any of the divider's three artwork slots. */
+	void browseForDividerSvg(QLineEdit *target);
 
 	void emitChanged();
 
@@ -211,6 +230,26 @@ private:
 	QSpinBox *bridgeSplit = nullptr;
 	QComboBox *bridgeRowAlign = nullptr;
 	QCheckBox *bridgeSpanEmpty = nullptr;
+
+	QComboBox *dividerCap = nullptr;
+	QLineEdit *dividerCapSvgPath = nullptr;
+	QCheckBox *dividerMirrorEnds = nullptr;
+	QComboBox *dividerEndCap = nullptr;
+	QLineEdit *dividerEndCapSvgPath = nullptr;
+	QComboBox *dividerArm = nullptr;
+	QLineEdit *dividerArmSvgPath = nullptr;
+	QSpinBox *dividerThickness = nullptr;
+	QSpinBox *dividerGap = nullptr;
+	QSpinBox *dividerPieceGap = nullptr;
+	QSpinBox *dividerRules = nullptr;
+	QSpinBox *dividerRuleGap = nullptr;
+	QSpinBox *dividerRuleInset = nullptr;
+	QCheckBox *dividerTint = nullptr;
+
+	QGroupBox *centreGroup = nullptr;
+	QTableWidget *centreTable = nullptr;
+	QToolButton *centreFileButton = nullptr;
+
 	QSpinBox *columns = nullptr;
 	QSpinBox *columnGap = nullptr;
 	QComboBox *fillOrder = nullptr;

@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QVector>
 
 #include "model/BridgeArt.hpp"
+#include "model/DividerArt.hpp"
 #include "model/EndingAction.hpp"
 
 namespace closingtime {
@@ -50,6 +51,7 @@ enum class SectionType {
 	MultiTextList,
 	MultiTitleSubtitleList,
 	MultiLogoList,
+	SectionDivider,
 	Spacer,
 };
 
@@ -299,6 +301,58 @@ struct Entry {
 	void load(obs_data_t *data);
 };
 
+/*
+ * One item in the middle of a Section Divider, between the two arms.
+ *
+ * The centre is a list rather than a single choice because the shapes that turn up there in
+ * practice are compounds: a diamond with a dot either side of it, a word flanked by two
+ * ornaments, a monogram between a pair of curls. Offering one slot would mean either shipping
+ * every one of those combinations as its own tile, or drawing them by hand in a file; a list of
+ * small pieces builds them out of parts the plugin already has and keeps each one adjustable.
+ *
+ * An empty list is the ordinary case, not a degenerate one: it is the unbroken rule.
+ */
+struct DividerPiece {
+	enum class Kind {
+		/* A shape from the built-in library, or a file when `shape` is Custom. */
+		Ornament,
+		/* A word set in the section's own style -- `PART II`, `MMXXVI`. */
+		Text,
+		Logo,
+	};
+
+	Kind kind = Kind::Ornament;
+
+	/* Ornament pieces only. */
+	DividerShape shape = DividerShape::Diamond;
+	/* Ornament pieces whose shape is Custom: absolute path to the artwork. */
+	QString svgPath;
+	/*
+	 * Ornament pieces only: a multiplier on the height the shape's table row asks for, so a
+	 * run of three diamonds can have a larger one in the middle without a second Diamond in
+	 * the library. Text takes its size from the section's style and a logo from its own
+	 * `maxHeight`, both of which are already a size the user set, so neither reads this.
+	 */
+	double scale = 1.0;
+
+	/* Text pieces only. */
+	QString text;
+	/* Logo pieces only. */
+	LogoRef logo;
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+};
+
+const char *dividerPieceKindId(DividerPiece::Kind kind);
+DividerPiece::Kind dividerPieceKindFromId(const char *id, DividerPiece::Kind fallback = DividerPiece::Kind::Ornament);
+
+/* Untranslated display name, used as the fallback when no locale string exists. */
+const char *dividerPieceKindName(DividerPiece::Kind kind);
+
+/* Every piece kind in the order the designer's picker should list them. */
+const QVector<DividerPiece::Kind> &allDividerPieceKinds();
+
 struct Section {
 	SectionType type = SectionType::Title;
 
@@ -392,6 +446,82 @@ struct Section {
 	 * column is reserved whether or not there is anything in it.
 	 */
 	bool bridgeSpanEmpty = false;
+
+	/*
+	 * Section Divider sections only.
+	 *
+	 * A divider is composed rather than drawn from one piece of artwork: an end cap, an arm
+	 * running inward from it, whatever the centre stack holds, then the same again mirrored.
+	 * `dividerThickness` is the one number that sizes all of it -- every shape's table row
+	 * declares its own height as a multiple of the rule it belongs to -- so a divider stays in
+	 * proportion when it is made heavier rather than needing each part resized in turn.
+	 *
+	 * The artwork is inked exactly as a bridge is: the section's own style, or `bridgeStyle`
+	 * when `useBridgeStyle` is set. That is deliberate reuse rather than a field left lying
+	 * around -- "colour the art separately from the text" is the same want in both places, and
+	 * a divider whose text is white while its rule carries the title's gold sweep is precisely
+	 * what the override is for.
+	 */
+	DividerShape dividerCap = DividerShape::None;
+	/* Custom caps only: absolute path to the artwork drawn at the left-hand end. */
+	QString dividerCapSvg;
+	/*
+	 * The right-hand end, used only when `dividerMirrorEnds` is off. Kept whether or not it is
+	 * in use, so mirroring can be switched off and back on without losing what was set.
+	 */
+	DividerShape dividerEndCap = DividerShape::None;
+	QString dividerEndCapSvg;
+	/*
+	 * Draw the right-hand end as the left one flipped. On by default, and true of every
+	 * ornamental rule that is not an arrow pointing somewhere: it is what stops the two ends of
+	 * the same divider from drifting apart as the design is worked on.
+	 */
+	bool dividerMirrorEnds = true;
+
+	DividerShape dividerArm = DividerShape::Rule;
+	/* Custom arms only: absolute path to the artwork tiled along each arm. */
+	QString dividerArmSvg;
+
+	/*
+	 * How tall the rule itself is drawn, in pixels. Every other part is a multiple of it.
+	 */
+	double dividerThickness = 4.0;
+	/*
+	 * Space left clear where an arm meets something, in pixels: the cap outside it and the
+	 * centre stack inside it. One number rather than two, because a divider whose gaps differ
+	 * at the two ends of the same arm reads as a mistake rather than as a setting.
+	 */
+	double dividerGap = 12.0;
+	/* Space between consecutive pieces of the centre stack, in pixels. */
+	double dividerPieceGap = 10.0;
+
+	/* What sits between the two arms, in order, left to right. Empty is an unbroken rule. */
+	QVector<DividerPiece> dividerCentre;
+
+	/*
+	 * How many rules run in parallel, stacked about the divider's midline, and the vertical
+	 * space between them in pixels. The centre stack is drawn once over the whole stack rather
+	 * than once per rule -- three lines broken by one ornament is the deco figure; three
+	 * complete dividers touching is not.
+	 */
+	int dividerRules = 1;
+	double dividerRuleGap = 6.0;
+	/*
+	 * How much shorter each rule is than the one nearer the midline, in pixels, so a stack of
+	 * three tapers to a wedge. At 0 the rules are all the same length. An even-numbered stack
+	 * has no middle rule to measure from, so its two innermost are inset half of this each and
+	 * the figure stays symmetric either way.
+	 */
+	double dividerRuleInset = 0.0;
+
+	/*
+	 * Custom artwork only: paint the files in the section's own fill rather than in the colours
+	 * they were authored with. The built-in shapes are always painted this way -- they are drawn
+	 * white precisely so they can be -- so this only has a say over a user's files, and covers
+	 * all three slots at once because a divider whose cap is tinted and whose centre is not is
+	 * not a design anyone reaches for on purpose.
+	 */
+	bool dividerTint = true;
 
 	/* Multi-list sections only. */
 	int columns = 2;

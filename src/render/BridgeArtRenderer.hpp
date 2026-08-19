@@ -18,14 +18,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
-#include <QHash>
 #include <QRectF>
 #include <QSizeF>
 #include <QVector>
 
-#include <memory>
-
 #include "model/CreditsModel.hpp"
+#include "render/SvgArt.hpp"
 
 class QPainter;
 class QPointF;
@@ -34,20 +32,11 @@ class QSvgRenderer;
 namespace closingtime {
 
 /*
- * Parsed SVG tiles, keyed by the bridge type they came from and, for a custom tile, by its
- * path. Parsing a few hundred bytes of markup is cheap, so unlike LogoCache this exists to
- * avoid re-parsing once per row rather than once per render: the strip renderer builds one for
- * the length of a measure or a render and lets it go afterwards, which also means a custom
- * file edited on disk is picked up by the next rebuild without anything having to notice.
+ * The bridge's view of an SvgArtCache: it knows how a Section names its tile, and leaves the
+ * parsing, caching and failure handling to the shared cache underneath.
  */
 class BridgeArtCache {
 public:
-	BridgeArtCache();
-	~BridgeArtCache();
-
-	BridgeArtCache(const BridgeArtCache &) = delete;
-	BridgeArtCache &operator=(const BridgeArtCache &) = delete;
-
 	/*
 	 * The renderer for this section's bridge art. Null when the section's bridge is text,
 	 * when a custom bridge has no file set, or when the file will not parse -- in which case
@@ -57,7 +46,7 @@ public:
 	QSvgRenderer *get(const Section &section);
 
 private:
-	QHash<QString, std::shared_ptr<QSvgRenderer>> cache;
+	SvgArtCache cache;
 };
 
 /* Where a bridge's tiles land inside the span the row gave it. */
