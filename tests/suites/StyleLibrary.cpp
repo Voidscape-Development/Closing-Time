@@ -82,6 +82,24 @@ Document boundDocument(const QString &presetName, const TextStyle &style, bool l
 	return document;
 }
 
+/*
+ * A document that binds the same preset from all three slots a section has -- its own style, its
+ * secondary style and its bridge's -- so a migration that rewrites one and forgets the others is
+ * a failure rather than a coin toss about which slot the check happened to look at.
+ */
+Document boundEverywhere(const QString &presetName, bool linked)
+{
+	Section bridged = unpadded(SectionType::Bridged);
+	bridged.entries = {Entry{QStringLiteral("Director"), QStringLiteral("Jane Doe"), LogoRef()}};
+	bridged.stylePresetName = presetName;
+	bridged.secondaryStylePresetName = presetName;
+	bridged.bridgeStylePresetName = presetName;
+
+	Document document = documentWith(bridged);
+	document.stylePresets = {StylePreset{presetName, styleAt(28, Qt::white), linked}};
+	return document;
+}
+
 } // namespace
 
 CT_SUITE(style_library_storage, "Adding, finding, renaming and removing library presets")
@@ -269,4 +287,147 @@ CT_SUITE(style_library_preference, "The 'don't ask again' answer is kept with th
 	library.setAlwaysEditLinked(false);
 	library.load();
 	check(!library.alwaysEditLinked(), "and can be turned back off");
+}
+
+CT_SUITE(style_library_rename_migration, "A renamed preset takes the rolls bound to it with it")
+{
+	ScopedLibrary scoped;
+	if (!scoped.isValid())
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	library.set(QStringLiteral("House"), styleAt(64, QColor(255, 210, 90)));
+
+	Document document = boundEverywhere(QStringLiteral("House"), true);
+	library.rename(QStringLiteral("House"), QStringLiteral("Titles"));
+
+	QString renamed;
+	check(library.renamedTo(QStringLiteral("House"), &renamed), "the library remembers the rename");
+	checkEq(renamed, QStringLiteral("Titles"), "and where the preset went");
+
+	check(document.applyLibraryRenames(), "a bound document follows it");
+	checkEq(document.stylePresets.first().name, QStringLiteral("Titles"), "the preset is renamed here too");
+	check(document.stylePresets.first().linked, "and is still linked");
+
+	const Section &section = document.sections.first();
+	checkEq(section.stylePresetName, QStringLiteral("Titles"), "the section's own binding followed");
+	checkEq(section.secondaryStylePresetName, QStringLiteral("Titles"), "so did the secondary binding");
+	checkEq(section.bridgeStylePresetName, QStringLiteral("Titles"), "so did the bridge's");
+
+	/* Which is the point of all of it: the roll is still drawn by the library's style. */
+	library.set(QStringLiteral("Titles"), styleAt(90, QColor(255, 210, 90)));
+	check(document.refreshLinkedPresets(), "and the roll still follows edits to it");
+	checkEq(document.effectiveStyle(section).pixelSize, 90, "with the library's current values");
+
+	check(!document.applyLibraryRenames(), "a document already migrated does not move again");
+}
+
+CT_SUITE(style_library_rename_chains, "Renaming twice, renaming back, and reusing an abandoned name")
+{
+	ScopedLibrary scoped;
+	if (!scoped.isValid())
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	library.set(QStringLiteral("A"), styleAt(40, Qt::white));
+
+	library.rename(QStringLiteral("A"), QStringLiteral("B"));
+	library.rename(QStringLiteral("B"), QStringLiteral("C"));
+
+	QString renamed;
+	check(library.renamedTo(QStringLiteral("A"), &renamed), "a document that never saw B still follows");
+	checkEq(renamed, QStringLiteral("C"), "straight to where the preset is now");
+	check(library.renamedTo(QStringLiteral("B"), &renamed), "and one that stopped at B follows too");
+	checkEq(renamed, QStringLiteral("C"), "to the same place");
+
+	/* Two documents, each left behind at a different point in the chain. */
+	Document old = boundDocument(QStringLiteral("A"), styleAt(40, Qt::white), true);
+	Document halfway = boundDocument(QStringLiteral("B"), styleAt(40, Qt::white), true);
+	check(old.applyLibraryRenames(), "the older document migrates");
+	check(halfway.applyLibraryRenames(), "so does the newer one");
+	checkEq(old.stylePresets.first().name, QStringLiteral("C"), "both land on the current name");
+	checkEq(halfway.sections.first().stylePresetName, QStringLiteral("C"), "bindings included");
+
+	/* A name that comes back is nobody's old name: the trail for it has to be dropped. */
+	library.set(QStringLiteral("A"), styleAt(12, Qt::white));
+	check(!library.renamedTo(QStringLiteral("A"), &renamed), "re-creating a name clears its trail");
+
+	Document fresh = boundDocument(QStringLiteral("A"), styleAt(12, Qt::white), true);
+	check(!fresh.applyLibraryRenames(), "and a roll bound to it is left where it is");
+
+	/* Renaming back onto a name leaves nothing pointing at itself. */
+	library.rename(QStringLiteral("C"), QStringLiteral("D"));
+	library.rename(QStringLiteral("D"), QStringLiteral("C"));
+	for (const QPair<QString, QString> &rename : library.renames())
+		check(rename.first != rename.second, "no rename points at itself");
+	check(!library.renamedTo(QStringLiteral("C"), &renamed), "and a round trip leaves the name alone");
+}
+
+CT_SUITE(style_library_rename_limits, "What a rename deliberately does not touch")
+{
+	ScopedLibrary scoped;
+	if (!scoped.isValid())
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	library.set(QStringLiteral("House"), styleAt(64, QColor(255, 210, 90)));
+	library.rename(QStringLiteral("House"), QStringLiteral("Titles"));
+
+	/* A preset the document owns has nothing to do with a library preset of the same name. */
+	Document local = boundDocument(QStringLiteral("House"), styleAt(20, Qt::white), false);
+	check(!local.applyLibraryRenames(), "an unlinked preset is not renamed");
+	checkEq(local.stylePresets.first().name, QStringLiteral("House"), "it keeps its name");
+	checkEq(local.sections.first().stylePresetName, QStringLiteral("House"), "and its binding");
+
+	/* Merging two presets is not a rename: the clash is left alone rather than forced. */
+	Document clashing = boundDocument(QStringLiteral("House"), styleAt(20, Qt::white), true);
+	clashing.stylePresets.append(StylePreset{QStringLiteral("Titles"), styleAt(80, Qt::red), false});
+	check(!clashing.applyLibraryRenames(), "a rename onto a name this document already uses is skipped");
+	checkEq(clashing.stylePresets.first().name, QStringLiteral("House"), "the link stays under the old name");
+	checkEq(clashing.effectiveStyle(clashing.sections.first()).pixelSize, 20, "and the roll still renders");
+
+	/* Resolve the clash and the migration happens by itself, with nothing to re-run by hand. */
+	clashing.stylePresets.removeLast();
+	check(clashing.applyLibraryRenames(), "once the clash is gone the link follows");
+	checkEq(clashing.stylePresets.first().name, QStringLiteral("Titles"), "to the current name");
+
+	/* A rename to a preset that has since been deleted has nothing to point a roll at. */
+	library.remove(QStringLiteral("Titles"));
+	Document orphan = boundDocument(QStringLiteral("House"), styleAt(48, Qt::white), true);
+	check(!orphan.applyLibraryRenames(), "a rename into an empty slot is not followed");
+	checkEq(orphan.effectiveStyle(orphan.sections.first()).pixelSize, 48, "and the roll renders from its copy");
+}
+
+CT_SUITE(style_library_rename_file, "The rename trail is part of the library file")
+{
+	ScopedLibrary scoped;
+	if (!scoped.isValid())
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	library.set(QStringLiteral("House"), styleAt(64, Qt::white));
+	library.rename(QStringLiteral("House"), QStringLiteral("Titles"));
+
+	/* Reloaded as another OBS window would, or as the next run of OBS will. */
+	library.load();
+
+	QString renamed;
+	check(library.renamedTo(QStringLiteral("House"), &renamed), "the trail survived the file");
+	checkEq(renamed, QStringLiteral("Titles"), "intact");
+	checkEq(library.renames().size(), 1, "with no duplicates picked up on the way");
+
+	/*
+	 * The whole point of persisting it: a scene collection that was not open when the rename
+	 * happened -- one loading now, from settings written before any of it -- still follows.
+	 */
+	Document saved = boundDocument(QStringLiteral("House"), styleAt(64, Qt::white), true);
+	OBSDataAutoRelease settings = obs_data_create();
+	saved.save(settings);
+
+	Document reloaded;
+	bool migrated = false;
+	reloaded.load(settings, &migrated);
+	check(migrated, "loading reports that the document was brought up to date");
+	checkEq(reloaded.stylePresets.first().name, QStringLiteral("Titles"), "under the new name");
+	checkEq(reloaded.sections.first().stylePresetName, QStringLiteral("Titles"), "with its binding moved");
 }

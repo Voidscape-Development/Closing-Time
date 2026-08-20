@@ -102,7 +102,8 @@ of them everywhere. The link is live: a preset edited in another OBS window show
 preview as it is typed. A roll carries its own copy of every style it uses as well, so a scene
 collection opened on a machine without the library still renders the way it was saved rather than
 unstyled, and editing a shared style from a roll asks whether you mean *this roll* or *all of
-them*. Sections reorder by dragging, edits are undoable (Ctrl+Z), and a font the machine does not
+them*. Renaming a shared style takes every roll bound to it along — the ones open at the time, and
+the scene collections that were not, when they next load. Sections reorder by dragging, edits are undoable (Ctrl+Z), and a font the machine does not
 have is called out under the preview rather than quietly substituted. Lists can be typed in
 directly or imported from a CSV/TSV file with a column-mapping step.
 

@@ -88,7 +88,32 @@ public:
 	/* Adds `name` or replaces the style already under it, then writes the file. */
 	void set(const QString &name, const TextStyle &style);
 	void remove(const QString &name);
+
+	/*
+	 * Renames a preset, and records that it happened.
+	 *
+	 * A binding is a name, so a rename on its own would leave every roll in every scene
+	 * collection on the machine pointing at a name that is no longer there. They would keep
+	 * rendering -- each carries its own copy -- but they would have quietly stopped following the
+	 * library, which is the one thing linking them was for.
+	 *
+	 * So the rename is kept: `renamedTo()` reports it, and a document brought up to date against
+	 * the library rewrites its own preset and its sections' bindings to match (see
+	 * `Document::applyLibraryRenames`). A collection that is open migrates within the second; one
+	 * that is not migrates when it is next loaded, whenever that is. Nothing reaches into another
+	 * collection's file behind OBS's back to do it.
+	 */
 	void rename(const QString &from, const QString &to);
+
+	/*
+	 * Follows the recorded renames from `from` to the name that preset carries now, and returns
+	 * true when there was one. Chains are collapsed as they are recorded, so this is a lookup
+	 * rather than a walk; the loop guard is there for a file that was hand-edited into a cycle.
+	 */
+	bool renamedTo(const QString &from, QString *to) const;
+
+	/* Every recorded rename, oldest first, as {from, to}. For the tests and the file. */
+	QVector<QPair<QString, QString>> renames() const;
 	/* Replaces the whole library in one write, for the manager dialog's import. */
 	void replaceAll(const QVector<StylePreset> &presets);
 
@@ -116,6 +141,13 @@ private:
 
 	QString path;
 	QVector<StylePreset> entries;
+	/*
+	 * Old name -> current name, for presets that have been renamed. Kept for as long as the
+	 * library is: a scene collection that has not been opened in a year is exactly the one that
+	 * still needs the trail when it finally is. Chains are collapsed on the way in, so this never
+	 * grows past one entry per name that has ever been used and abandoned.
+	 */
+	QVector<QPair<QString, QString>> renameTrail;
 	bool editLinkedInPlace = false;
 	quint64 librarySerial = 0;
 	/* Modification time and size of the file as last read, for pollForChanges(). */

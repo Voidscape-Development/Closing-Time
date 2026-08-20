@@ -579,6 +579,32 @@ Nothing is migrated. A document that already had presets keeps them, unlinked, a
 `StyleLibraryDialog` — two lists with the traffic between them in the middle — is where one is
 published into the library, linked out of it, or copied out of it without the link.
 
+**Renaming.** A binding is a name, so renaming a preset in the library would, on its own, leave
+every roll on the machine pointing at a name that is no longer there. They would keep rendering —
+each carries its own copy — but they would have quietly stopped following the library, which is
+the one thing linking them was for.
+
+So the library keeps a **rename trail**: `old name → current name`, in the same file. Anything
+brought up to date against the library follows it (`Document::applyLibraryRenames`), renaming its
+own linked preset and rewriting every section binding that named it — `stylePresetName`,
+`secondaryStylePresetName` and `bridgeStylePresetName` alike. The open designer migrates as the
+rename is made, other loaded sources on their next poll, and a scene collection that was not open
+at the time whenever it is next loaded. Nothing reaches into another collection's file behind
+OBS's back to do it, which is what makes "a collection nobody has opened in a year" a case that
+works rather than a case that is documented.
+
+Three details keep the trail honest. Chains are **collapsed** as they are recorded, so `A→B` then
+`B→C` leaves both `A→C` and `B→C` and no document has to walk a path. A name that is **created
+again** drops its own trail entry, or a preset renamed away and then re-made under the original
+name would send the rolls bound to it off to the renamed one. And a rename is **not followed into
+a clash**: a document that already has a preset called `Titles` keeps its link under `House`,
+because merging two presets would restyle sections the user never chose the survivor for.
+
+A migration is a change to the document, so it is written back: `Document::load` reports through
+its `migrated` flag that the settings it just read are now the old shape of the roll, and the
+source rewrites them on the next tick — outside `update()`, since writing settings from inside
+`update()` is how a source calls itself in a circle.
+
 ### Persistence
 
 `Document::save`/`load` write directly to the source's settings object. Section lists are
@@ -1026,9 +1052,10 @@ rows in place rather than rebuilding them, so a mapping the user has already set
    different settings per entry is honoured; the editor writes one set of settings to every
    logo in a section, because a loop switch on each of twelve sponsor cells is a column of
    checkboxes nobody wants to fill in.
-7. **A library rename does not re-point the rolls bound to the old name.** A binding is a name,
-   so a renamed preset leaves every document carrying the copy it already had. The manager says
-   so when it does it.
+7. **A library rename is followed but never forced.** A document that already has a preset of
+   its own under the new name keeps its link under the old one — merging two presets is not a
+   rename — and migrates by itself if the clash is ever resolved. The manager says so when it
+   happens.
 
 ### Addressed since the first cut
 
@@ -1038,6 +1065,9 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 - A machine-wide style library, with a document's presets linking to it, a copy kept as the
   fallback, a manager for publishing and linking, and live reload when it changes underneath a
   roll.
+- Renaming a library preset takes the rolls bound to it along: the library records the rename and
+  every document rewrites its own preset and bindings the next time it is brought up to date,
+  including a scene collection that was not open when it happened.
 - Rasterisation moved off the UI thread onto a shared render thread, for both the source and
   the designer preview.
 - Drag-and-drop reordering in the section list.

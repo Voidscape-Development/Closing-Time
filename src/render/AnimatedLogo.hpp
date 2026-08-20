@@ -94,10 +94,15 @@ const QStringList &videoLogoExtensions();
 bool isVideoLogoPath(const QString &path);
 
 /*
- * The file dialog filter for a logo, which is a wider set than it used to be and depends on
- * whether video is compiled in.
+ * Filename patterns for a logo file dialog, e.g. "*.png *.gif".
+ *
+ * Patterns rather than a finished filter string, because the words around them -- "Images and
+ * animations", "Video" -- are translated, and `obs_module_text` needs a module this file is not
+ * always compiled into. The designer joins the two halves; the video half is empty in a build
+ * that cannot play one, so nothing offers a file it would only refuse.
  */
-QString logoFileFilter();
+QString imageLogoPatterns();
+QString videoLogoPatterns();
 
 /*
  * A quick answer to "would this file animate?", read from its header rather than its frames.

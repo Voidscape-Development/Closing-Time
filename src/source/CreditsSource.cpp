@@ -114,6 +114,14 @@ struct CreditsSourceData {
 	bool rebuildInFlight = false;
 	bool rebuildAgain = false;
 
+	/*
+	 * Set when loading brought the document up to date against the library -- a preset renamed
+	 * there, or a linked style edited -- and the settings the document came from are now behind
+	 * it. The write-back happens on the next tick rather than inside update(), because writing
+	 * settings from inside update() is how a source calls itself in a circle.
+	 */
+	bool settingsNeedWriteBack = false;
+
 	/* Graphics-thread state. */
 	std::vector<gs_texture_t *> tileTextures;
 	std::vector<int> tileTops;
@@ -555,11 +563,41 @@ void getDefaults(obs_data_t *settings)
 	Document::defaults(settings);
 }
 
+/*
+ * Writes the in-memory document back to the source's settings.
+ *
+ * For migrations the source performs on its own: a style preset renamed in the library, whose new
+ * name this roll's sections have just been re-pointed at. Without this the rename would be redone
+ * from the old settings on every load, and would be lost the moment the library forgot it.
+ *
+ * Graphics thread only.
+ */
+void writeDocumentBack(CreditsSourceData *data)
+{
+	OBSDataAutoRelease settings = obs_source_get_settings(data->source);
+	if (!settings)
+		return;
+
+	data->document.save(settings);
+	/* Kept in step first: the update() this schedules must not read as a content change. */
+	data->renderedFrom = renderKey(data->document);
+	obs_source_update(data->source, settings);
+}
+
 void update(void *raw, obs_data_t *settings)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
 
-	data->document.load(settings);
+	/*
+	 * `load` brings the document up to date against the library, which can rename a preset and
+	 * every binding that named it. When it does, what is in `settings` is now the old shape of
+	 * this document and has to be replaced -- on the next tick, since we are inside update() and
+	 * writing settings from in here is how a source calls itself in a circle.
+	 */
+	bool migrated = false;
+	data->document.load(settings, &migrated);
+	if (migrated)
+		data->settingsNeedWriteBack = true;
 
 	/*
 	 * Only a change to what the strip is made of is worth rasterising again -- see renderKey().
@@ -783,6 +821,11 @@ void videoTick(void *raw, float seconds)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
 
+	if (data->settingsNeedWriteBack) {
+		data->settingsNeedWriteBack = false;
+		writeDocumentBack(data);
+	}
+
 	/*
 	 * A style the library changed underneath this roll -- edited in another OBS window, imported,
 	 * or hand-edited -- is pulled in here. Before the manual-scroll branch below, because a roll
@@ -790,9 +833,13 @@ void videoTick(void *raw, float seconds)
 	 * second at most, and a rebuild is only queued when a style bound to this document moved.
 	 */
 	if (StyleLibrary::instance().pollForChanges() && data->document.refreshLinkedPresets()) {
-		/* Kept in step with what was just rasterised, or the next update() rebuilds it again. */
-		data->renderedFrom = renderKey(data->document);
 		queueRebuild(data);
+		/*
+		 * Saved as well as redrawn. The refreshed copy is this roll's fallback on a machine
+		 * without the library, and a rename it just followed has to survive a restart -- both
+		 * of which mean the settings, not just the strip.
+		 */
+		writeDocumentBack(data);
 	}
 
 	/*

@@ -798,6 +798,25 @@ struct Document {
 	bool linkStylePreset(const QString &name);
 
 	/*
+	 * Follows any rename the library has recorded: a linked preset whose name has been changed in
+	 * the library is renamed here to match, and every section binding that named it is rewritten.
+	 * Returns true when anything moved.
+	 *
+	 * This is what keeps a rename from quietly unbinding every roll on the machine. A binding is a
+	 * name, so without it a renamed preset would leave each document pointing at a name the
+	 * library no longer has -- still rendering, from the copy it carries, but no longer following
+	 * the library, which is the whole reason it was linked.
+	 *
+	 * Two cases are deliberately left alone. A preset that is *not* linked is the document's own
+	 * and has nothing to do with a library preset that happens to share its name. And a rename
+	 * whose new name is already taken by another preset in this document is skipped rather than
+	 * forced, because merging two presets is not a rename: the section bindings would land on a
+	 * style the user never chose for them. The link stays under the old name, still rendering from
+	 * its copy, and migrates by itself if the clash is ever resolved.
+	 */
+	bool applyLibraryRenames();
+
+	/*
 	 * Copies the current library style into every preset here marked `linked`, and returns true
 	 * when any of them moved.
 	 *
@@ -811,7 +830,15 @@ struct Document {
 	bool refreshLinkedPresets();
 
 	void save(obs_data_t *data) const;
-	void load(obs_data_t *data);
+
+	/*
+	 * `migrated`, when given, comes back true if loading brought the document up to date against
+	 * the style library -- a preset renamed there and the bindings that named it rewritten, or a
+	 * linked style whose copy here was stale. It is what tells the source that `data` is now the
+	 * old shape of this document and has to be written back, so the migration survives a restart
+	 * rather than being redone from the same stale settings on every load.
+	 */
+	void load(obs_data_t *data, bool *migrated = nullptr);
 	static void defaults(obs_data_t *data);
 
 	/* Serialises to a standalone JSON string for the designer's export button. */

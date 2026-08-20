@@ -71,10 +71,17 @@ constexpr int kCentreTableMinimumHeight = 150;
 QString imageFilter()
 {
 	/*
-	 * Built by the render layer rather than here, because what can be opened is decided by what
-	 * can be decoded: the video half of the list is there only in a build with FFmpeg.
+	 * The patterns come from the render layer, because what can be opened is decided by what can
+	 * be decoded: the video half is empty in a build without FFmpeg, and there is no sense
+	 * offering a file the decoder would only refuse.
 	 */
-	return logoFileFilter();
+	QString filter = moduleText("Designer.LogoFilter") + QStringLiteral(" (%1)").arg(imageLogoPatterns());
+
+	const QString video = videoLogoPatterns();
+	if (!video.isEmpty())
+		filter += QStringLiteral(";;%1 (%2)").arg(moduleText("Designer.VideoFilter"), video);
+
+	return filter + QStringLiteral(";;%1 (*)").arg(moduleText("Designer.AllFilesFilter"));
 }
 
 /*

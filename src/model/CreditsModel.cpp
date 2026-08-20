@@ -1235,10 +1235,55 @@ bool Document::linkStylePreset(const QString &name)
 	return true;
 }
 
-bool Document::refreshLinkedPresets()
+bool Document::applyLibraryRenames()
 {
 	const StyleLibrary &library = StyleLibrary::instance();
 	bool changed = false;
+
+	for (StylePreset &preset : stylePresets) {
+		if (!preset.linked)
+			continue;
+
+		QString renamed;
+		if (!library.renamedTo(preset.name, &renamed))
+			continue;
+
+		/* The rename is only worth following to a preset that is actually there to follow. */
+		if (!library.contains(renamed))
+			continue;
+
+		const QString from = preset.name;
+		const bool taken = std::any_of(stylePresets.cbegin(), stylePresets.cend(),
+					       [&renamed](const StylePreset &other) { return other.name == renamed; });
+		if (taken)
+			continue;
+
+		preset.name = renamed;
+
+		/* Every binding that named it, or the roll would follow the rename into nothing. */
+		for (Section &section : sections) {
+			if (section.stylePresetName == from)
+				section.stylePresetName = renamed;
+			if (section.secondaryStylePresetName == from)
+				section.secondaryStylePresetName = renamed;
+			if (section.bridgeStylePresetName == from)
+				section.bridgeStylePresetName = renamed;
+		}
+
+		changed = true;
+	}
+
+	return changed;
+}
+
+bool Document::refreshLinkedPresets()
+{
+	const StyleLibrary &library = StyleLibrary::instance();
+	/*
+	 * Renames first: a preset that has been renamed has to be found under its new name before
+	 * there is any point asking the library what style is under it.
+	 */
+	bool changed = applyLibraryRenames();
 
 	for (StylePreset &preset : stylePresets) {
 		if (!preset.linked)
@@ -1316,7 +1361,7 @@ void Document::save(obs_data_t *data) const
 		&sections);
 }
 
-void Document::load(obs_data_t *data)
+void Document::load(obs_data_t *data, bool *migrated)
 {
 	width = static_cast<int>(obs_data_get_int(data, "width"));
 	height = static_cast<int>(obs_data_get_int(data, "height"));
@@ -1374,11 +1419,15 @@ void Document::load(obs_data_t *data)
 
 	/*
 	 * A document arriving from a scene collection carries whatever the library held when it was
-	 * last saved. Bringing the linked presets up to date here means a roll is styled by the
-	 * library from the first frame it draws, rather than by a copy that is however many edits
-	 * out of date until something happens to poll.
+	 * last saved, under whatever names it held them under. Bringing it up to date here -- renames
+	 * followed, copies refreshed -- means a roll is styled by the library from the first frame it
+	 * draws, rather than by a copy that is however many edits out of date until something happens
+	 * to poll. It is also the only chance a collection that has been closed for a year gets to
+	 * follow a rename made while it was away.
 	 */
-	refreshLinkedPresets();
+	const bool changed = refreshLinkedPresets();
+	if (migrated)
+		*migrated = changed;
 }
 
 void Document::defaults(obs_data_t *data)

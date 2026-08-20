@@ -305,13 +305,34 @@ void StyleLibraryDialog::renameSelected()
 		return;
 	}
 
-	/*
-	 * Documents are not chased down and re-pointed: a binding is a name, and every roll bound to
-	 * the old one keeps the copy it is carrying rather than losing its styling to a rename made
-	 * somewhere else. The rename is reported so the person doing it knows that is the deal.
-	 */
 	StyleLibrary::instance().rename(name, renamed);
-	QMessageBox::information(this, moduleText("Library.Rename"), moduleText("Library.RenameNote").arg(name));
+
+	/*
+	 * The library remembers the rename, and every document brought up to date against it follows:
+	 * this one now, the other loaded rolls on their next tick, and a scene collection that is not
+	 * open whenever it next loads. Doing it here as well as leaving it to the poll is what keeps
+	 * the roll being designed from showing a stale binding for the second in between.
+	 */
+	if (document) {
+		emit documentAboutToChange();
+		const bool moved = document->applyLibraryRenames();
+		emit documentChanged();
+
+		/*
+		 * A linked preset still sitting under the old name is one the migration declined to
+		 * move -- the document already has something else called `renamed`, and merging the two
+		 * is not a rename. Saying so beats leaving the user to notice a binding that did not
+		 * follow; every other case moved, or had nothing here to move.
+		 */
+		const bool stillBound = std::any_of(document->stylePresets.cbegin(), document->stylePresets.cend(),
+						    [&name](const StylePreset &preset) {
+							    return preset.linked && preset.name == name;
+						    });
+
+		if (!moved && stillBound)
+			QMessageBox::information(this, moduleText("Library.Rename"),
+						 moduleText("Library.RenameSkipped").arg(name, renamed));
+	}
 
 	refreshLists();
 }

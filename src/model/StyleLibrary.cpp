@@ -87,7 +87,31 @@ QVector<StylePreset> presetsFromData(obs_data_t *data)
 	return presets;
 }
 
-QString presetsToJson(const QVector<StylePreset> &presets, bool alwaysEditLinked)
+QVector<QPair<QString, QString>> renamesFromData(obs_data_t *data)
+{
+	QVector<QPair<QString, QString>> renames;
+
+	OBSDataArrayAutoRelease array = obs_data_get_array(data, "renames");
+	if (!array)
+		return renames;
+
+	const size_t count = obs_data_array_count(array);
+	for (size_t i = 0; i < count; ++i) {
+		OBSDataAutoRelease item = obs_data_array_item(array, i);
+		const QString from = QString::fromUtf8(obs_data_get_string(item, "from"));
+		const QString to = QString::fromUtf8(obs_data_get_string(item, "to"));
+
+		if (from.isEmpty() || to.isEmpty() || from == to)
+			continue;
+
+		renames.append({from, to});
+	}
+
+	return renames;
+}
+
+QString presetsToJson(const QVector<StylePreset> &presets, const QVector<QPair<QString, QString>> &renames,
+		      bool alwaysEditLinked)
 {
 	OBSDataAutoRelease data = obs_data_create();
 	OBSDataArrayAutoRelease array = obs_data_array_create();
@@ -99,6 +123,16 @@ QString presetsToJson(const QVector<StylePreset> &presets, bool alwaysEditLinked
 	}
 
 	obs_data_set_array(data, "style_presets", array);
+
+	OBSDataArrayAutoRelease renameArray = obs_data_array_create();
+	for (const QPair<QString, QString> &rename : renames) {
+		OBSDataAutoRelease item = obs_data_create();
+		obs_data_set_string(item, "from", rename.first.toUtf8().constData());
+		obs_data_set_string(item, "to", rename.second.toUtf8().constData());
+		obs_data_array_push_back(renameArray, item);
+	}
+
+	obs_data_set_array(data, "renames", renameArray);
 	obs_data_set_bool(data, "always_edit_linked", alwaysEditLinked);
 	return QString::fromUtf8(obs_data_get_json_pretty(data));
 }
@@ -144,7 +178,15 @@ void StyleLibrary::load()
 		/* No file is the ordinary state of a machine that has never published a style. */
 		if (info.exists())
 			obs_log(LOG_WARNING, "could not read the style library at '%s'", path.toUtf8().constData());
+
+		/*
+		 * Everything the file holds, not just the presets: the rename trail and the ask-again
+		 * answer are as much a part of a library as its styles are, and leaving either behind
+		 * would carry one library's history into whatever is read next.
+		 */
 		entries.clear();
+		renameTrail.clear();
+		editLinkedInPlace = false;
 		bumpLocked();
 		return;
 	}
@@ -160,6 +202,7 @@ void StyleLibrary::load()
 	}
 
 	entries = presetsFromData(data);
+	renameTrail = renamesFromData(data);
 	editLinkedInPlace = obs_data_get_bool(data, "always_edit_linked");
 	bumpLocked();
 
@@ -177,7 +220,7 @@ bool StyleLibrary::save()
 			return false;
 
 		target = path;
-		json = presetsToJson(entries, editLinkedInPlace);
+		json = presetsToJson(entries, renameTrail, editLinkedInPlace);
 	}
 
 	QDir().mkpath(QFileInfo(target).absolutePath());
@@ -288,6 +331,16 @@ void StyleLibrary::set(const QString &name, const TextStyle &style)
 		if (!replaced)
 			entries.append(StylePreset{name, style, false});
 
+		/*
+		 * A name that exists again is nobody's old name. Without this, a preset renamed away
+		 * and then re-created under the original name would send every roll bound to it off to
+		 * the renamed one -- the trail would be describing a preset that is no longer gone.
+		 */
+		renameTrail.erase(
+			std::remove_if(renameTrail.begin(), renameTrail.end(),
+				       [&name](const QPair<QString, QString> &rename) { return rename.first == name; }),
+			renameTrail.end());
+
 		bumpLocked();
 	}
 
@@ -337,10 +390,74 @@ void StyleLibrary::rename(const QString &from, const QString &to)
 		if (!renamed)
 			return;
 
+		/*
+		 * Chains are collapsed rather than stacked: after A->B and then B->C, a document still
+		 * carrying A has to reach C in one lookup, and B->C has to keep working for one that
+		 * stopped at B. So every entry pointing at the old name is re-pointed at the new one,
+		 * and the hop just made is added to them.
+		 */
+		for (QPair<QString, QString> &rename : renameTrail) {
+			if (rename.second == from)
+				rename.second = to;
+		}
+
+		renameTrail.append({from, to});
+
+		/* A rename back to a name already in the trail leaves an entry pointing at itself. */
+		renameTrail.erase(std::remove_if(renameTrail.begin(), renameTrail.end(),
+						 [](const QPair<QString, QString> &rename) {
+							 return rename.first == rename.second;
+						 }),
+				  renameTrail.end());
+
 		bumpLocked();
 	}
 
 	save();
+}
+
+bool StyleLibrary::renamedTo(const QString &from, QString *to) const
+{
+	if (from.isEmpty())
+		return false;
+
+	std::lock_guard<std::mutex> lock(libraryMutex());
+
+	QString current = from;
+
+	/*
+	 * One hop is all a collapsed trail should ever need. The loop is here because the file can be
+	 * hand-edited, and a cycle in it must not become a hang inside a render path's caller.
+	 */
+	for (int hops = 0; hops < renameTrail.size() + 1; ++hops) {
+		bool moved = false;
+
+		for (const QPair<QString, QString> &rename : renameTrail) {
+			if (rename.first != current)
+				continue;
+
+			current = rename.second;
+			moved = true;
+			break;
+		}
+
+		if (!moved)
+			break;
+	}
+
+	if (current == from)
+		return false;
+
+	if (to)
+		*to = current;
+
+	return true;
+}
+
+QVector<QPair<QString, QString>> StyleLibrary::renames() const
+{
+	std::lock_guard<std::mutex> lock(libraryMutex());
+	return renameTrail;
 }
 
 void StyleLibrary::replaceAll(const QVector<StylePreset> &presets)
@@ -371,7 +488,7 @@ void StyleLibrary::replaceAll(const QVector<StylePreset> &presets)
 QString StyleLibrary::toJson() const
 {
 	std::lock_guard<std::mutex> lock(libraryMutex());
-	return presetsToJson(entries, editLinkedInPlace);
+	return presetsToJson(entries, renameTrail, editLinkedInPlace);
 }
 
 bool StyleLibrary::alwaysEditLinked() const

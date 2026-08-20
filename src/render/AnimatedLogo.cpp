@@ -381,18 +381,21 @@ bool isVideoLogoPath(const QString &path)
 	return videoLogoExtensions().contains(QFileInfo(path).suffix().toLower());
 }
 
-QString logoFileFilter()
+QString imageLogoPatterns()
 {
-	QString images = QStringLiteral("Images and animations (*.png *.apng *.jpg *.jpeg *.gif *.webp *.bmp *.svg)");
+	return QStringLiteral("*.png *.apng *.jpg *.jpeg *.gif *.webp *.bmp *.svg");
+}
 
+QString videoLogoPatterns()
+{
 	if (!animatedLogosSupportVideo())
-		return images + QStringLiteral(";;All files (*)");
+		return QString();
 
 	QStringList patterns;
 	for (const QString &extension : videoLogoExtensions())
 		patterns.append(QStringLiteral("*.") + extension);
 
-	return images + QStringLiteral(";;Video (%1);;All files (*)").arg(patterns.join(QLatin1Char(' ')));
+	return patterns.join(QLatin1Char(' '));
 }
 
 bool logoPathLooksAnimated(const QString &path)
