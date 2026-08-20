@@ -21,12 +21,15 @@ action live in the normal OBS properties dialog.
 | Playback | Starts on source visibility, plus start/pause/restart hotkeys, an optional loop, lead-in/lead-out padding, and a manual mode that parks the roll at a position instead of scrolling it |
 | Import | Delimited files (CSV/TSV) with a preview and per-column field mapping |
 | Style reuse | Named presets on the document; sections bind by name and fall back to their own style |
+| Shared styles | One machine-wide library file; a document's preset may *link* to it, keeping a copy as the fallback |
+| Animated logos | The strip leaves a hole and the artwork is drawn over it as its own quad, per frame |
 
 Rendering with QPainter rather than native libobs text sources buys exact WYSIWYG parity
 between the designer preview and the video output, real text layout (wrapping, alignment,
 line spacing, multi-column flow), and a per-frame cost of nothing more than a few textured
-quads. The price is that logos are static images — no animated GIF or video logos. That
-trade is revisitable: see *Hybrid logos* below.
+quads. What it cannot do is move: a strip is rasterised once and scrolled. Animated logos are
+therefore *not* in the strip at all — see *Animated logos* below — which is the one place the
+renderer has two draw paths instead of one, and the reason that split exists.
 
 ## Layout of the source tree
 
@@ -38,8 +41,10 @@ src/
     BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
     DividerArt.{hpp,cpp}   the table of divider shapes, and which of the three slots each serves
     EndingAction.{hpp,cpp} ending-action config and execution
+    StyleLibrary.{hpp,cpp} the machine-wide style library file, and reading it into a document
   render/
     RenderThread.{hpp,cpp} the shared rasterisation thread and its job queue
+    AnimatedLogo.{hpp,cpp} decoding animated artwork (Qt) and video (FFmpeg), and frame timing
     StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterisation
     SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
@@ -54,6 +59,7 @@ src/
     ToolButtons.{hpp,cpp}    the compact button shapes a list's controls are built from
     PreviewWidget.{hpp,cpp}  scaled preview of the rendered strip
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
+    StyleLibraryDialog.{hpp,cpp} the two-list manager: this roll's presets, and the machine's
   util/
     CsvParser.{hpp,cpp}     RFC 4180 parser and delimiter guessing
 ```
@@ -536,6 +542,69 @@ In the designer, a bound style stays editable and an edit to it *is* an edit to 
 That is the whole point of the feature: "restyle every header" is one change, not one change
 per header.
 
+### The style library
+
+A preset on a document restyles one roll. The **style library** is the same idea one level up:
+a single JSON file under the plugin's config directory (`obs_module_config_path`,
+`style-presets.json`), shared by every source, every scene collection and every profile on the
+machine.
+
+A document does not copy out of it and forget where the style came from. A section binds to a
+preset by name exactly as it always has; what changes is that the document's own `StylePreset`
+entry may be marked **`linked`**, and `Document::refreshLinkedPresets()` pulls the library's
+current values into every linked entry whenever the library moves. Two things fall out of doing
+it that way rather than resolving through the library at paint time:
+
+- **The renderer never learns the library exists.** It reads the document's presets, off the
+  render thread, with nothing to lock — the same code as before this feature.
+- **The copy left in the document is the fallback.** A scene collection opened on a machine
+  with no library file renders exactly as it was last saved, rather than dropping every bound
+  section back to its own untouched style. A linked preset the library has *lost* keeps its
+  copy for the same reason.
+
+Two paths keep it up to date. The designer watches the file (`QFileSystemWatcher`) and reloads
+when it changes, so a preset edited in another OBS window restyles the preview as it is typed.
+The source polls (`StyleLibrary::pollForChanges`, rate-limited to one `stat` a second) from
+`video_tick`, and queues a rebuild only when a style bound to *that* document actually moved.
+
+Editing a bound style in the designer is where the two levels meet. For a local preset it is
+what it always was — an edit to the preset. For a linked one it would be an edit to every roll
+on the machine, so the designer asks which is meant: change it everywhere, or fork a copy that
+belongs to this document alone. Forking is the default, because it is the answer that cannot
+surprise anybody else, and the question is asked once per preset per window rather than once
+per keystroke. "Don't ask again" is only offered for *change everywhere*: a remembered fork
+would quietly make the library read-only from the editor with nothing on screen to turn back on.
+
+Nothing is migrated. A document that already had presets keeps them, unlinked, and the
+`StyleLibraryDialog` — two lists with the traffic between them in the middle — is where one is
+published into the library, linked out of it, or copied out of it without the link.
+
+**Renaming.** A binding is a name, so renaming a preset in the library would, on its own, leave
+every roll on the machine pointing at a name that is no longer there. They would keep rendering —
+each carries its own copy — but they would have quietly stopped following the library, which is
+the one thing linking them was for.
+
+So the library keeps a **rename trail**: `old name → current name`, in the same file. Anything
+brought up to date against the library follows it (`Document::applyLibraryRenames`), renaming its
+own linked preset and rewriting every section binding that named it — `stylePresetName`,
+`secondaryStylePresetName` and `bridgeStylePresetName` alike. The open designer migrates as the
+rename is made, other loaded sources on their next poll, and a scene collection that was not open
+at the time whenever it is next loaded. Nothing reaches into another collection's file behind
+OBS's back to do it, which is what makes "a collection nobody has opened in a year" a case that
+works rather than a case that is documented.
+
+Three details keep the trail honest. Chains are **collapsed** as they are recorded, so `A→B` then
+`B→C` leaves both `A→C` and `B→C` and no document has to walk a path. A name that is **created
+again** drops its own trail entry, or a preset renamed away and then re-made under the original
+name would send the rolls bound to it off to the renamed one. And a rename is **not followed into
+a clash**: a document that already has a preset called `Titles` keeps its link under `House`,
+because merging two presets would restyle sections the user never chose the survivor for.
+
+A migration is a change to the document, so it is written back: `Document::load` reports through
+its `migrated` flag that the settings it just read are now the old shape of the roll, and the
+source rewrites them on the next tick — outside `update()`, since writing settings from inside
+`update()` is how a source calls itself in a circle.
+
 ### Persistence
 
 `Document::save`/`load` write directly to the source's settings object. Section lists are
@@ -572,6 +641,60 @@ capped at 200 000 px as a backstop against a runaway import.
 **Alpha.** QPainter needs a premultiplied buffer; OBS composites with straight alpha. Each
 tile is unpremultiplied once at the end of rasterisation (`Format_ARGB32`, which is `GS_BGRA`
 in memory on little-endian) rather than corrected per frame on the GPU.
+
+### Animated logos
+
+A strip is rasterised once and scrolled; an animation is by definition not that. So an animated
+logo is **not painted into the strip at all**. The tile it would have occupied is left empty and
+the artwork is drawn over the strip afterwards, from a texture of its own:
+
+```
+Document ──render()──> Strip { tiles, animatedLogos: [ {rect, animation, playback, shadowFrames} ] }
+                                         │                    │
+                        tiles ───────────┘                    └──> one gs_texture per logo,
+                        (as before)                                re-uploaded on frame change
+                                                                   and drawn after every tile
+```
+
+**The layout does not move.** An animated logo occupies exactly the box its first frame would
+have occupied as a still, measured through the same `logoDrawSize` as everything else, so
+swapping a PNG for a GIF of the same artwork changes nothing above or below it. `measure()` does
+not decode animations at all — it has no cache to decode into and does not need one.
+
+**Placements are collected in the measure pass**, which visits each section exactly once, so a
+logo straddling a tile seam is reported once rather than once per tile. A renderer built without
+an animation cache — the test harness, `measure()` — draws every logo as a still, which is the
+behaviour the renderer has always had.
+
+**Decoding is whole-file, up front.** `AnimatedLogoCache` decodes every frame once, scaled to
+the height the logo is drawn at, and keeps them: playback becomes an index into an array rather
+than a decoder running beside the compositor. That is the right trade for a logo and the wrong
+one for an hour of video, so it is bounded — 1800 frames, 30 seconds, and a 256 MB backstop for
+artwork whose `maxHeight` makes the first two meaningless. Past a cap the animation is truncated
+and says so, and the designer surfaces that under the preview.
+
+Two decoders sit behind one cache. GIF, APNG and animated WebP come through `QImageReader`,
+which is what keeps preview and output identical for the formats most logos arrive in. Video —
+WebM, MP4 and the rest — is decoded with libav directly, behind `CLOSING_TIME_HAVE_FFMPEG`:
+FFmpeg is found at configure time if it is there, and a build without it still animates
+everything Qt can read and reports a video logo in the designer as needing a build that has it.
+Frames are scaled to `maxHeight` in `sws_scale` (sample aspect applied there too), which is why
+a 1080p sting costs what a 96-pixel logo costs.
+
+**Shadows.** A logo's drop shadow is the same shadow in every frame for any artwork that keeps
+its silhouette, which is most of it, so by default the strip bakes the first frame's shadow
+behind the hole and the animation plays on top of it — one blur per rebuild, none per frame.
+Artwork that changes shape can opt into `animatedShadow`, and then the blur is run for every
+frame *at rebuild time* on the render thread and carried in the placement, because a blur is the
+most expensive thing in this renderer and the compositor is the last place to put one.
+
+**Playback** is per logo: loop or play once, start with the roll or when the logo scrolls into
+frame, and a speed multiplier. Animations advance with the roll rather than with the wall clock
+— a paused roll is a still frame, and a roll parked in manual scroll shows the frame it was
+parked on — and a `rollEpoch` counter, bumped whenever the roll returns to its start, is what
+restarts them on a loop wrap or a restart hotkey. The frame showing at a given point comes from
+`logoFrameAt`, shared by the source and the designer's preview so the two cannot disagree about
+what a speed multiplier or a play-once means.
 
 **Scrolling.** The strip's top edge sits one canvas-height below the top of the frame at
 offset 0 and travels upward, so the roll enters from the bottom. Total travel is
@@ -673,10 +796,21 @@ Ending actions are decided on the graphics thread but touch the frontend and the
 graph, so `EndingActionConfig::execute` always hands the work to the UI queue, holding a
 strong source reference so the source cannot be destroyed underneath it.
 
-`LogoCache` is **not** shared: the source and each designer window own one. Render jobs run
-one at a time, which is what makes each cache single-threaded without a lock to say so. The
-designer's is held by `shared_ptr`, because a job in flight outlives the window that posted
-it.
+`LogoCache` and `AnimatedLogoCache` are **not** shared: the source and each designer window own
+one of each. Render jobs run one at a time, which is what makes each cache single-threaded
+without a lock to say so. The designer's are held by `shared_ptr`, because a job in flight
+outlives the window that posted it.
+
+Decoded animation frames do cross threads — from the render thread that decoded them to the
+graphics thread that uploads them — and they do it as a `shared_ptr<const LogoAnimation>` carried
+in the strip. Const because two threads read it; shared because the artwork outlives the render
+that produced it, and the cache may hand the same decode to the next rebuild while the last one
+is still on screen.
+
+`StyleLibrary` is the one genuinely shared thing, since a machine has one of it. Its own mutex
+covers every accessor, but the render path never touches it: a library change is folded into the
+document by `refreshLinkedPresets()` on the thread that owns the document, and rasterisation goes
+on reading the document's own presets.
 
 `obs_module_unload` calls `stopRenderThread()`, which discards queued jobs, waits for the
 one running, and joins — nothing is left executing code in a module about to be unmapped.
@@ -791,6 +925,12 @@ kept alive by the menu holding it. It is also filled once at registration, even 
 loaded that early: the macOS menu bar draws an empty submenu as an unusable one, and the
 "no sources" placeholder is enough to keep it a submenu until the first hover replaces it.
 
+**Tools ▸ Credits Style Library** is a plain action beside it, opening the library manager on no
+document at all. The library belongs to the machine rather than to any one roll, so renaming or
+throwing away a shared style should not require finding a source and opening its designer first.
+From inside the designer the same window opens on the document, which is what adds the left-hand
+list and the traffic between the two.
+
 The source's own **Interact** button was considered and left alone. `OBS_SOURCE_INTERACTION` is
 what puts one there, but the button belongs to the frontend: it opens OBS's interaction window,
 and no plugin hook exists to put a different window there instead. The nearest thing available is
@@ -815,6 +955,17 @@ goes to air; stopping at the pane's own edge left the end of the roll parked in 
 below it and refused to bring it any further, so the closing sections could be looked at but
 never seen in the frame they are being designed for — and a roll shorter than the pane could not
 be scrolled at all.
+
+**Animated logos in the preview.** The strip the preview draws has the same holes the source's
+does, so the pane composites the animated logos into them itself, from the placements the strip
+carries. With **Play animations** off — the default — every one of them shows its first frame,
+which is the frame the layout was measured from. With it on, the pane runs a repaint timer and
+looks each frame up from one elapsed clock, honouring loop, speed and play-once.
+
+Off by default for the same reason the layout overlay is: this pane is what a roll is written in,
+and something moving in the corner of it while a name is being typed is a distraction rather than
+a feature. `startOnEnter` has no meaning here — nothing is scrolling — so it is ignored rather
+than leaving an animation held off until a logo enters a frame it will never enter.
 
 ### Layout overlay
 
@@ -882,22 +1033,41 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 
 ## Known limitations
 
-1. **Logos are static.** No animated GIF/WebM logos. *Hybrid logos*: the strip stays as-is
-   for text, and logo slots become separate textured quads fed by libobs image sources, at
-   the cost of a second draw path with its own transform bookkeeping. This is the one
-   remaining item that is a genuine fork in the architecture rather than work.
-2. **A missing font is reported, not resolved.** The designer names the substituted families
+1. **A missing font is reported, not resolved.** The designer names the substituted families
    under the preview and the source logs them once, but nothing embeds or bundles a font, so
    a roll still renders differently on a machine that lacks one.
-3. **Undo does not reach across Apply.** The stack is per-designer-window and starts empty
+2. **Undo does not reach across Apply.** The stack is per-designer-window and starts empty
    each time the window opens; Cancel still discards everything since the last Apply.
-4. **Style presets are per document.** There is no shared library across sources or scene
-   collections — exporting the JSON and importing it elsewhere is the way to carry them.
-5. **One ending action per source.** A roll that needs to do two things has to chain them
+3. **One ending action per source.** A roll that needs to do two things has to chain them
    through the `credits_finished` signal.
+4. **An animated logo is bounded by what fits in memory.** Every frame is decoded up front at
+   the drawn size, so artwork longer than 30 seconds (or 1800 frames, or 256 MB of frames)
+   plays only its first part. This is a deliberate trade — see *Animated logos* — but it does
+   mean a long clip is not a logo as far as this plugin is concerned.
+5. **Video logos need a build with FFmpeg.** GIF, APNG and animated WebP come through Qt and
+   are always available; WebM and MP4 are compiled in only where FFmpeg was found. A build
+   without it draws a video logo as a placeholder and says so in the designer.
+6. **Playback settings are per section in the designer, per logo in the document.** The model
+   carries `LogoPlayback` on every `LogoRef`, and a hand-written or imported document with
+   different settings per entry is honoured; the editor writes one set of settings to every
+   logo in a section, because a loop switch on each of twelve sponsor cells is a column of
+   checkboxes nobody wants to fill in.
+7. **A library rename is followed but never forced.** A document that already has a preset of
+   its own under the new name keeps its link under the old one — merging two presets is not a
+   rename — and migrates by itself if the clash is ever resolved. The manager says so when it
+   happens.
 
 ### Addressed since the first cut
 
+- Animated logos: GIF, APNG and animated WebP through Qt, video through FFmpeg where it is
+  available, drawn as their own quads over a hole the strip leaves for them, with per-logo loop,
+  start-on-entry, speed and shadow-follows-animation settings.
+- A machine-wide style library, with a document's presets linking to it, a copy kept as the
+  fallback, a manager for publishing and linking, and live reload when it changes underneath a
+  roll.
+- Renaming a library preset takes the rolls bound to it along: the library records the rename and
+  every document rewrites its own preset and bindings the next time it is brought up to date,
+  including a scene collection that was not open when it happened.
 - Rasterisation moved off the UI thread onto a shared render thread, for both the source and
   the designer preview.
 - Drag-and-drop reordering in the section list.

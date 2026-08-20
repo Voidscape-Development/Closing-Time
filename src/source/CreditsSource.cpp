@@ -33,6 +33,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 #include "model/CreditsModel.hpp"
+#include "model/StyleLibrary.hpp"
 #include "render/RenderThread.hpp"
 #include "render/StripRenderer.hpp"
 #include "ui/DesignerDialog.hpp"
@@ -51,6 +52,32 @@ enum class Phase {
 	Rolling,
 	/* Content has cleared the canvas; the ending action may still be pending. */
 	Finished,
+};
+
+/*
+ * One animated logo, mid-playback.
+ *
+ * The strip left a hole where this logo goes (see AnimatedLogoPlacement) and this is what fills
+ * it: a single texture, re-uploaded when the frame changes, drawn as its own quad after the
+ * tiles. One texture rather than one per frame because a thirty-second animation is thousands of
+ * frames and no GPU wants thousands of small textures for one logo; re-uploading a logo-sized
+ * image at ten to thirty frames a second is a rounding error beside the strip itself.
+ *
+ * Graphics-thread state, like the tile textures beside it.
+ */
+struct AnimatedLogoRuntime {
+	AnimatedLogoPlacement placement;
+	gs_texture_t *texture = nullptr;
+	gs_texture_t *shadowTexture = nullptr;
+	/* Which frame the textures currently hold, or -1 when they hold nothing yet. */
+	int uploadedFrame = -1;
+	int frame = 0;
+	/* How far into the animation playback has run, in milliseconds of the animation's own time. */
+	double elapsedMs = 0.0;
+	/* False until the animation is running: what `startOnEnter` holds off. */
+	bool started = false;
+	/* The roll pass this playback belongs to; a new one restarts it. */
+	uint64_t epoch = 0;
 };
 
 /*
@@ -76,6 +103,7 @@ struct CreditsSourceData {
 	 * one at a time, so neither of these needs a lock.
 	 */
 	LogoCache logos;
+	AnimatedLogoCache animations;
 	/* Families already reported, so a rebuild per keystroke does not spam the log. */
 	QSet<QString> warnedFonts;
 
@@ -86,9 +114,18 @@ struct CreditsSourceData {
 	bool rebuildInFlight = false;
 	bool rebuildAgain = false;
 
+	/*
+	 * Set when loading brought the document up to date against the library -- a preset renamed
+	 * there, or a linked style edited -- and the settings the document came from are now behind
+	 * it. The write-back happens on the next tick rather than inside update(), because writing
+	 * settings from inside update() is how a source calls itself in a circle.
+	 */
+	bool settingsNeedWriteBack = false;
+
 	/* Graphics-thread state. */
 	std::vector<gs_texture_t *> tileTextures;
 	std::vector<int> tileTops;
+	std::vector<AnimatedLogoRuntime> animatedLogos;
 	int stripHeight = 0;
 
 	std::mutex stateMutex;
@@ -98,6 +135,13 @@ struct CreditsSourceData {
 	double actionRemaining = 0.0;
 	bool actionPending = false;
 	bool paused = false;
+	/*
+	 * Bumped whenever the roll goes back to its beginning -- armed, reset, or wrapped by a loop.
+	 * An animation that started with the roll has to start again when the roll does, and the
+	 * offset alone cannot say that happened: it is a number that went down, which is also what a
+	 * scrub does.
+	 */
+	uint64_t rollEpoch = 0;
 
 	obs_hotkey_id startHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id pauseHotkey = OBS_INVALID_HOTKEY_ID;
@@ -196,7 +240,7 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 			family.toUtf8().constData(), task->sourceName.toUtf8().constData());
 	}
 
-	StripRenderer renderer(&data->logos);
+	StripRenderer renderer(&data->logos, &data->animations);
 	Strip strip = renderer.render(task->document);
 
 	bool again = false;
@@ -219,9 +263,72 @@ void releaseTextures(CreditsSourceData *data)
 	for (gs_texture_t *texture : data->tileTextures)
 		gs_texture_destroy(texture);
 
+	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
+		if (runtime.texture)
+			gs_texture_destroy(runtime.texture);
+		if (runtime.shadowTexture)
+			gs_texture_destroy(runtime.shadowTexture);
+	}
+
 	data->tileTextures.clear();
 	data->tileTops.clear();
+	data->animatedLogos.clear();
 	data->stripHeight = 0;
+}
+
+/* Graphics thread only; requires an active graphics context. */
+gs_texture_t *createTexture(const QImage &image)
+{
+	if (image.isNull())
+		return nullptr;
+
+	const uint8_t *bits = image.constBits();
+	return gs_texture_create(static_cast<uint32_t>(image.width()), static_cast<uint32_t>(image.height()), GS_BGRA,
+				 1, &bits, GS_DYNAMIC);
+}
+
+/*
+ * Puts the current frame on the GPU, allocating the texture the first time.
+ *
+ * The frames of one animation are all the same size -- the decoder guarantees it -- so the
+ * texture is allocated once and written over from then on.
+ */
+void uploadFrame(AnimatedLogoRuntime &runtime)
+{
+	if (runtime.uploadedFrame == runtime.frame)
+		return;
+
+	const LogoAnimation &animation = *runtime.placement.animation;
+	if (runtime.frame < 0 || runtime.frame >= animation.frames.size())
+		return;
+
+	const QImage &image = animation.frames.at(runtime.frame).image;
+
+	if (!runtime.texture) {
+		runtime.texture = createTexture(image);
+		if (!runtime.texture) {
+			obs_log(LOG_ERROR, "failed to allocate a %dx%d animated logo texture", image.width(),
+				image.height());
+			/* Marked as uploaded so the failure is not retried once a frame for the whole roll. */
+			runtime.uploadedFrame = runtime.frame;
+			return;
+		}
+	} else {
+		gs_texture_set_image(runtime.texture, image.constBits(), static_cast<uint32_t>(image.bytesPerLine()),
+				     false);
+	}
+
+	const QVector<QImage> &shadows = runtime.placement.shadowFrames;
+	if (!shadows.isEmpty() && runtime.frame < shadows.size()) {
+		const QImage &shadow = shadows.at(runtime.frame);
+		if (!runtime.shadowTexture)
+			runtime.shadowTexture = createTexture(shadow);
+		else
+			gs_texture_set_image(runtime.shadowTexture, shadow.constBits(),
+					     static_cast<uint32_t>(shadow.bytesPerLine()), false);
+	}
+
+	runtime.uploadedFrame = runtime.frame;
 }
 
 /* Graphics thread only; requires an active graphics context. */
@@ -240,6 +347,18 @@ void uploadPendingStrip(CreditsSourceData *data)
 
 	releaseTextures(data);
 	data->stripHeight = strip.height;
+
+	data->animatedLogos.reserve(strip.animatedLogos.size());
+	for (AnimatedLogoPlacement &placement : strip.animatedLogos) {
+		AnimatedLogoRuntime runtime;
+		runtime.placement = std::move(placement);
+		/*
+		 * Textures are left unallocated until the logo is first drawn. A roll may place more
+		 * animated logos than are ever on screen at once, and the ones the viewer scrolls past
+		 * in the last minute of a ten-minute roll have no business holding VRAM from the start.
+		 */
+		data->animatedLogos.push_back(std::move(runtime));
+	}
 
 	for (const StripTile &tile : strip.tiles) {
 		const uint8_t *bits = tile.image.constBits();
@@ -262,6 +381,7 @@ void uploadPendingStrip(CreditsSourceData *data)
 /* Callers must hold stateMutex. */
 void resetRollLocked(CreditsSourceData *data)
 {
+	++data->rollEpoch;
 	data->phase = Phase::Idle;
 	data->offset = 0.0;
 	data->delayRemaining = 0.0;
@@ -391,6 +511,7 @@ void advance(CreditsSourceData *data, double seconds)
 				 * loop seamless: this frame's overshoot carries into the next pass.
 				 */
 				data->offset -= travel;
+				++data->rollEpoch;
 				break;
 			}
 
@@ -442,11 +563,41 @@ void getDefaults(obs_data_t *settings)
 	Document::defaults(settings);
 }
 
+/*
+ * Writes the in-memory document back to the source's settings.
+ *
+ * For migrations the source performs on its own: a style preset renamed in the library, whose new
+ * name this roll's sections have just been re-pointed at. Without this the rename would be redone
+ * from the old settings on every load, and would be lost the moment the library forgot it.
+ *
+ * Graphics thread only.
+ */
+void writeDocumentBack(CreditsSourceData *data)
+{
+	OBSDataAutoRelease settings = obs_source_get_settings(data->source);
+	if (!settings)
+		return;
+
+	data->document.save(settings);
+	/* Kept in step first: the update() this schedules must not read as a content change. */
+	data->renderedFrom = renderKey(data->document);
+	obs_source_update(data->source, settings);
+}
+
 void update(void *raw, obs_data_t *settings)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
 
-	data->document.load(settings);
+	/*
+	 * `load` brings the document up to date against the library, which can rename a preset and
+	 * every binding that named it. When it does, what is in `settings` is now the old shape of
+	 * this document and has to be replaced -- on the next tick, since we are inside update() and
+	 * writing settings from in here is how a source calls itself in a circle.
+	 */
+	bool migrated = false;
+	data->document.load(settings, &migrated);
+	if (migrated)
+		data->settingsNeedWriteBack = true;
 
 	/*
 	 * Only a change to what the strip is made of is worth rasterising again -- see renderKey().
@@ -604,9 +755,92 @@ void onHide(void *raw)
 		resetRoll(data);
 }
 
+/*
+ * Advances every animated logo by one tick.
+ *
+ * Animations move with the roll rather than with the wall clock: a paused roll is a still frame,
+ * and a roll parked in manual scroll shows the frame it was parked on. A credit roll is a
+ * composed picture, and having its logos carry on jigging about while the thing they belong to is
+ * held still is the kind of motion that reads as a bug.
+ *
+ * Graphics thread only.
+ */
+void advanceAnimatedLogos(CreditsSourceData *data, double seconds, bool rolling)
+{
+	if (data->animatedLogos.empty())
+		return;
+
+	double offset = 0.0;
+	uint64_t epoch = 0;
+	{
+		std::lock_guard<std::mutex> lock(data->stateMutex);
+		offset = data->offset;
+		epoch = data->rollEpoch;
+	}
+
+	const double canvasHeight = std::max(1, data->document.height);
+	const double stripTop = canvasHeight - offset;
+
+	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
+		if (!runtime.placement.animation)
+			continue;
+
+		/* A roll that went back to its beginning plays its animations from theirs. */
+		if (runtime.epoch != epoch) {
+			runtime.epoch = epoch;
+			runtime.started = false;
+			runtime.frame = 0;
+			runtime.elapsedMs = 0.0;
+		}
+
+		const double top = stripTop + runtime.placement.rect.top();
+		const bool entered = top < canvasHeight;
+
+		if (!runtime.started) {
+			/*
+			 * A play-once sting bound to a logo two thirds of the way down a long roll
+			 * would otherwise have finished several minutes before anyone could see it.
+			 */
+			if (runtime.placement.playback.startOnEnter && !entered)
+				continue;
+
+			runtime.started = true;
+		}
+
+		if (!rolling)
+			continue;
+
+		const double speed = std::clamp(runtime.placement.playback.speed, kMinLogoSpeed, kMaxLogoSpeed);
+		runtime.elapsedMs += seconds * 1000.0 * speed;
+		runtime.frame =
+			logoFrameAt(*runtime.placement.animation, runtime.elapsedMs, runtime.placement.playback.loop);
+	}
+}
+
 void videoTick(void *raw, float seconds)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
+
+	if (data->settingsNeedWriteBack) {
+		data->settingsNeedWriteBack = false;
+		writeDocumentBack(data);
+	}
+
+	/*
+	 * A style the library changed underneath this roll -- edited in another OBS window, imported,
+	 * or hand-edited -- is pulled in here. Before the manual-scroll branch below, because a roll
+	 * parked for editing is exactly the one somebody is restyling. The poll costs one stat a
+	 * second at most, and a rebuild is only queued when a style bound to this document moved.
+	 */
+	if (StyleLibrary::instance().pollForChanges() && data->document.refreshLinkedPresets()) {
+		queueRebuild(data);
+		/*
+		 * Saved as well as redrawn. The refreshed copy is this roll's fallback on a machine
+		 * without the library, and a rename it just followed has to survive a restart -- both
+		 * of which mean the settings, not just the strip.
+		 */
+		writeDocumentBack(data);
+	}
 
 	/*
 	 * Re-applied every tick rather than once when the setting changes, because the position it
@@ -615,10 +849,20 @@ void videoTick(void *raw, float seconds)
 	 */
 	if (data->document.manualScroll) {
 		scrubTo(data, data->document.scrollPosition);
+		advanceAnimatedLogos(data, 0.0, false);
 		return;
 	}
 
-	advance(data, tickSeconds(seconds));
+	const double delta = tickSeconds(seconds);
+	advance(data, delta);
+
+	bool rolling = false;
+	{
+		std::lock_guard<std::mutex> lock(data->stateMutex);
+		rolling = data->phase == Phase::Rolling && !data->paused;
+	}
+
+	advanceAnimatedLogos(data, delta, rolling);
 }
 
 void drawBackground(const QColor &color, int width, int height)
@@ -652,10 +896,8 @@ void drawBackground(const QColor &color, int width, int height)
  * into. Building the quad here puts the fraction into both the geometry and the texture
  * coordinates instead, so the tile meets the edge it is clipped against exactly.
  */
-void drawTile(gs_texture_t *texture, double top, int canvasHeight)
+void drawClipped(double left, double top, double width, double height, int canvasHeight)
 {
-	const auto width = static_cast<double>(gs_texture_get_width(texture));
-	const auto height = static_cast<double>(gs_texture_get_height(texture));
 	if (width <= 0.0 || height <= 0.0)
 		return;
 
@@ -664,8 +906,8 @@ void drawTile(gs_texture_t *texture, double top, int canvasHeight)
 	if (visibleBottom <= visibleTop)
 		return;
 
-	const auto x0 = 0.0f;
-	const auto x1 = static_cast<float>(width);
+	const auto x0 = static_cast<float>(left);
+	const auto x1 = static_cast<float>(left + width);
 	const auto y0 = static_cast<float>(visibleTop);
 	const auto y1 = static_cast<float>(visibleBottom);
 	const auto v0 = static_cast<float>((visibleTop - top) / height);
@@ -682,6 +924,58 @@ void drawTile(gs_texture_t *texture, double top, int canvasHeight)
 	gs_texcoord(1.0f, v1, 0);
 	gs_vertex2f(x1, y1);
 	gs_render_stop(GS_TRISTRIP);
+}
+
+/*
+ * Draws one strip tile at its own size, clipped to the canvas.
+ *
+ * The tile is the full width of the strip and starts at its left edge; everything interesting
+ * about the clipping is in drawClipped.
+ */
+void drawTile(gs_texture_t *texture, double top, int canvasHeight)
+{
+	drawClipped(0.0, top, static_cast<double>(gs_texture_get_width(texture)),
+		    static_cast<double>(gs_texture_get_height(texture)), canvasHeight);
+}
+
+/*
+ * Draws the animated logos over the strip.
+ *
+ * Each one goes where the layout put it, offset by however far the roll has travelled, into the
+ * hole the strip left for it -- so an animated logo scrolls with the text beside it rather than
+ * following it a frame later, because both are placed from the same offset in the same frame.
+ *
+ * Drawn after every tile rather than interleaved with them, which is what keeps a logo whose box
+ * straddles a tile seam from being cut in half by the tile that comes after it.
+ */
+void drawAnimatedLogos(CreditsSourceData *data, gs_eparam_t *imageParam, double stripTop, int canvasHeight)
+{
+	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
+		if (!runtime.placement.animation)
+			continue;
+
+		const QRectF &rect = runtime.placement.rect;
+		const double top = stripTop + rect.top();
+
+		/* Nothing is uploaded for a logo that is not on screen; see uploadPendingStrip. */
+		if (top >= canvasHeight || top + rect.height() <= 0.0)
+			continue;
+
+		uploadFrame(runtime);
+		if (!runtime.texture)
+			continue;
+
+		if (runtime.shadowTexture) {
+			const QPointF at = rect.topLeft() + runtime.placement.shadowOffset;
+			gs_effect_set_texture(imageParam, runtime.shadowTexture);
+			drawClipped(at.x(), stripTop + at.y(),
+				    static_cast<double>(gs_texture_get_width(runtime.shadowTexture)),
+				    static_cast<double>(gs_texture_get_height(runtime.shadowTexture)), canvasHeight);
+		}
+
+		gs_effect_set_texture(imageParam, runtime.texture);
+		drawClipped(rect.left(), top, rect.width(), rect.height(), canvasHeight);
+	}
 }
 
 void videoRender(void *raw, gs_effect_t *)
@@ -728,6 +1022,8 @@ void videoRender(void *raw, gs_effect_t *)
 			gs_effect_set_texture(imageParam, texture);
 			drawTile(texture, stripTop + data->tileTops[i], canvasHeight);
 		}
+
+		drawAnimatedLogos(data, imageParam, stripTop, canvasHeight);
 	}
 
 	gs_blend_state_pop();

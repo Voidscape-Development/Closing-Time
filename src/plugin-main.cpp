@@ -19,6 +19,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <plugin-support.h>
 
+#include <QString>
+
+#include "model/StyleLibrary.hpp"
 #include "render/RenderThread.hpp"
 #include "source/CreditsSource.hpp"
 #include "ui/DesignerDialog.hpp"
@@ -44,12 +47,26 @@ bool obs_module_load(void)
 	 */
 	signal_handler_add(obs_get_signal_handler(), "void closing_time_finished(ptr source)");
 
+	/*
+	 * The style library is machine-wide, so it belongs to the module rather than to a source or
+	 * a window: a source loading a scene collection has to be able to resolve a linked preset
+	 * before any designer has been opened. The path is handed in from here because the library
+	 * itself is compiled into the test harness, which has no OBS module to ask for one.
+	 */
+	if (char *path = obs_module_config_path("style-presets.json")) {
+		closingtime::StyleLibrary::instance().setFilePath(QString::fromUtf8(path));
+		bfree(path);
+		closingtime::StyleLibrary::instance().load();
+	}
+
 	closingtime::registerCreditsSource();
 	/*
 	 * The menu lists sources by type and the designer opens them, so neither half of that
 	 * belongs to the other: the module entry point is where the two are introduced.
 	 */
 	closingtime::registerDesignerToolsMenu(closingtime::kCreditsSourceId);
+	/* The library is the machine's rather than any roll's, so it gets an entry of its own. */
+	closingtime::registerStyleLibraryToolsMenu();
 
 	obs_log(LOG_INFO, "Closing Time loaded (version %s)", PLUGIN_VERSION);
 	return true;

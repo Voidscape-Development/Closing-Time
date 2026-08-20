@@ -63,7 +63,26 @@ QRectF boxOf(const Document &document, LayoutBox::Kind kind, int index = 0);
 
 /* The rendered strip, and the same thing flattened into one image for probing or saving. */
 Strip renderStrip(const Document &document);
+
+/*
+ * The same, with animation support switched on.
+ *
+ * Kept apart from renderStrip because the difference is the point: without an animation cache an
+ * animated logo is baked into the strip as its first frame, and with one it is left as a hole with
+ * a placement reported beside it. Suites that are not about animation use the plain call and get
+ * the behaviour the renderer has always had.
+ */
+Strip renderAnimatedStrip(const Document &document);
 QImage renderImage(const Document &document);
+
+/*
+ * The tiles of an already-rendered strip, assembled into one image.
+ *
+ * Separate from renderImage because a check about animation has a Strip in hand rather than a
+ * document: what it is asking about -- the hole an animated logo leaves -- only exists in a strip
+ * rendered with animation support, and re-rendering to look at it would render a different one.
+ */
+QImage flatten(const Strip &strip);
 
 /* --- ink --------------------------------------------------------------------------------- */
 

@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/CreditsModel.hpp"
 
+#include "model/StyleLibrary.hpp"
+
 #include <obs.hpp>
 
 #include <QFileInfo>
@@ -531,6 +533,7 @@ void TextStyle::defaults(obs_data_t *data, int pixelSize, bool bold)
 void StylePreset::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "name", name.toUtf8().constData());
+	obs_data_set_bool(data, "linked", linked);
 
 	OBSDataAutoRelease styleData = obs_data_create();
 	style.save(styleData);
@@ -540,16 +543,45 @@ void StylePreset::save(obs_data_t *data) const
 void StylePreset::load(obs_data_t *data)
 {
 	name = QString::fromUtf8(obs_data_get_string(data, "name"));
+	/* Absent in a document written before the library existed, which is exactly a local preset. */
+	linked = obs_data_get_bool(data, "linked");
 
 	OBSDataAutoRelease styleData = obs_data_get_obj(data, "style");
 	if (styleData)
 		style.load(styleData);
 }
 
+void LogoPlayback::save(obs_data_t *data) const
+{
+	obs_data_set_bool(data, "loop", loop);
+	obs_data_set_bool(data, "start_on_enter", startOnEnter);
+	obs_data_set_double(data, "speed", speed);
+	obs_data_set_bool(data, "animated_shadow", animatedShadow);
+}
+
+void LogoPlayback::load(obs_data_t *data)
+{
+	/*
+	 * Defaulted rather than read straight, so a logo saved before any of this existed loads as
+	 * a looping animation at its native rate rather than as one frozen on its first frame.
+	 */
+	obs_data_set_default_bool(data, "loop", true);
+	obs_data_set_default_double(data, "speed", 1.0);
+
+	loop = obs_data_get_bool(data, "loop");
+	startOnEnter = obs_data_get_bool(data, "start_on_enter");
+	speed = std::clamp(obs_data_get_double(data, "speed"), kMinLogoSpeed, kMaxLogoSpeed);
+	animatedShadow = obs_data_get_bool(data, "animated_shadow");
+}
+
 void LogoRef::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "path", path.toUtf8().constData());
 	obs_data_set_int(data, "max_height", maxHeight);
+
+	OBSDataAutoRelease playbackData = obs_data_create();
+	playback.save(playbackData);
+	obs_data_set_obj(data, "playback", playbackData);
 }
 
 void LogoRef::load(obs_data_t *data)
@@ -558,6 +590,11 @@ void LogoRef::load(obs_data_t *data)
 	maxHeight = static_cast<int>(obs_data_get_int(data, "max_height"));
 	if (maxHeight <= 0)
 		maxHeight = 96;
+
+	playback = LogoPlayback();
+	OBSDataAutoRelease playbackData = obs_data_get_obj(data, "playback");
+	if (playbackData)
+		playback.load(playbackData);
 }
 
 void Entry::save(obs_data_t *data) const
@@ -1176,7 +1213,94 @@ void Document::setStylePreset(const QString &name, const TextStyle &style)
 		}
 	}
 
-	stylePresets.append(StylePreset{name, style});
+	stylePresets.append(StylePreset{name, style, false});
+}
+
+bool Document::linkStylePreset(const QString &name)
+{
+	TextStyle style;
+	if (name.isEmpty() || !StyleLibrary::instance().find(name, &style))
+		return false;
+
+	for (StylePreset &preset : stylePresets) {
+		if (preset.name != name)
+			continue;
+
+		preset.style = style;
+		preset.linked = true;
+		return true;
+	}
+
+	stylePresets.append(StylePreset{name, style, true});
+	return true;
+}
+
+bool Document::applyLibraryRenames()
+{
+	const StyleLibrary &library = StyleLibrary::instance();
+	bool changed = false;
+
+	for (StylePreset &preset : stylePresets) {
+		if (!preset.linked)
+			continue;
+
+		QString renamed;
+		if (!library.renamedTo(preset.name, &renamed))
+			continue;
+
+		/* The rename is only worth following to a preset that is actually there to follow. */
+		if (!library.contains(renamed))
+			continue;
+
+		const QString from = preset.name;
+		const bool taken = std::any_of(stylePresets.cbegin(), stylePresets.cend(),
+					       [&renamed](const StylePreset &other) { return other.name == renamed; });
+		if (taken)
+			continue;
+
+		preset.name = renamed;
+
+		/* Every binding that named it, or the roll would follow the rename into nothing. */
+		for (Section &section : sections) {
+			if (section.stylePresetName == from)
+				section.stylePresetName = renamed;
+			if (section.secondaryStylePresetName == from)
+				section.secondaryStylePresetName = renamed;
+			if (section.bridgeStylePresetName == from)
+				section.bridgeStylePresetName = renamed;
+		}
+
+		changed = true;
+	}
+
+	return changed;
+}
+
+bool Document::refreshLinkedPresets()
+{
+	const StyleLibrary &library = StyleLibrary::instance();
+	/*
+	 * Renames first: a preset that has been renamed has to be found under its new name before
+	 * there is any point asking the library what style is under it.
+	 */
+	bool changed = applyLibraryRenames();
+
+	for (StylePreset &preset : stylePresets) {
+		if (!preset.linked)
+			continue;
+
+		TextStyle style;
+		if (!library.find(preset.name, &style))
+			continue;
+
+		if (style == preset.style)
+			continue;
+
+		preset.style = style;
+		changed = true;
+	}
+
+	return changed;
 }
 
 void Document::removeStylePreset(const QString &name)
@@ -1237,7 +1361,7 @@ void Document::save(obs_data_t *data) const
 		&sections);
 }
 
-void Document::load(obs_data_t *data)
+void Document::load(obs_data_t *data, bool *migrated)
 {
 	width = static_cast<int>(obs_data_get_int(data, "width"));
 	height = static_cast<int>(obs_data_get_int(data, "height"));
@@ -1292,6 +1416,18 @@ void Document::load(obs_data_t *data)
 			sections.append(section);
 		}
 	}
+
+	/*
+	 * A document arriving from a scene collection carries whatever the library held when it was
+	 * last saved, under whatever names it held them under. Bringing it up to date here -- renames
+	 * followed, copies refreshed -- means a roll is styled by the library from the first frame it
+	 * draws, rather than by a copy that is however many edits out of date until something happens
+	 * to poll. It is also the only chance a collection that has been closed for a year gets to
+	 * follow a rename made while it was away.
+	 */
+	const bool changed = refreshLinkedPresets();
+	if (migrated)
+		*migrated = changed;
 }
 
 void Document::defaults(obs_data_t *data)

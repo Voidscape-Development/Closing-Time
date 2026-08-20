@@ -29,6 +29,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QLabel>
@@ -45,9 +47,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 
+#include "model/StyleLibrary.hpp"
+#include "render/AnimatedLogo.hpp"
 #include "render/RenderThread.hpp"
 #include "ui/PreviewWidget.hpp"
 #include "ui/SectionEditor.hpp"
+#include "ui/StyleLibraryDialog.hpp"
 #include "ui/ToolButtons.hpp"
 
 namespace closingtime {
@@ -61,6 +66,14 @@ QString moduleText(const char *key)
 
 /* Milliseconds of quiet before an edit triggers a re-render of the preview strip. */
 constexpr int kPreviewDebounceMs = 250;
+
+/*
+ * Milliseconds of quiet before edits to a linked preset are written to the library file.
+ *
+ * Long enough that typing a font name is one write rather than a dozen, short enough that another
+ * OBS window watching the file sees the change while the user is still looking at this one.
+ */
+constexpr int kLibraryWriteDebounceMs = 400;
 
 /* Milliseconds of quiet before a run of small edits becomes its own undo step. */
 constexpr int kEditBurstMs = 900;
@@ -129,6 +142,39 @@ QVector<MenuEntry> sourcesOfType(const QByteArray &sourceId)
 	});
 
 	return collector.entries;
+}
+
+/*
+ * True when any logo in the roll is a video file.
+ *
+ * Asked only in a build without FFmpeg, to explain a logo that is drawing as a placeholder box. It
+ * reads paths rather than decoding anything, which is all that is needed to answer it.
+ */
+bool documentUsesVideoLogos(const Document &document)
+{
+	const auto isVideo = [](const LogoRef &logo) {
+		return !logo.isEmpty() && isVideoLogoPath(logo.path);
+	};
+
+	for (const Section &section : document.sections) {
+		if (!section.visible)
+			continue;
+
+		if (isVideo(section.logo))
+			return true;
+
+		for (const Entry &entry : section.entries) {
+			if (isVideo(entry.logo))
+				return true;
+		}
+
+		for (const DividerPiece &piece : section.dividerCentre) {
+			if (piece.kind == DividerPiece::Kind::Logo && isVideo(piece.logo))
+				return true;
+		}
+	}
+
+	return false;
 }
 
 /* Rebuilds the Tools submenu from what is loaded right now. */
@@ -224,6 +270,25 @@ void registerDesignerToolsMenu(const char *sourceId)
 	 * a submenu, and the first hover replaces it with what is actually loaded.
 	 */
 	fillDesignerMenu(menu, id);
+}
+
+void registerStyleLibraryToolsMenu()
+{
+	auto *action =
+		static_cast<QAction *>(obs_frontend_add_tools_menu_qaction(obs_module_text("ToolsMenu.StyleLibrary")));
+	if (!action)
+		return;
+
+	QObject::connect(action, &QAction::triggered, action, [] {
+		/*
+		 * Opened on no document: with no roll to publish from or link into, the window is the
+		 * library alone. Parented to the main window and deleted on close, so it behaves like
+		 * any other utility window rather than outliving the menu entry that opened it.
+		 */
+		auto *dialog = new StyleLibraryDialog(nullptr, mainWindow());
+		dialog->setAttribute(Qt::WA_DeleteOnClose);
+		dialog->show();
+	});
 }
 
 void closeDesignerFor(obs_source_t *source)
@@ -384,6 +449,16 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	layoutBoxesCheck = new QCheckBox(moduleText("Designer.LayoutBoxes"), previewPane);
 	layoutBoxesCheck->setToolTip(moduleText("Designer.LayoutBoxes.Tip"));
 	previewLayout->addWidget(layoutBoxesCheck);
+	/*
+	 * Off by default, like the overlay above it and for the same reason: this pane is what a roll
+	 * is written in, and something moving in the corner of it while a name is being typed is a
+	 * distraction rather than a feature. With it off every animated logo shows its first frame,
+	 * which is the frame the layout was measured from.
+	 */
+	animateCheck = new QCheckBox(moduleText("Designer.PlayAnimations"), previewPane);
+	animateCheck->setToolTip(moduleText("Designer.PlayAnimations.Tip"));
+	animateCheck->setEnabled(false);
+	previewLayout->addWidget(animateCheck);
 	durationLabel = new QLabel(previewPane);
 	previewLayout->addWidget(durationLabel);
 	fontWarningLabel = new QLabel(previewPane);
@@ -417,8 +492,11 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	footer->addWidget(undoButton);
 	footer->addWidget(redoButton);
 
+	auto *libraryButton = new QPushButton(moduleText("Designer.StyleLibrary"), this);
+	libraryButton->setToolTip(moduleText("Designer.StyleLibrary.Tip"));
 	auto *importButton = new QPushButton(moduleText("Designer.ImportJson"), this);
 	auto *exportButton = new QPushButton(moduleText("Designer.ExportJson"), this);
+	footer->addWidget(libraryButton);
 	footer->addWidget(importButton);
 	footer->addWidget(exportButton);
 	footer->addStretch();
@@ -435,9 +513,15 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	editBurstTimer->setSingleShot(true);
 	editBurstTimer->setInterval(kEditBurstMs);
 
+	libraryWriteTimer = new QTimer(this);
+	libraryWriteTimer->setSingleShot(true);
+	libraryWriteTimer->setInterval(kLibraryWriteDebounceMs);
+
 	connect(layoutBoxesCheck, &QCheckBox::toggled, this, [this](bool on) { preview->setLayoutBoxesVisible(on); });
+	connect(animateCheck, &QCheckBox::toggled, this, [this](bool on) { preview->setAnimationPlaying(on); });
 	connect(refreshTimer, &QTimer::timeout, this, &DesignerDialog::refreshPreview);
 	connect(editBurstTimer, &QTimer::timeout, this, [this] { editBurstOpen = false; });
+	connect(libraryWriteTimer, &QTimer::timeout, this, &DesignerDialog::flushLibraryEdits);
 	connect(collapseButton, &QToolButton::clicked, this, [this] { setSectionsCollapsed(!sectionsCollapsed); });
 	connect(undoButton, &QPushButton::clicked, this, &DesignerDialog::undo);
 	connect(redoButton, &QPushButton::clicked, this, &DesignerDialog::redo);
@@ -446,25 +530,117 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	connect(editor, &SectionEditor::changed, this, &DesignerDialog::onSectionEdited);
 	connect(editor, &SectionEditor::presetSaveRequested, this, &DesignerDialog::savePreset);
 	connect(editor, &SectionEditor::presetDeleteRequested, this, &DesignerDialog::deletePreset);
+	connect(libraryButton, &QPushButton::clicked, this, &DesignerDialog::openStyleLibrary);
 	connect(importButton, &QPushButton::clicked, this, &DesignerDialog::importJson);
 	connect(exportButton, &QPushButton::clicked, this, &DesignerDialog::exportJson);
 	connect(buttons, &QDialogButtonBox::accepted, this, [this] {
 		commitCurrentSection();
+		flushLibraryEdits();
 		writeToSource();
 		accept();
 	});
 	connect(buttons, &QDialogButtonBox::rejected, this, &DesignerDialog::reject);
 	connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] {
 		commitCurrentSection();
+		flushLibraryEdits();
 		writeToSource();
 	});
+
+	/*
+	 * A library edited in another OBS window, imported from elsewhere, or written by hand shows up
+	 * here without anything being reopened. Watching the file rather than polling it is what makes
+	 * a shared library feel shared: the edit lands in the preview as it is made.
+	 */
+	libraryWatcher = new QFileSystemWatcher(this);
+	librarySerial = StyleLibrary::instance().serial();
+	if (const QString path = StyleLibrary::instance().filePath(); !path.isEmpty()) {
+		libraryWatcher->addPath(QFileInfo(path).absolutePath());
+		if (QFileInfo::exists(path))
+			libraryWatcher->addPath(path);
+	}
+	connect(libraryWatcher, &QFileSystemWatcher::fileChanged, this, &DesignerDialog::reloadStyleLibrary);
+	connect(libraryWatcher, &QFileSystemWatcher::directoryChanged, this, &DesignerDialog::reloadStyleLibrary);
 
 	loadFromSource();
 	refreshUndoButtons();
 }
 
+void DesignerDialog::reloadStyleLibrary()
+{
+	StyleLibrary &library = StyleLibrary::instance();
+
+	/*
+	 * Watching a file that is replaced rather than written in place -- which is what a save
+	 * through QSaveFile does -- drops the watch with it, so the path is re-added on every
+	 * notification. The directory watch is what catches a library created after this window
+	 * opened.
+	 */
+	const QString path = library.filePath();
+	if (!path.isEmpty() && QFileInfo::exists(path) && !libraryWatcher->files().contains(path))
+		libraryWatcher->addPath(path);
+
+	library.load();
+	if (library.serial() == librarySerial)
+		return;
+
+	librarySerial = library.serial();
+
+	if (!document.refreshLinkedPresets())
+		return;
+
+	/*
+	 * Not an undo step. This is not an edit the user made here, and putting it on the stack would
+	 * mean Ctrl+Z appearing to undo a change made in another window -- which it could not do, since
+	 * the library would still hold the new style and the next reload would bring it straight back.
+	 */
+	editor->setPresets(document.stylePresets);
+	commitCurrentSection();
+	schedulePreviewRefresh();
+}
+
+void DesignerDialog::flushLibraryEdits()
+{
+	if (pendingLibraryEdits.isEmpty())
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	for (auto it = pendingLibraryEdits.cbegin(); it != pendingLibraryEdits.cend(); ++it)
+		library.set(it.key(), it.value());
+
+	pendingLibraryEdits.clear();
+	/* Our own writes must not read back as somebody else's change on the next reload. */
+	librarySerial = library.serial();
+}
+
+void DesignerDialog::openStyleLibrary()
+{
+	commitCurrentSection();
+
+	/* The manager reads the library, so anything still queued here belongs in it first. */
+	flushLibraryEdits();
+
+	StyleLibraryDialog dialog(&document, this);
+	connect(&dialog, &StyleLibraryDialog::documentAboutToChange, this, [this] { beginUndoStep(); });
+	connect(&dialog, &StyleLibraryDialog::documentChanged, this, [this] {
+		editor->setPresets(document.stylePresets);
+		schedulePreviewRefresh();
+	});
+
+	dialog.exec();
+
+	/* The library's own serial moved if anything was published, imported or deleted in there. */
+	librarySerial = StyleLibrary::instance().serial();
+}
+
 DesignerDialog::~DesignerDialog()
 {
+	/*
+	 * An edit to a shared style is not this window's to discard: Cancel drops the roll's own
+	 * changes, but "change it everywhere" was answered about the library, and the library is not
+	 * what Cancel is about.
+	 */
+	flushLibraryEdits();
+
 	/* Any render still in flight now has nowhere to deliver to, and quietly drops itself. */
 	sink->dialog = nullptr;
 
@@ -750,6 +926,44 @@ void DesignerDialog::moveSectionTo(int from, int to)
 	schedulePreviewRefresh();
 }
 
+bool DesignerDialog::shouldEditLinkedPreset(const QString &name)
+{
+	if (StyleLibrary::instance().alwaysEditLinked())
+		return true;
+
+	const auto answered = linkedEditChoices.constFind(name);
+	if (answered != linkedEditChoices.constEnd())
+		return *answered;
+
+	QMessageBox box(this);
+	box.setWindowTitle(moduleText("Library.EditLinked.Title"));
+	box.setText(moduleText("Library.EditLinked").arg(name));
+	box.setIcon(QMessageBox::Question);
+
+	QPushButton *everywhere = box.addButton(moduleText("Library.EditLinked.Everywhere"), QMessageBox::YesRole);
+	QPushButton *fork = box.addButton(moduleText("Library.EditLinked.Fork"), QMessageBox::NoRole);
+	/* Forking is the default because it is the one that cannot surprise anybody else. */
+	box.setDefaultButton(fork);
+
+	auto *remember = new QCheckBox(moduleText("Library.EditLinked.Remember"), &box);
+	box.setCheckBox(remember);
+
+	box.exec();
+
+	const bool editLibrary = box.clickedButton() == everywhere;
+	linkedEditChoices.insert(name, editLibrary);
+
+	/*
+	 * Only "change everywhere" is worth remembering across windows. Someone who wants to be asked
+	 * again after choosing to fork has nothing to turn back on, whereas a remembered fork would
+	 * quietly make the library read-only from the editor with no way back to it.
+	 */
+	if (remember->isChecked() && editLibrary)
+		StyleLibrary::instance().setAlwaysEditLinked(true);
+
+	return editLibrary;
+}
+
 void DesignerDialog::savePreset(const QString &name, const TextStyle &style)
 {
 	/*
@@ -757,6 +971,26 @@ void DesignerDialog::savePreset(const QString &name, const TextStyle &style)
 	 * spinbox tick made while a preset is bound.
 	 */
 	beginEditUndoStep();
+
+	/*
+	 * A preset that follows the library is shared with every other roll on the machine, so an
+	 * edit to one has to say which of the two it means: restyle everything, or take a copy for
+	 * this roll. Asked once per preset per window -- see shouldEditLinkedPreset.
+	 */
+	for (StylePreset &preset : document.stylePresets) {
+		if (preset.name != name || !preset.linked)
+			continue;
+
+		if (shouldEditLinkedPreset(name)) {
+			pendingLibraryEdits.insert(name, style);
+			libraryWriteTimer->start();
+		} else {
+			/* The document's own copy from here on; the library carries on as it was. */
+			preset.linked = false;
+		}
+		break;
+	}
+
 	document.setStylePreset(name, style);
 
 	/* Re-publishing the list is what binds the editor that raised this to the preset. */
@@ -842,8 +1076,8 @@ void DesignerDialog::refreshPreview()
 	 * The whole document goes to the render thread by value, so the user can keep editing
 	 * while a long roll rasterises.
 	 */
-	postRenderJob([rendered = document, cache = logos, target = sink] {
-		const StripRenderer renderer(cache.get());
+	postRenderJob([rendered = document, cache = logos, animationCache = animations, target = sink] {
+		const StripRenderer renderer(cache.get(), animationCache.get());
 		/*
 		 * Collected on every preview render rather than only while the overlay is showing,
 		 * so switching it on draws what is already on screen instead of waiting on a
@@ -880,11 +1114,33 @@ void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, 
 				       .arg(moduleText("Designer.StripHeight"))
 				       .arg(strip.height));
 
+	QStringList warnings;
+
 	const QStringList missingFonts = missingFontFamilies(rendered);
-	fontWarningLabel->setVisible(!missingFonts.isEmpty());
 	if (!missingFonts.isEmpty())
-		fontWarningLabel->setText(
-			moduleText("Designer.MissingFonts").arg(missingFonts.join(QStringLiteral(", "))));
+		warnings.append(moduleText("Designer.MissingFonts").arg(missingFonts.join(QStringLiteral(", "))));
+
+	/*
+	 * Reported from the strip rather than from the document, because both of these are answers
+	 * only the decoder has: how long a file turned out to be, and whether this build could open
+	 * it at all.
+	 */
+	const bool truncated = std::any_of(strip.animatedLogos.cbegin(), strip.animatedLogos.cend(),
+					   [](const AnimatedLogoPlacement &placement) {
+						   return placement.animation && placement.animation->truncated;
+					   });
+	if (truncated)
+		warnings.append(moduleText("Designer.LogoTruncated").arg(kMaxLogoDurationMs / 1000));
+
+	if (!animatedLogosSupportVideo() && documentUsesVideoLogos(rendered))
+		warnings.append(moduleText("Designer.VideoLogoUnsupported"));
+
+	fontWarningLabel->setVisible(!warnings.isEmpty());
+	fontWarningLabel->setText(warnings.join(QStringLiteral("\n")));
+
+	animateCheck->setEnabled(preview->hasAnimatedLogos());
+	if (!preview->hasAnimatedLogos() && animateCheck->isChecked())
+		animateCheck->setChecked(false);
 
 	/* Edits made while this render was out are picked up now, against the live document. */
 	if (previewAgain) {

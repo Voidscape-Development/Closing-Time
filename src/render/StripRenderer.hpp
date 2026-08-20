@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QVector>
 
 #include "model/CreditsModel.hpp"
+#include "render/AnimatedLogo.hpp"
 
 namespace closingtime {
 
@@ -98,8 +99,47 @@ struct StripTile {
 	QImage image;
 };
 
+/*
+ * An animated logo the layout placed, and everything needed to draw it.
+ *
+ * The strip is rasterised once and scrolled; an animation is by definition not that. So an
+ * animated logo is not painted into the strip at all. The tile it would have occupied is left
+ * empty and the artwork is drawn over the strip afterwards, from its own texture -- by the source
+ * on the graphics thread, or by the designer's preview widget on the UI thread. This is what
+ * carries it across: where the hole is, what goes in it, and how the frames are timed.
+ *
+ * The layout is unchanged by any of it. An animated logo occupies exactly the box its first frame
+ * would have occupied as a still, so nothing above or below it moves when a PNG is swapped for a
+ * GIF of the same artwork.
+ */
+struct AnimatedLogoPlacement {
+	/* The hole, in strip space. Consumers add the scroll offset and draw here. */
+	QRectF rect;
+	LogoAnimationPtr animation;
+	LogoPlayback playback;
+	/*
+	 * The drop shadow, one image per frame, when the logo asked for a shadow that follows the
+	 * animation. Empty in the ordinary case, where the strip has already baked the first
+	 * frame's shadow into the tile behind the hole and there is nothing per-frame to draw.
+	 *
+	 * Blurring every frame is done here, once per rebuild on the render thread, rather than per
+	 * frame on the compositor's: a shadow is a blur, and a blur is the most expensive thing in
+	 * this renderer.
+	 */
+	QVector<QImage> shadowFrames;
+	/* Where a shadow frame's top-left goes, relative to `rect`'s. */
+	QPointF shadowOffset;
+	/* Index into Document::sections, for the designer's overlay and its highlighting. */
+	int section = -1;
+};
+
 struct Strip {
 	QVector<StripTile> tiles;
+	/*
+	 * Collected during the measure pass, which visits each section exactly once, so a logo that
+	 * straddles a tile seam is reported once rather than once per tile it touches.
+	 */
+	QVector<AnimatedLogoPlacement> animatedLogos;
 	int width = 0;
 	int height = 0;
 
@@ -155,7 +195,18 @@ using LayoutBoxes = QVector<LayoutBox>;
  */
 class StripRenderer {
 public:
-	explicit StripRenderer(LogoCache *logos) : logos(logos) {}
+	/*
+	 * `animations` may be null, and a renderer without one draws every logo as a still: an
+	 * animated file contributes its first frame, baked into the strip exactly as artwork always
+	 * was. That is the fallback the test harness and any caller with nowhere to draw an overlay
+	 * quad want, and it means animation is something a consumer opts into by being able to
+	 * honour it rather than something the renderer assumes of everybody.
+	 */
+	explicit StripRenderer(LogoCache *logos, AnimatedLogoCache *animations = nullptr)
+		: logos(logos),
+		  animations(animations)
+	{
+	}
 
 	/* Maximum tile height in pixels. Tiles are also capped to the strip's own height. */
 	static constexpr int kTileHeight = 2048;
@@ -176,6 +227,7 @@ public:
 
 private:
 	LogoCache *logos;
+	AnimatedLogoCache *animations;
 };
 
 } // namespace closingtime

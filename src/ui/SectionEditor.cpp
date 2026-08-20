@@ -44,6 +44,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <functional>
 
+#include "render/AnimatedLogo.hpp"
 #include "ui/CsvImportDialog.hpp"
 #include "ui/ToolButtons.hpp"
 
@@ -69,7 +70,32 @@ constexpr int kCentreTableMinimumHeight = 150;
 /* Image formats QImageReader can decode without extra plugins on every OBS platform. */
 QString imageFilter()
 {
-	return moduleText("Designer.LogoFilter") + QStringLiteral(" (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.svg)");
+	/*
+	 * The patterns come from the render layer, because what can be opened is decided by what can
+	 * be decoded: the video half is empty in a build without FFmpeg, and there is no sense
+	 * offering a file the decoder would only refuse.
+	 */
+	QString filter = moduleText("Designer.LogoFilter") + QStringLiteral(" (%1)").arg(imageLogoPatterns());
+
+	const QString video = videoLogoPatterns();
+	if (!video.isEmpty())
+		filter += QStringLiteral(";;%1 (%2)").arg(moduleText("Designer.VideoFilter"), video);
+
+	return filter + QStringLiteral(";;%1 (*)").arg(moduleText("Designer.AllFilesFilter"));
+}
+
+/*
+ * Says so when the chosen file is a video this build cannot decode.
+ *
+ * The alternative is a placeholder box in the roll and a line in the OBS log, which is a long way
+ * from the file dialog the user was standing in when they made the choice.
+ */
+void warnIfUnplayableVideo(QWidget *parent, const QString &path)
+{
+	if (path.isEmpty() || !isVideoLogoPath(path) || animatedLogosSupportVideo())
+		return;
+
+	QMessageBox::warning(parent, moduleText("Designer.ChooseLogo"), moduleText("Designer.VideoLogoUnsupported"));
 }
 
 /* The only format QSvgRenderer reads, which is what a bridge tile is rendered through. */
@@ -328,8 +354,14 @@ void StyleEditor::setPresets(const QVector<StylePreset> &newPresets, const QStri
 
 	presetBox->clear();
 	presetBox->addItem(moduleText("Designer.StylePreset.None"), QString());
-	for (const StylePreset &preset : presets)
-		presetBox->addItem(preset.name, preset.name);
+	for (const StylePreset &preset : presets) {
+		/*
+		 * A preset that follows the machine-wide library is marked, because editing one has
+		 * consequences outside this roll. The mark is in the label only -- the name is still
+		 * what the item carries and what a section binds to.
+		 */
+		presetBox->addItem(preset.linked ? QStringLiteral("%1  ⇄").arg(preset.name) : preset.name, preset.name);
+	}
 
 	const int index = selected.isEmpty() ? 0 : presetBox->findData(selected);
 	selectedPreset = index > 0 ? selected : QString();
@@ -556,6 +588,34 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	logoHeight->setRange(1, 4096);
 	logoHeight->setSuffix(QStringLiteral(" px"));
 	form->addRow(moduleText("Designer.LogoHeight"), logoHeight);
+
+	/*
+	 * Playback, on one row: three settings that are only ever read together, and that appear at
+	 * all only once the section holds artwork that can move.
+	 */
+	auto *playbackRow = new QWidget(this);
+	auto *playbackLayout = new QHBoxLayout(playbackRow);
+	playbackLayout->setContentsMargins(0, 0, 0, 0);
+	logoLoop = new QCheckBox(moduleText("Designer.LogoLoop"), playbackRow);
+	logoLoop->setToolTip(moduleText("Designer.LogoLoop.Tip"));
+	logoStartOnEnter = new QCheckBox(moduleText("Designer.LogoStartOnEnter"), playbackRow);
+	logoStartOnEnter->setToolTip(moduleText("Designer.LogoStartOnEnter.Tip"));
+	logoSpeed = new QDoubleSpinBox(playbackRow);
+	logoSpeed->setRange(kMinLogoSpeed, kMaxLogoSpeed);
+	logoSpeed->setSingleStep(0.1);
+	logoSpeed->setDecimals(2);
+	logoSpeed->setPrefix(moduleText("Designer.LogoSpeed") + QStringLiteral(" "));
+	logoSpeed->setSuffix(QStringLiteral("x"));
+	logoSpeed->setToolTip(moduleText("Designer.LogoSpeed.Tip"));
+	playbackLayout->addWidget(logoLoop);
+	playbackLayout->addWidget(logoStartOnEnter);
+	playbackLayout->addWidget(logoSpeed);
+	playbackLayout->addStretch();
+	form->addRow(moduleText("Designer.LogoPlayback"), playbackRow);
+
+	logoAnimatedShadow = new QCheckBox(moduleText("Designer.LogoAnimatedShadow"), this);
+	logoAnimatedShadow->setToolTip(moduleText("Designer.LogoAnimatedShadow.Tip"));
+	form->addRow(QString(), logoAnimatedShadow);
 
 	logoPlacement = new QComboBox(this);
 	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Hug"), static_cast<int>(LogoPlacement::Hug));
@@ -923,7 +983,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(textEdit, &QPlainTextEdit::textChanged, this, notify);
 	connect(subtitleEdit, &QPlainTextEdit::textChanged, this, notify);
 	connect(logoPath, &QLineEdit::textChanged, this, notify);
+	/* The controls come and go with what the file turns out to be, so a retyped path re-asks. */
+	connect(logoPath, &QLineEdit::textChanged, this, &SectionEditor::refreshLogoPlayback);
 	connect(logoHeight, &QSpinBox::valueChanged, this, notify);
+	connect(logoLoop, &QCheckBox::toggled, this, notify);
+	connect(logoStartOnEnter, &QCheckBox::toggled, this, notify);
+	connect(logoSpeed, &QDoubleSpinBox::valueChanged, this, notify);
+	connect(logoAnimatedShadow, &QCheckBox::toggled, this, notify);
 	connect(logoSide, &QComboBox::currentIndexChanged, this, notify);
 	connect(logoGap, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeEdit, &QLineEdit::textChanged, this, notify);
@@ -1022,6 +1088,22 @@ void SectionEditor::setSection(const Section &source)
 	textEdit->setPlainText(source.text);
 	subtitleEdit->setPlainText(source.secondaryText);
 	logoPath->setText(source.logo.path);
+	/*
+	 * Taken from the section's own logo, which is the one the fields describe. For a list the
+	 * entries carry their own copies, and the first of them is as good an answer as any -- they
+	 * are written together by this editor, so they only differ in a document that came from
+	 * somewhere else.
+	 */
+	{
+		const LogoPlayback &playback = !source.entries.isEmpty() && sectionUsesLogos(source.type) &&
+							       sectionUsesEntries(source.type)
+						       ? source.entries.first().logo.playback
+						       : source.logo.playback;
+		logoLoop->setChecked(playback.loop);
+		logoStartOnEnter->setChecked(playback.startOnEnter);
+		logoSpeed->setValue(playback.speed);
+		logoAnimatedShadow->setChecked(playback.animatedShadow);
+	}
 	logoHeight->setValue(source.logo.maxHeight);
 	selectByData(logoPlacement, static_cast<int>(source.logoPlacement));
 	selectByData(logoSide, static_cast<int>(source.logoSide));
@@ -1084,6 +1166,8 @@ void SectionEditor::setSection(const Section &source)
 	applyTypeVisibility(source.type);
 	rebuildEntryTable(source.type);
 	writeEntriesToTable(source);
+	/* After the tables, since what it asks about includes the artwork they hold. */
+	refreshLogoPlayback();
 
 	loading = false;
 }
@@ -1099,6 +1183,16 @@ Section SectionEditor::section() const
 	result.secondaryText = subtitleEdit->toPlainText();
 	result.logo.path = logoPath->text();
 	result.logo.maxHeight = logoHeight->value();
+
+	/*
+	 * One set of controls, written to every logo the section places -- its own, its entries' and
+	 * its divider centre's alike. The entry table rebuilds each Entry from its cells, so a
+	 * playback setting that lived only on an entry would be dropped by the next keystroke; this
+	 * is also what keeps a grid of sponsor logos animating as one block rather than as twelve
+	 * things that drifted apart.
+	 */
+	const LogoPlayback playback = currentLogoPlayback();
+	result.logo.playback = playback;
 	result.logoPlacement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
 	result.logoSide = static_cast<LogoSide>(logoSide->currentData().toInt());
 	result.logoGap = logoGap->value();
@@ -1151,6 +1245,13 @@ Section SectionEditor::section() const
 
 	readEntriesFromTable(&result);
 	readCentreFromTable(&result);
+
+	/* After both tables, which rebuild their logos from cells that carry no playback of their own. */
+	for (Entry &entry : result.entries)
+		entry.logo.playback = playback;
+	for (DividerPiece &piece : result.dividerCentre)
+		piece.logo.playback = playback;
+
 	return result;
 }
 
@@ -1183,6 +1284,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(subtitleEdit, singleLineText && sectionUsesSubtitles(type));
 	form->setRowVisible(logoPath->parentWidget(), sectionLogo);
 	form->setRowVisible(logoHeight, sectionLogo);
+	/*
+	 * Hidden here and shown again by refreshLogoPlayback, which is the one that knows whether the
+	 * artwork moves. Doing it in two steps means every path into this pass -- a type change, a
+	 * section switch, a retyped filename -- ends up asking the same question of the same code.
+	 */
+	form->setRowVisible(logoLoop->parentWidget(), false);
+	form->setRowVisible(logoAnimatedShadow, false);
 	form->setRowVisible(logoSide, logoBesideText);
 	form->setRowVisible(logoGap, logoBesideText);
 	const bool bridged = type == SectionType::Bridged;
@@ -1412,6 +1520,52 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 	}
 
 	target->entries = entries;
+}
+
+LogoPlayback SectionEditor::currentLogoPlayback() const
+{
+	LogoPlayback playback;
+	playback.loop = logoLoop->isChecked();
+	playback.startOnEnter = logoStartOnEnter->isChecked();
+	playback.speed = logoSpeed->value();
+	playback.animatedShadow = logoAnimatedShadow->isChecked();
+	return playback;
+}
+
+bool SectionEditor::sectionHasAnimatedArt(const Section &source) const
+{
+	if (sectionUsesLogos(source.type) && !source.logo.isEmpty() && logoPathLooksAnimated(source.logo.path))
+		return true;
+
+	if (sectionUsesLogos(source.type) && sectionUsesEntries(source.type)) {
+		for (const Entry &entry : source.entries) {
+			if (!entry.logo.isEmpty() && logoPathLooksAnimated(entry.logo.path))
+				return true;
+		}
+	}
+
+	if (source.type == SectionType::SectionDivider) {
+		for (const DividerPiece &piece : source.dividerCentre) {
+			if (piece.kind == DividerPiece::Kind::Logo && !piece.logo.isEmpty() &&
+			    logoPathLooksAnimated(piece.logo.path))
+				return true;
+		}
+	}
+
+	return false;
+}
+
+void SectionEditor::refreshLogoPlayback()
+{
+	/*
+	 * Shown only for a section that actually holds something that moves. Playback settings beside
+	 * a PNG describe nothing, and offering them everywhere would put four dead controls on the
+	 * majority of sections in the majority of rolls.
+	 */
+	const bool animated = sectionHasAnimatedArt(section());
+
+	form->setRowVisible(logoLoop->parentWidget(), animated);
+	form->setRowVisible(logoAnimatedShadow, animated);
 }
 
 void SectionEditor::writeCentreToTable(const Section &source)
@@ -1738,8 +1892,11 @@ void SectionEditor::browseForSectionLogo()
 {
 	const QString path =
 		QFileDialog::getOpenFileName(this, moduleText("Designer.ChooseLogo"), logoPath->text(), imageFilter());
-	if (!path.isEmpty())
-		logoPath->setText(path);
+	if (path.isEmpty())
+		return;
+
+	warnIfUnplayableVideo(this, path);
+	logoPath->setText(path);
 }
 
 void SectionEditor::browseForBridgeSvg()
@@ -1766,9 +1923,13 @@ void SectionEditor::browseForEntryLogo()
 	if (path.isEmpty())
 		return;
 
+	warnIfUnplayableVideo(this, path);
+
 	entryTable->setItem(row, 0, new QTableWidgetItem(path));
 	if (!entryTable->item(row, 1))
 		entryTable->setItem(row, 1, new QTableWidgetItem(QStringLiteral("96")));
+
+	refreshLogoPlayback();
 }
 
 void SectionEditor::importCsv()

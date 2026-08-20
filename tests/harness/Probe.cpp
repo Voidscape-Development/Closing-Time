@@ -41,6 +41,12 @@ LogoCache &logoCache()
 	return cache;
 }
 
+AnimatedLogoCache &animationCache()
+{
+	static AnimatedLogoCache cache;
+	return cache;
+}
+
 } // namespace
 
 int measure(const Document &document)
@@ -79,9 +85,19 @@ Strip renderStrip(const Document &document)
 	return renderer.render(document);
 }
 
+Strip renderAnimatedStrip(const Document &document)
+{
+	StripRenderer renderer(&logoCache(), &animationCache());
+	return renderer.render(document);
+}
+
 QImage renderImage(const Document &document)
 {
-	const Strip strip = renderStrip(document);
+	return flatten(renderStrip(document));
+}
+
+QImage flatten(const Strip &strip)
+{
 	if (strip.isEmpty())
 		return QImage();
 
