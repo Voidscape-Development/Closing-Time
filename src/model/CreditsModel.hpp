@@ -198,6 +198,12 @@ struct GradientSpec {
 	 */
 	QVector<QPair<qreal, QColor>> resolvedStops() const;
 
+	bool operator==(const GradientSpec &other) const
+	{
+		return qFuzzyCompare(angle + 1.0, other.angle + 1.0) && stops == other.stops;
+	}
+	bool operator!=(const GradientSpec &other) const { return !(*this == other); }
+
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
 };
@@ -211,6 +217,13 @@ struct TextOutline {
 	bool enabled = false;
 	double width = 2.0;
 	QColor color = QColor(0, 0, 0);
+
+	bool operator==(const TextOutline &other) const
+	{
+		return enabled == other.enabled && qFuzzyCompare(width + 1.0, other.width + 1.0) &&
+		       color == other.color;
+	}
+	bool operator!=(const TextOutline &other) const { return !(*this == other); }
 };
 
 /*
@@ -223,6 +236,14 @@ struct TextShadow {
 	double offsetY = 4.0;
 	double blur = 8.0;
 	QColor color = QColor(0, 0, 0, 160);
+
+	bool operator==(const TextShadow &other) const
+	{
+		return enabled == other.enabled && qFuzzyCompare(offsetX + 1.0, other.offsetX + 1.0) &&
+		       qFuzzyCompare(offsetY + 1.0, other.offsetY + 1.0) &&
+		       qFuzzyCompare(blur + 1.0, other.blur + 1.0) && color == other.color;
+	}
+	bool operator!=(const TextShadow &other) const { return !(*this == other); }
 };
 
 struct TextStyle {
@@ -251,6 +272,22 @@ struct TextStyle {
 	bool hasEffects() const;
 
 	/*
+	 * Field-for-field equality.
+	 *
+	 * What it is for is noticing that a style did *not* move: a library reload that hands the
+	 * document a style identical to the one it already had must not count as a change, or every
+	 * poll would queue a rebuild of a strip that would come out the same.
+	 */
+	bool operator==(const TextStyle &other) const
+	{
+		return family == other.family && pixelSize == other.pixelSize && bold == other.bold &&
+		       italic == other.italic && color == other.color && align == other.align &&
+		       qFuzzyCompare(lineSpacing + 1.0, other.lineSpacing + 1.0) && fill == other.fill &&
+		       gradient == other.gradient && outline == other.outline && shadow == other.shadow;
+	}
+	bool operator!=(const TextStyle &other) const { return !(*this == other); }
+
+	/*
 	 * How far past the text's own box the drawing can reach, in pixels. Nothing here
 	 * changes the layout -- an outline or a shadow never moves a line or grows a section,
 	 * the same way a CSS text-shadow does not -- so the renderer has to know how far it
@@ -266,10 +303,56 @@ struct TextStyle {
 /*
  * A named TextStyle stored on the document. Sections bind to a preset by name, so
  * restyling every header in a roll is one edit rather than one edit per section.
+ *
+ * `linked` marks a preset that follows the machine-wide style library (see StyleLibrary):
+ * the name is the binding, the library holds the style that is actually drawn, and `style`
+ * here is the last copy this document saw. That copy is not redundant. A scene collection
+ * carried to another machine arrives without the library, and a linked preset that resolved
+ * to nothing would drop every section bound to it back to its own untouched style -- which
+ * is to say the roll would arrive unstyled. Keeping the copy means the worst case is a roll
+ * that renders exactly as it did when it was last saved.
  */
 struct StylePreset {
 	QString name;
 	TextStyle style;
+	bool linked = false;
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+};
+
+/*
+ * How an animated logo's frames are timed. Static artwork ignores all of it.
+ *
+ * The two questions are kept apart because they are genuinely independent: whether a sting
+ * repeats is not the same question as when it begins, and a sponsor loop that starts as the
+ * cell scrolls into frame is as reasonable a thing to ask for as one that has been running
+ * since the roll was armed.
+ */
+/* Bounds on LogoPlayback::speed, shared by the loader and the designer's spinbox. */
+constexpr double kMinLogoSpeed = 0.1;
+constexpr double kMaxLogoSpeed = 8.0;
+
+struct LogoPlayback {
+	/* Repeat for as long as the logo is on screen, rather than holding the last frame. */
+	bool loop = true;
+	/*
+	 * Start the first frame when the logo's box first enters the canvas, rather than when
+	 * the roll is armed. For a play-once sting this is the difference between the animation
+	 * being visible and it having finished several minutes before its logo appears.
+	 */
+	bool startOnEnter = false;
+	/* Multiplier on the file's own frame timing. 1.0 is the file's native rate. */
+	double speed = 1.0;
+	/*
+	 * Recompute the drop shadow for every frame rather than casting the first frame's.
+	 *
+	 * Off by default because the shadow exists to hold a logo off the footage behind it, and
+	 * a poster-frame shadow does that for the whole of any artwork that keeps its silhouette
+	 * -- which is most of it. Artwork that changes shape frame to frame is what this is for,
+	 * and it is opt-in because it costs a blur per frame at rebuild time.
+	 */
+	bool animatedShadow = false;
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
@@ -277,12 +360,18 @@ struct StylePreset {
 
 /*
  * A logo reference. `path` is an absolute path to an image QImageReader can decode
- * (PNG/JPEG/SVG/etc). `maxHeight` bounds the drawn size; width follows from the aspect
- * ratio and is additionally clamped to the available column width at layout time.
+ * (PNG/JPEG/SVG/etc), or to an animation -- GIF, APNG, animated WebP, and where the plugin
+ * was built with FFmpeg, a video file. `maxHeight` bounds the drawn size; width follows from
+ * the aspect ratio and is additionally clamped to the available column width at layout time.
+ *
+ * Nothing here says whether the artwork is animated: that is a property of the file, read
+ * when it is decoded, so a still PNG dropped into a slot that used to hold a GIF needs no
+ * setting changed and a GIF dropped anywhere animates without one either.
  */
 struct LogoRef {
 	QString path;
 	int maxHeight = 96;
+	LogoPlayback playback;
 
 	bool isEmpty() const { return path.isEmpty(); }
 
@@ -701,6 +790,25 @@ struct Document {
 
 	/* Removes the preset and unbinds every section that referenced it. */
 	void removeStylePreset(const QString &name);
+
+	/*
+	 * Adds `name` as a preset that follows the machine-wide library, taking its current style
+	 * from the library. Does nothing when the library holds no preset of that name.
+	 */
+	bool linkStylePreset(const QString &name);
+
+	/*
+	 * Copies the current library style into every preset here marked `linked`, and returns true
+	 * when any of them moved.
+	 *
+	 * This, rather than a lookup at paint time, is how a library edit reaches a roll: the
+	 * document is brought up to date once when the library changes, and everything downstream --
+	 * the renderer, the measure pass, the designer's fields -- keeps reading the document's own
+	 * presets and never learns that a library exists. A linked preset the library has since lost
+	 * keeps the last style it was given rather than reverting, so removing a preset from the
+	 * library on one machine does not unstyle the rolls that were bound to it.
+	 */
+	bool refreshLinkedPresets();
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);

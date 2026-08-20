@@ -28,6 +28,9 @@ namespace closingtime {
 
 namespace {
 
+/* How often the pane repaints while animations are running, in milliseconds. */
+constexpr int kAnimationIntervalMs = 33;
+
 /* Checkerboard cell size, in widget pixels, used behind a transparent background. */
 constexpr int kCheckerSize = 12;
 
@@ -91,12 +94,43 @@ PreviewWidget::PreviewWidget(QWidget *parent) : QWidget(parent)
 {
 	setMinimumWidth(240);
 	setFocusPolicy(Qt::WheelFocus);
+
+	/*
+	 * Faster than most logo artwork needs and slower than the compositor runs: the frame shown is
+	 * looked up from the clock rather than stepped, so this interval decides how smooth the pane
+	 * looks and nothing about how fast an animation plays.
+	 */
+	animationTimer.setInterval(kAnimationIntervalMs);
+	connect(&animationTimer, &QTimer::timeout, this, qOverload<>(&QWidget::update));
+}
+
+void PreviewWidget::setAnimationPlaying(bool playing)
+{
+	if (playing == animationPlaying)
+		return;
+
+	animationPlaying = playing;
+
+	if (playing) {
+		animationClock.restart();
+		animationTimer.start();
+	} else {
+		animationTimer.stop();
+	}
+
+	update();
 }
 
 void PreviewWidget::setStrip(const Strip &newStrip, int newCanvasWidth, int newCanvasHeight,
 			     const QColor &newBackground)
 {
 	strip = newStrip;
+	/*
+	 * A rebuild replaces the placements the frames are looked up from, so playback starts again
+	 * from the top rather than from wherever a since-discarded decode had reached.
+	 */
+	if (animationPlaying)
+		animationClock.restart();
 	canvasWidth = std::max(1, newCanvasWidth);
 	canvasHeight = std::max(1, newCanvasHeight);
 	background = newBackground;
@@ -235,6 +269,8 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), tileHeight), tile.image);
 	}
 
+	paintAnimatedLogos(painter, canvasColumn, scale);
+
 	const qreal framedHeight = onAirHeight();
 	const QRectF onAir(canvasColumn.left() + 0.5, 0.5, canvasColumn.width() - 1.0, framedHeight - 1.0);
 
@@ -274,6 +310,49 @@ void PreviewWidget::paintEvent(QPaintEvent *)
  * contents over the top -- so a text column sitting exactly on its section's edge is still
  * visible.
  */
+void PreviewWidget::paintAnimatedLogos(QPainter &painter, const QRect &canvasColumn, qreal scale) const
+{
+	if (strip.animatedLogos.isEmpty())
+		return;
+
+	const double elapsedMs =
+		animationPlaying && animationClock.isValid() ? static_cast<double>(animationClock.elapsed()) : 0.0;
+
+	for (const AnimatedLogoPlacement &placement : strip.animatedLogos) {
+		if (!placement.animation)
+			continue;
+
+		const QRectF &box = placement.rect;
+		const qreal top = box.top() * scale - scroll;
+		const qreal boxHeight = box.height() * scale;
+
+		if (top + boxHeight < 0 || top > height())
+			continue;
+
+		const double speed = std::clamp(placement.playback.speed, kMinLogoSpeed, kMaxLogoSpeed);
+		const int index = logoFrameAt(*placement.animation, elapsedMs * speed, placement.playback.loop);
+		if (index < 0 || index >= placement.animation->frames.size())
+			continue;
+
+		const QRectF target(canvasColumn.left() + box.left() * scale, top, box.width() * scale, boxHeight);
+
+		/*
+		 * The shadow only arrives frame by frame for a logo that asked for one that follows the
+		 * animation; every other logo already has its shadow painted into the strip behind this
+		 * hole, which is why nothing is drawn for it here.
+		 */
+		if (index < placement.shadowFrames.size()) {
+			const QImage &shadow = placement.shadowFrames.at(index);
+			const QPointF at = box.topLeft() + placement.shadowOffset;
+			painter.drawImage(QRectF(canvasColumn.left() + at.x() * scale, at.y() * scale - scroll,
+						 shadow.width() * scale, shadow.height() * scale),
+					  shadow);
+		}
+
+		painter.drawImage(target, placement.animation->frames.at(index).image);
+	}
+}
+
 void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColumn, qreal scale) const
 {
 	if (layoutBoxes.isEmpty())

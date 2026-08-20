@@ -170,6 +170,15 @@ signals:
 
 private:
 	void applyTypeVisibility(SectionType type);
+	/*
+	 * True when any artwork this section places would animate. Read from file headers rather
+	 * than from a decode, so it is cheap enough to ask on every section switch.
+	 */
+	bool sectionHasAnimatedArt(const Section &source) const;
+	/* Shows or hides the playback controls, and says what the section's artwork is. */
+	void refreshLogoPlayback();
+	/* The playback settings the controls currently describe. */
+	LogoPlayback currentLogoPlayback() const;
 	void rebuildEntryTable(SectionType type);
 	void readEntriesFromTable(Section *target) const;
 	void writeEntriesToTable(const Section &source);
@@ -215,6 +224,20 @@ private:
 	QLineEdit *logoPath = nullptr;
 	QToolButton *logoBrowse = nullptr;
 	QSpinBox *logoHeight = nullptr;
+	/*
+	 * Playback for the section's animated artwork.
+	 *
+	 * One set of controls for the whole section rather than one per logo. The document holds
+	 * playback on each LogoRef -- a list can carry a different setting per entry, and one
+	 * hand-written or imported that way is honoured -- but a Multi-List of Logos is a grid of
+	 * sponsor marks that read as one block, and a loop switch on each of twelve cells is a
+	 * column of checkboxes nobody wants to fill in. Writing the section's settings to every logo
+	 * it holds is what these do.
+	 */
+	QCheckBox *logoLoop = nullptr;
+	QCheckBox *logoStartOnEnter = nullptr;
+	QDoubleSpinBox *logoSpeed = nullptr;
+	QCheckBox *logoAnimatedShadow = nullptr;
 	QComboBox *logoPlacement = nullptr;
 	QComboBox *logoSide = nullptr;
 	QSpinBox *logoGap = nullptr;

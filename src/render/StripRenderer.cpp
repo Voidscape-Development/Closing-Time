@@ -418,39 +418,44 @@ QSize logoDrawSize(const QImage &image, const LogoRef &ref, int available)
  * every other effect in the renderer this paints outside the section's box without growing it,
  * which is why `effectBleed` has to count the sections that place logos as well as the ones that
  * set text.
+ *
+ * Returned as an image rather than painted, because a shadow is wanted in two places that cannot
+ * share a painter: baked into the strip behind a still logo, and handed to the source as a quad
+ * of its own for an animated one whose shadow follows its frames. `offset` comes back as the
+ * shadow's top-left relative to the artwork's own, blur margin and all.
  */
-void paintLogoShadow(QPainter *painter, const QImage &image, const QRect &rect, const TextShadow &shadow)
+QImage logoShadowImage(const QImage &image, const QSize &size, const TextShadow &shadow, QPointF *offset)
 {
-	if (rect.isEmpty())
-		return;
+	if (size.isEmpty() || image.isNull())
+		return QImage();
 
-	const QImage ink = tintedImage(image.scaled(rect.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+	const QImage ink = tintedImage(image.scaled(size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
 					       .convertToFormat(QImage::Format_ARGB32_Premultiplied),
 				       shadow.color);
 	if (ink.isNull())
-		return;
+		return QImage();
 
-	const QPointF at = QPointF(rect.topLeft()) + QPointF(shadow.offsetX, shadow.offsetY);
+	const QPointF at(shadow.offsetX, shadow.offsetY);
 	const int radius = std::clamp(qRound(shadow.blur / 2.0), 0, 100);
 
 	if (radius < 1) {
-		painter->drawImage(at, ink);
-		return;
+		*offset = at;
+		return ink;
 	}
 
 	/* Three passes of box radius r reach 3r, so that is the margin the blur needs. */
 	const int margin = radius * 3 + 1;
-	const QSize size(ink.width() + margin * 2, ink.height() + margin * 2);
+	const QSize buffered(ink.width() + margin * 2, ink.height() + margin * 2);
 
-	if (static_cast<qint64>(size.width()) * size.height() > kMaxLogoShadowPixels) {
+	if (static_cast<qint64>(buffered.width()) * buffered.height() > kMaxLogoShadowPixels) {
 		obs_log(LOG_WARNING, "logo shadow blur too large to buffer; drawing it hard instead");
-		painter->drawImage(at, ink);
-		return;
+		*offset = at;
+		return ink;
 	}
 
-	QImage buffer(size, QImage::Format_ARGB32_Premultiplied);
+	QImage buffer(buffered, QImage::Format_ARGB32_Premultiplied);
 	if (buffer.isNull())
-		return;
+		return QImage();
 
 	buffer.fill(Qt::transparent);
 
@@ -460,15 +465,74 @@ void paintLogoShadow(QPainter *painter, const QImage &image, const QRect &rect, 
 
 	blurImage(buffer, radius);
 
-	painter->drawImage(at - QPointF(margin, margin), buffer);
+	*offset = at - QPointF(margin, margin);
+	return buffer;
 }
 
-void paintLogo(QPainter *painter, const QImage &image, const QRect &rect, const TextStyle &style)
+void paintLogoShadow(QPainter *painter, const QImage &image, const QRect &rect, const TextShadow &shadow)
+{
+	QPointF offset;
+	const QImage buffer = logoShadowImage(image, rect.size(), shadow, &offset);
+	if (buffer.isNull())
+		return;
+
+	painter->drawImage(QPointF(rect.topLeft()) + offset, buffer);
+}
+
+/*
+ * A logo's artwork, however it is stored.
+ *
+ * `poster` is the frame the layout measures and, for a still, the frame it draws: an animation's
+ * first frame is a still picture of exactly the size the animation will occupy, so every
+ * measurement in the layout carries on being taken from one image and none of them has to learn
+ * what a frame is. `animation` is non-null only when there is something to play.
+ */
+struct LogoArt {
+	QImage poster;
+	LogoAnimationPtr animation;
+
+	bool isAnimated() const { return animation && animation->isValid(); }
+};
+
+LogoArt resolveLogoArt(LogoCache *stills, AnimatedLogoCache *animations, const LogoRef &ref)
+{
+	LogoArt art;
+
+	if (ref.isEmpty())
+		return art;
+
+	if (animations) {
+		art.animation = animations->get(ref.path, ref.maxHeight);
+		if (art.animation && art.animation->isValid()) {
+			art.poster = art.animation->frames.first().image;
+			return art;
+		}
+		art.animation.reset();
+	}
+
+	if (stills)
+		art.poster = stills->get(ref.path, ref.maxHeight);
+
+	return art;
+}
+
+/*
+ * Paints a logo into the strip.
+ *
+ * An animated logo paints its shadow and stops. The artwork itself is deliberately left out --
+ * that hole is what the overlay quad is drawn into -- and the shadow is kept because the shadow
+ * for artwork that holds its silhouette is the same shadow in every frame, so baking it costs one
+ * blur at rebuild rather than one per frame for the length of the roll. A logo that asked for a
+ * shadow that follows its frames paints nothing at all here: its shadow arrives with the
+ * placement, frame by frame.
+ */
+void paintLogo(QPainter *painter, const LogoArt &art, const QRect &rect, const TextStyle &style,
+	       const LogoPlayback &playback)
 {
 	if (!painter)
 		return;
 
-	if (image.isNull()) {
+	if (art.poster.isNull()) {
 		painter->save();
 		QPen pen(QColor(160, 160, 160, 180));
 		pen.setStyle(Qt::DashLine);
@@ -480,10 +544,13 @@ void paintLogo(QPainter *painter, const QImage &image, const QRect &rect, const 
 		return;
 	}
 
-	if (style.shadow.enabled)
-		paintLogoShadow(painter, image, rect, style.shadow);
+	const bool animated = art.isAnimated();
 
-	painter->drawImage(rect, image);
+	if (style.shadow.enabled && !(animated && playback.animatedShadow))
+		paintLogoShadow(painter, art.poster, rect, style.shadow);
+
+	if (!animated)
+		painter->drawImage(rect, art.poster);
 }
 
 /*
@@ -505,6 +572,67 @@ struct BoxCollector {
 
 		boxes->append(LayoutBox{kind, section, rect});
 	}
+};
+
+/*
+ * Gathers the animated logos the layout placed, for whoever draws over the strip.
+ *
+ * Unlike the box collector this is not an optional extra the designer alone pays for: an animated
+ * logo that is not reported is a hole in the roll with nothing drawn into it. It is filled during
+ * the measure pass for the same reason the boxes are -- that pass visits each section once,
+ * whatever tiles the section straddles.
+ */
+struct AnimatedCollector {
+	QVector<AnimatedLogoPlacement> *placements = nullptr;
+	int section = -1;
+
+	void add(const LogoArt &art, const LogoRef &ref, const QRect &rect, const TextStyle &style)
+	{
+		if (!placements || !art.isAnimated() || rect.isEmpty())
+			return;
+
+		AnimatedLogoPlacement placement;
+		placement.rect = QRectF(rect);
+		placement.animation = art.animation;
+		placement.playback = ref.playback;
+		placement.section = section;
+
+		if (style.shadow.enabled && ref.playback.animatedShadow) {
+			/*
+			 * One blur per frame, taken here so the compositor never has to. The frames
+			 * are all the same size, so the offset the first one comes back with is the
+			 * offset for all of them.
+			 */
+			placement.shadowFrames.reserve(art.animation->frames.size());
+			for (const LogoFrame &frame : art.animation->frames) {
+				QPointF offset;
+				QImage shadow = logoShadowImage(frame.image, rect.size(), style.shadow, &offset);
+				if (shadow.isNull()) {
+					placement.shadowFrames.clear();
+					break;
+				}
+
+				placement.shadowOffset = offset;
+				placement.shadowFrames.append(shadow.convertToFormat(QImage::Format_ARGB32));
+			}
+		}
+
+		placements->append(placement);
+	}
+};
+
+/*
+ * Where a logo's artwork comes from: stills, animations, or neither.
+ *
+ * Carried as one thing rather than as two more parameters through a layout that already threads
+ * five, and null-tolerant in both halves so a caller that has no animation cache -- the measure
+ * that only wants a height, the test harness -- reads exactly like one that does.
+ */
+struct LogoSource {
+	LogoCache *stills = nullptr;
+	AnimatedLogoCache *animations = nullptr;
+
+	LogoArt resolve(const LogoRef &ref) const { return resolveLogoArt(stills, animations, ref); }
 };
 
 /* Where the logo and text of a "... w/ Logo" row sit horizontally. */
@@ -923,7 +1051,12 @@ struct DividerLayout {
 		QRectF rect;
 	};
 	struct LogoPiece {
-		QImage image;
+		LogoArt art;
+		/*
+		 * The piece's own reference, for the playback settings the placement needs. It points
+		 * into the section, which outlives every use of the layout this call returns.
+		 */
+		const LogoRef *ref = nullptr;
 		QRect rect;
 	};
 
@@ -939,8 +1072,8 @@ struct DividerLayout {
 struct MeasuredPiece {
 	const DividerPiece *piece;
 	QSizeF size;
-	/* Logo pieces only, decoded once here so the paint pass does not look it up again. */
-	QImage image;
+	/* Logo pieces only, resolved once here so the paint pass does not look it up again. */
+	LogoArt art;
 };
 
 /*
@@ -951,7 +1084,7 @@ struct MeasuredPiece {
  * the same call, and a divider whose height is reported as one thing and drawn as another would
  * shift every section under it by the difference.
  */
-DividerLayout layoutDivider(const Section &section, const TextStyle &style, LogoCache *logoCache,
+DividerLayout layoutDivider(const Section &section, const TextStyle &style, const LogoSource &logos,
 			    DividerArtCache *dividers, qreal x, qreal top, qreal width)
 {
 	DividerLayout layout;
@@ -966,7 +1099,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, Logo
 	centre.reserve(section.dividerCentre.size());
 
 	for (const DividerPiece &piece : section.dividerCentre) {
-		MeasuredPiece measured{&piece, QSizeF(), QImage()};
+		MeasuredPiece measured{&piece, QSizeF(), LogoArt()};
 
 		switch (piece.kind) {
 		case DividerPiece::Kind::Ornament:
@@ -989,8 +1122,8 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, Logo
 		}
 
 		case DividerPiece::Kind::Logo: {
-			measured.image = logoCache ? logoCache->get(piece.logo.path, piece.logo.maxHeight) : QImage();
-			measured.size = QSizeF(logoDrawSize(measured.image, piece.logo, qRound(width)));
+			measured.art = logos.resolve(piece.logo);
+			measured.size = QSizeF(logoDrawSize(measured.art.poster, piece.logo, qRound(width)));
 			break;
 		}
 		}
@@ -1083,7 +1216,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, Logo
 
 		case DividerPiece::Kind::Logo:
 			layout.logos.append(DividerLayout::LogoPiece{
-				measured.image,
+				measured.art, &piece.logo,
 				QRectF(cursor, pieceTop, measured.size.width(), measured.size.height()).toRect()});
 			break;
 		}
@@ -1156,13 +1289,25 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, Logo
  * `boxes`, when given, collects the rectangles things were placed in for the designer's layout
  * overlay. Only the measure pass is ever asked for them -- see BoxCollector.
  */
-int layoutSection(QPainter *painter, const Section &section, const Document &document, LogoCache *logos,
-		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes = nullptr)
+int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
+		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes = nullptr,
+		  AnimatedCollector *animated = nullptr)
 {
 	/* Reads as one call at every site whether or not anyone is collecting. */
 	const auto record = [boxes](LayoutBox::Kind kind, const QRectF &rect) {
 		if (boxes)
 			boxes->add(kind, rect);
+	};
+
+	/*
+	 * Every logo goes through here: it is what keeps the overlay's box and the animated logo's
+	 * hole in agreement, since neither can be reported without the other.
+	 */
+	const auto recordLogo = [&record, animated](const LogoArt &art, const LogoRef &ref, const QRect &box,
+						    const TextStyle &ink) {
+		record(LayoutBox::Kind::Logo, QRectF(box));
+		if (animated)
+			animated->add(art, ref, box, ink);
 	};
 
 	/*
@@ -1217,13 +1362,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					   piece.rect.width());
 
 			for (const DividerLayout::LogoPiece &piece : divider.logos)
-				paintLogo(painter, piece.image, piece.rect, style);
+				paintLogo(painter, piece.art, piece.rect, style, piece.ref->playback);
 		}
 
 		for (const DividerLayout::TextPiece &piece : divider.texts)
 			record(LayoutBox::Kind::Text, piece.rect);
 		for (const DividerLayout::LogoPiece &piece : divider.logos)
-			record(LayoutBox::Kind::Logo, QRectF(piece.rect));
+			recordLogo(piece.art, *piece.ref, piece.rect, style);
 
 		record(LayoutBox::Kind::Divider, QRectF(contentX, y, contentWidth, divider.height));
 		y += qRound(divider.height);
@@ -1253,12 +1398,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::LogoTitle:
 	case SectionType::LogoHeader: {
-		const QImage image = logos->get(section.logo.path, section.logo.maxHeight);
-		const QSize size = logoDrawSize(image, section.logo, contentWidth);
+		const LogoArt art = logos.resolve(section.logo);
+		const QSize size = logoDrawSize(art.poster, section.logo, contentWidth);
 		const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
 		const QRect box(QPoint(x, y), size);
-		paintLogo(painter, image, box, style);
-		record(LayoutBox::Kind::Logo, QRectF(box));
+		paintLogo(painter, art, box, style, section.logo.playback);
+		recordLogo(art, section.logo, box, style);
 		y += size.height();
 		break;
 	}
@@ -1281,9 +1426,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const QString subtitle = sectionUsesSubtitles(section.type) ? section.secondaryText : QString();
 		const bool hasText = !section.text.isEmpty() || !subtitle.isEmpty();
 
-		const QImage image = logos->get(section.logo.path, section.logo.maxHeight);
+		const LogoArt art = logos.resolve(section.logo);
 		const int logoBudget = std::max(1, contentWidth / 3);
-		const QSize logoSize = logoDrawSize(image, section.logo, logoBudget);
+		const QSize logoSize = logoDrawSize(art.poster, section.logo, logoBudget);
 
 		const LogoRow row = placeLogoRow(section, contentX, contentWidth, logoSize.width(),
 						 naturalPairWidth(section.text, subtitle, style, subtitleStyle),
@@ -1301,8 +1446,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		/* The logo and the text block are centred against each other within the row. */
 		const QRect logoBox(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize);
-		paintLogo(painter, image, logoBox, style);
-		record(LayoutBox::Kind::Logo, QRectF(logoBox));
+		paintLogo(painter, art, logoBox, style, section.logo.playback);
+		recordLogo(art, section.logo, logoBox, style);
 
 		/* Records the box of each line it actually draws, so the overlay is the stack's own. */
 		layoutTitleSubtitle(painter, section, style, subtitleStyle, section.text, subtitle, row.textX, textTop,
@@ -1429,12 +1574,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::LogoList: {
 		for (const Entry &entry : section.entries) {
-			const QImage image = logos->get(entry.logo.path, entry.logo.maxHeight);
-			const QSize size = logoDrawSize(image, entry.logo, contentWidth);
+			const LogoArt art = logos.resolve(entry.logo);
+			const QSize size = logoDrawSize(art.poster, entry.logo, contentWidth);
 			const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
 			const QRect box(QPoint(x, y), size);
-			paintLogo(painter, image, box, style);
-			record(LayoutBox::Kind::Logo, QRectF(box));
+			paintLogo(painter, art, box, style, entry.logo.playback);
+			recordLogo(art, entry.logo, box, style);
 			y += size.height() + section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -1473,13 +1618,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 				const int x = contentX + column * (columnWidth + section.columnGap);
 
 				if (logoMode) {
-					const QImage image = logos->get(entry.logo.path, entry.logo.maxHeight);
-					const QSize size = logoDrawSize(image, entry.logo, columnWidth);
+					const LogoArt art = logos.resolve(entry.logo);
+					const QSize size = logoDrawSize(art.poster, entry.logo, columnWidth);
 					const int logoX =
 						x + qRound(alignOffset(style.align, columnWidth, size.width()));
 					const QRect box(QPoint(logoX, y), size);
-					paintLogo(painter, image, box, style);
-					record(LayoutBox::Kind::Logo, QRectF(box));
+					paintLogo(painter, art, box, style, entry.logo.playback);
+					recordLogo(art, entry.logo, box, style);
 					rowHeight = std::max(rowHeight, size.height());
 				} else if (subtitleMode) {
 					/*
@@ -1562,13 +1707,15 @@ int effectBleed(const Document &document)
 	return qCeil(bleed);
 }
 
-QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos, BridgeArtCache *bridges,
-				     DividerArtCache *dividers, int *totalHeight, LayoutBoxes *boxes = nullptr)
+QVector<PlacedSection> placeSections(const Document &document, const LogoSource &logos, BridgeArtCache *bridges,
+				     DividerArtCache *dividers, int *totalHeight, LayoutBoxes *boxes = nullptr,
+				     QVector<AnimatedLogoPlacement> *animated = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
 
 	BoxCollector collector{boxes, -1};
+	AnimatedCollector animatedCollector{animated, -1};
 
 	int y = document.leadIn;
 	for (int index = 0; index < document.sections.size(); ++index) {
@@ -1577,8 +1724,9 @@ QVector<PlacedSection> placeSections(const Document &document, LogoCache *logos,
 			continue;
 
 		collector.section = index;
+		animatedCollector.section = index;
 		const int height = layoutSection(nullptr, section, document, logos, bridges, dividers, y,
-						 boxes ? &collector : nullptr);
+						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr);
 		placed.append(PlacedSection{&section, y, height});
 		y += height;
 
@@ -1751,7 +1899,12 @@ int StripRenderer::measure(const Document &document) const
 	DividerArtCache dividers;
 
 	int total = 0;
-	placeSections(document, logos, &bridges, &dividers, &total);
+	/*
+	 * Measured without the animation cache. An animated logo occupies its first frame's box,
+	 * which is the box a still of the same artwork occupies, so the height comes out the same --
+	 * and a duration shown while the user is still typing is not worth decoding a video for.
+	 */
+	placeSections(document, LogoSource{logos, nullptr}, &bridges, &dividers, &total);
 	return total - document.leadIn - document.leadOut;
 }
 
@@ -1767,11 +1920,16 @@ Strip StripRenderer::render(const Document &document, LayoutBoxes *boxes) const
 		boxes->clear();
 
 	int total = 0;
-	const QVector<PlacedSection> placed = placeSections(document, logos, &bridges, &dividers, &total, boxes);
+	const LogoSource art{logos, animations};
+	const QVector<PlacedSection> placed =
+		placeSections(document, art, &bridges, &dividers, &total, boxes, &strip.animatedLogos);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
-	if (strip.height <= 0 || placed.isEmpty())
+	if (strip.height <= 0 || placed.isEmpty()) {
+		/* Nothing is drawn over a strip that is not drawn. */
+		strip.animatedLogos.clear();
 		return strip;
+	}
 
 	const int bleed = effectBleed(document);
 
@@ -1792,7 +1950,7 @@ Strip StripRenderer::render(const Document &document, LayoutBoxes *boxes) const
 			if (entry.top - bleed >= bottom || entry.top + entry.height + bleed <= top)
 				continue;
 
-			layoutSection(&painter, *entry.section, document, logos, &bridges, &dividers, entry.top);
+			layoutSection(&painter, *entry.section, document, art, &bridges, &dividers, entry.top);
 		}
 
 		painter.end();

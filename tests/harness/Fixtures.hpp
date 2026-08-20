@@ -63,6 +63,23 @@ Section &withLogo(Section &section, int maxHeight = 110);
 QString testLogoPath();
 
 /*
+ * A two-frame animated GIF, written into the same temporary directory as the still.
+ *
+ * Generated rather than committed for the reasons the still is, and by hand rather than through
+ * Qt because Qt reads GIFs and does not write them. It is 16x16 and its two frames are two flat
+ * colours, which is all any check here needs: the frame count, the frame timing, and the fact
+ * that the two differ.
+ */
+QString testAnimatedLogoPath();
+
+/* Frames in the generated animation, and how long each is held. */
+constexpr int kTestAnimationFrames = 2;
+constexpr int kTestAnimationFrameMs = 100;
+
+/* Points a section's artwork -- its own and its entries' -- at the animated logo. */
+Section &withAnimatedLogo(Section &section, int maxHeight = 110);
+
+/*
  * A path no file will ever be at. Every renderer path that takes artwork has to survive one, and
  * naming it is clearer at the call site than another string literal that looks like a real path.
  */

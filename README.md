@@ -95,10 +95,27 @@ of a different slice of one long one, and an outline or shadow never moves anyth
 paints outside the text without changing where a line sits or how long the roll runs.
 
 Any style can instead be saved as a named **preset**: bind
-every header to one and editing it once restyles all of them. Sections reorder by dragging,
-edits are undoable (Ctrl+Z), and a font the machine does not have is called out under the
-preview rather than quietly substituted. Lists can be typed in directly or imported from a
-CSV/TSV file with a column-mapping step.
+every header to one and editing it once restyles all of them. Presets can also be published to a
+**style library** shared by every roll on the machine — every source, every scene collection,
+every profile — and a roll bound to one follows it, so editing the house style once restyles all
+of them everywhere. The link is live: a preset edited in another OBS window shows up in the
+preview as it is typed. A roll carries its own copy of every style it uses as well, so a scene
+collection opened on a machine without the library still renders the way it was saved rather than
+unstyled, and editing a shared style from a roll asks whether you mean *this roll* or *all of
+them*. Sections reorder by dragging, edits are undoable (Ctrl+Z), and a font the machine does not
+have is called out under the preview rather than quietly substituted. Lists can be typed in
+directly or imported from a CSV/TSV file with a column-mapping step.
+
+**Logos can move.** Any slot that takes a logo — a heading's, a wordmark, a cell in a sponsor
+grid, an ornament in the middle of a divider — takes an animated GIF, APNG or animated WebP, and
+a video file (WebM, MP4) in a build made with FFmpeg. Each one sets whether it loops or plays
+once, whether it starts with the roll or when it scrolls into frame, and how fast it runs against
+the artwork's own timing. Animations move with the roll rather than with the clock, so a paused
+roll is a still frame, and they carry the section's drop shadow like any other logo — from the
+first frame by default, or recomputed per frame for artwork that changes shape. The designer's
+preview shows the first frame until you press **Play animations**, so the pane holds still while
+a roll is being written. Artwork is decoded whole and up front, which puts a ceiling on it: past
+30 seconds a logo plays only its first 30, and the designer says so.
 
 The source properties cover canvas size, background colour, scroll speed, lead-in and
 lead-out padding, start behaviour, looping, and the ending action.
@@ -130,6 +147,11 @@ and ending actions are mutually exclusive — a looping roll never ends.
 Requires CMake 3.28+, a C++17 compiler, Qt 6 (Core, Gui, Widgets and Svg — Svg is what draws
 the bridge and divider artwork), and the OBS Studio sources/dependencies. The plugin needs both
 `ENABLE_QT` and `ENABLE_FRONTEND_API`, which are on by default.
+
+FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libswscale`) is optional and is what decodes
+**video** logos. It is looked for at configure time and the build says which way it went; without
+it the plugin builds and animates exactly the same, minus WebM and MP4. Pass
+`-DENABLE_VIDEO_LOGOS=OFF` to leave it out deliberately.
 
 ```bash
 cmake --preset ubuntu-x86_64      # or windows-x64 / macos

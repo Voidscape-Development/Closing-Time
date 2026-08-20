@@ -38,6 +38,41 @@ set_target_properties(
   PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
 )
 
+# FFmpeg is what decodes a video logo -- WebM, MP4 and the rest. GIF, APNG and animated WebP come
+# through Qt and need none of it, so this is optional rather than required: without it the plugin
+# builds and animates exactly as before, and a video file picked as a logo is reported in the
+# designer as needing a build that has it. OBS ships these libraries, so a machine set up to build
+# plugins against the OBS dependencies usually already has them.
+option(ENABLE_VIDEO_LOGOS "Decode video logos with FFmpeg when it is available" ON)
+
+set(CLOSING_TIME_HAVE_FFMPEG OFF)
+
+if(ENABLE_VIDEO_LOGOS)
+  find_package(FFmpeg COMPONENTS avcodec avformat avutil swscale QUIET)
+
+  if(NOT FFmpeg_FOUND AND NOT TARGET FFmpeg::avcodec)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+      pkg_check_modules(CLOSING_TIME_FFMPEG IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
+    endif()
+  endif()
+
+  if(TARGET FFmpeg::avcodec)
+    set(CLOSING_TIME_HAVE_FFMPEG ON)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swscale)
+  elseif(CLOSING_TIME_FFMPEG_FOUND)
+    set(CLOSING_TIME_HAVE_FFMPEG ON)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE PkgConfig::CLOSING_TIME_FFMPEG)
+  endif()
+endif()
+
+if(CLOSING_TIME_HAVE_FFMPEG)
+  message(STATUS "Closing Time: video logos enabled (FFmpeg found)")
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE CLOSING_TIME_HAVE_FFMPEG=1)
+else()
+  message(STATUS "Closing Time: video logos disabled (FFmpeg not found); GIF/APNG/WebP still animate")
+endif()
+
 # The document, the renderer and the parser. None of them carry Q_OBJECT or touch Qt Widgets,
 # which is what lets the test harness compile them on their own -- so the list is shared between
 # the two targets rather than written out twice and left to drift.
@@ -51,6 +86,10 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerArt.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/AnimatedLogo.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/AnimatedLogo.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.cpp"
@@ -84,6 +123,8 @@ target_sources(
     src/ui/SectionEditor.hpp
     src/ui/StyleControls.cpp
     src/ui/StyleControls.hpp
+    src/ui/StyleLibraryDialog.cpp
+    src/ui/StyleLibraryDialog.hpp
     src/ui/ToolButtons.cpp
     src/ui/ToolButtons.hpp
 )

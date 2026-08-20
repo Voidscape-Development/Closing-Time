@@ -19,6 +19,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <QColor>
+#include <QElapsedTimer>
+#include <QTimer>
 #include <QWidget>
 
 #include "render/StripRenderer.hpp"
@@ -49,6 +51,24 @@ public:
 	/* The section drawn at full strength; every other one is dimmed. -1 highlights none. */
 	void setHighlightedSection(int index);
 
+	/*
+	 * Runs the animated logos.
+	 *
+	 * Off by default, and deliberately so: the strip is what the designer is looking at while a
+	 * roll is being written, and a pane that will not hold still to be read is a poor place to
+	 * type into. With it off every animated logo shows its first frame, which is also the frame
+	 * the layout was measured from.
+	 *
+	 * The roll is not scrolling here, so what plays is each animation on its own clock, honouring
+	 * loop, speed and play-once. `startOnEnter` has no meaning without a scroll and is ignored:
+	 * an animation held off until its logo enters a frame it will never enter would simply never
+	 * be seen.
+	 */
+	void setAnimationPlaying(bool playing);
+	bool isAnimationPlaying() const { return animationPlaying; }
+	/* True when there is anything for the play button to run. */
+	bool hasAnimatedLogos() const { return !strip.animatedLogos.isEmpty(); }
+
 	/* Scrolls so that `stripY` (in strip pixels) sits at the top of the visible area. */
 	void scrollToStripY(int stripY);
 
@@ -68,6 +88,11 @@ private:
 	int maxScroll() const;
 
 	void paintLayoutBoxes(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
+	/*
+	 * Draws the animated logos into the holes the strip left for them. Always called, playing or
+	 * not: a hole with nothing drawn into it is a missing logo, not a paused one.
+	 */
+	void paintAnimatedLogos(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
 
 	Strip strip;
 	LayoutBoxes layoutBoxes;
@@ -77,6 +102,16 @@ private:
 	int canvasHeight = 1080;
 	QColor background = QColor(0, 0, 0, 0);
 	int scroll = 0;
+
+	bool animationPlaying = false;
+	/*
+	 * One clock for every animation in the pane rather than one each, because they all start
+	 * together when the button is pressed. Elapsed time drives the frame lookup, so a repaint
+	 * the compositor skipped or a window that was hidden for a moment does not leave the
+	 * animations behind where they would have been.
+	 */
+	QElapsedTimer animationClock;
+	QTimer animationTimer;
 };
 
 } // namespace closingtime

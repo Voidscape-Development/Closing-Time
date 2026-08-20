@@ -14,9 +14,11 @@ target_sources(
     harness/Probe.cpp
     harness/Probe.hpp
     harness/main.cpp
+    suites/AnimatedLogos.cpp
     suites/Layout.cpp
     suites/LogoRows.cpp
     suites/Persistence.cpp
+    suites/StyleLibrary.cpp
     suites/SectionTypes.cpp
     suites/SubtitleHeadings.cpp
     ${CLOSING_TIME_CORE_SOURCES}

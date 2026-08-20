@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.hpp>
 
 #include <QDialog>
+#include <QHash>
 #include <QListWidget>
 #include <QVector>
 
@@ -31,6 +32,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 class QCheckBox;
 class QDialogButtonBox;
+class QFileSystemWatcher;
 class QLabel;
 class QPushButton;
 class QScrollArea;
@@ -88,6 +90,24 @@ void openDesignerForAsync(obs_source_t *source);
  */
 void registerDesignerToolsMenu(const char *sourceId);
 
+/*
+ * Adds the Style Library entry to the Tools menu.
+ *
+ * Separate from the designer's entry because the library is separate from any one roll: styles
+ * shared by every source on the machine should not need a source to be found and opened before
+ * they can be renamed or thrown away.
+ */
+void registerStyleLibraryToolsMenu();
+
+/*
+ * Adds the Style Library entry to the Tools menu.
+ *
+ * Separate from the designer's entry because the library is separate from any one roll: styles
+ * shared by every source on the machine should not need a source to be found and opened before
+ * they can be renamed or thrown away.
+ */
+void registerStyleLibraryToolsMenu();
+
 /* Closes any designer window bound to `source`. Safe to call for sources with none. */
 void closeDesignerFor(obs_source_t *source);
 
@@ -122,6 +142,34 @@ private:
 	/* Style presets live on the document, so the editors route their edits through here. */
 	void savePreset(const QString &name, const TextStyle &style);
 	void deletePreset(const QString &name);
+
+	/*
+	 * Decides what editing a style bound to a *linked* preset does: change it in the library, for
+	 * every roll on the machine, or fork a copy that belongs to this document alone.
+	 *
+	 * Asked once per preset per window, and remembered, because the question arrives on a
+	 * keystroke -- every character typed into a font name while a preset is bound is an edit --
+	 * and a dialog per keystroke is not a question, it is an obstruction. Returns true when the
+	 * edit should go to the library.
+	 */
+	bool shouldEditLinkedPreset(const QString &name);
+
+	/* Opens the library manager on this document. */
+	void openStyleLibrary();
+
+	/*
+	 * Writes the pending edits to a linked preset out to the library file.
+	 *
+	 * Debounced, because the edit that reaches savePreset() is a keystroke: a bound style being
+	 * typed into raises one per character, and each would otherwise be a write of a file every
+	 * other source on the machine is watching. The document is updated immediately either way --
+	 * this is only about when the file catches up -- and a flush is forced on Apply, OK and close
+	 * so nothing is lost by a window going away mid-run.
+	 */
+	void flushLibraryEdits();
+
+	/* Re-reads the library and restyles the roll when the file has changed underneath it. */
+	void reloadStyleLibrary();
 
 	void importJson();
 	void exportJson();
@@ -203,6 +251,7 @@ private:
 	 * render job in flight outlives the window that queued it.
 	 */
 	std::shared_ptr<LogoCache> logos = std::make_shared<LogoCache>();
+	std::shared_ptr<AnimatedLogoCache> animations = std::make_shared<AnimatedLogoCache>();
 	std::shared_ptr<PreviewSink> sink = std::make_shared<PreviewSink>();
 
 	QVector<DocumentSnapshot> undoStack;
@@ -233,8 +282,14 @@ private:
 	PreviewWidget *preview = nullptr;
 	/* Switches the layout overlay on; the boxes themselves come with every render. */
 	QCheckBox *layoutBoxesCheck = nullptr;
+	/* Runs the animated logos in the preview. Disabled when the roll holds none. */
+	QCheckBox *animateCheck = nullptr;
 	QLabel *durationLabel = nullptr;
-	/* Hidden unless the roll asks for a font this machine does not have. */
+	/*
+	 * Hidden unless something about the roll will not come out as designed on this machine: a
+	 * font that is not installed, artwork longer than an animated logo may be, a video logo in a
+	 * build that cannot decode one.
+	 */
 	QLabel *fontWarningLabel = nullptr;
 	QDialogButtonBox *buttons = nullptr;
 	QPushButton *undoButton = nullptr;
@@ -246,6 +301,18 @@ private:
 	QTimer *refreshTimer = nullptr;
 	/* Closes an open edit run once the user stops typing. */
 	QTimer *editBurstTimer = nullptr;
+	/* Notices a library edited from another OBS window, or by hand. */
+	QFileSystemWatcher *libraryWatcher = nullptr;
+	/* Collects a run of edits to linked presets; see flushLibraryEdits. */
+	QTimer *libraryWriteTimer = nullptr;
+	QHash<QString, TextStyle> pendingLibraryEdits;
+	/* The library's serial as of the last refresh, so an unchanged reload costs nothing. */
+	quint64 librarySerial = 0;
+	/*
+	 * Answers already given for "edit the library, or fork a copy?", by preset name. Cleared
+	 * with the window: the question is about a train of edits, not about a document.
+	 */
+	QHash<QString, bool> linkedEditChoices;
 };
 
 } // namespace closingtime
