@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QString>
 
 #include "model/StyleLibrary.hpp"
+#include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
 #include "source/CreditsSource.hpp"
 #include "ui/DesignerDialog.hpp"
@@ -57,6 +58,17 @@ bool obs_module_load(void)
 		closingtime::StyleLibrary::instance().setFilePath(QString::fromUtf8(path));
 		bfree(path);
 		closingtime::StyleLibrary::instance().load();
+	}
+
+	/*
+	 * Fonts a roll carries with it are extracted here before they are registered with Qt. The
+	 * directory is handed in for the same reason the library's path is -- this code compiles into
+	 * the test harness, which has no OBS module to ask -- and a build without one registers the
+	 * bytes straight from the document instead.
+	 */
+	if (char *path = obs_module_config_path("fonts")) {
+		closingtime::setFontCacheDirectory(QString::fromUtf8(path));
+		bfree(path);
 	}
 
 	closingtime::registerCreditsSource();

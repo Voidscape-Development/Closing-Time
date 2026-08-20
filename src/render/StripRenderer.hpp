@@ -38,25 +38,6 @@ namespace closingtime {
 QBrush textFillBrush(const TextStyle &style, const QRectF &box);
 
 /*
- * Styles name a font by family, so a scene collection carried to another machine can end up
- * rendering in whatever Qt substitutes. These two report that rather than let it pass
- * silently: the designer surfaces the list under the preview, and the source logs it once.
- */
-
-/*
- * True when `family` will actually be used rather than substituted. The generic families
- * Qt resolves against the platform default are always considered available, since there is
- * nothing for the user to install.
- */
-bool fontFamilyAvailable(const QString &family);
-
-/*
- * Families a document's visible text asks for that this machine cannot supply, deduplicated
- * and sorted. Preset bindings are resolved first, so only fonts that really get drawn count.
- */
-QStringList missingFontFamilies(const Document &document);
-
-/*
  * Decoded logo images keyed by "path|maxHeight".
  *
  * Deliberately not shared: the source owns one and each designer window owns another. They
@@ -215,13 +196,18 @@ public:
 	 * Rasterises the document. When `boxes` is given it is filled with the rectangles the
 	 * layout placed things in, for the designer's overlay; the source passes nothing and
 	 * pays for none of it.
+	 *
+	 * The document's fonts are resolved on the way in -- its bundle registered, its stand-ins
+	 * applied to whatever this machine still lacks -- so what comes out is drawn in the fonts
+	 * the roll asks for wherever they can be had. See render/FontResolution.hpp.
 	 */
 	Strip render(const Document &document, LayoutBoxes *boxes = nullptr) const;
 
 	/*
 	 * Total content height in pixels, excluding lead-in and lead-out. Cheaper than a full
 	 * render because nothing is rasterised; used by the designer to show roll duration
-	 * while the user is still typing.
+	 * while the user is still typing. Fonts are resolved exactly as they are for a render,
+	 * so the duration is measured against the metrics the roll will really be laid out with.
 	 */
 	int measure(const Document &document) const;
 

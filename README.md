@@ -103,9 +103,18 @@ preview as it is typed. A roll carries its own copy of every style it uses as we
 collection opened on a machine without the library still renders the way it was saved rather than
 unstyled, and editing a shared style from a roll asks whether you mean *this roll* or *all of
 them*. Renaming a shared style takes every roll bound to it along — the ones open at the time, and
-the scene collections that were not, when they next load. Sections reorder by dragging, edits are undoable (Ctrl+Z), and a font the machine does not
-have is called out under the preview rather than quietly substituted. Lists can be typed in
-directly or imported from a CSV/TSV file with a column-mapping step.
+the scene collections that were not, when they next load. Sections reorder by dragging, edits are undoable (Ctrl+Z), and lists can be typed in directly or
+imported from a CSV/TSV file with a column-mapping step.
+
+**Fonts travel with the roll.** A style names a font by family, and a family name means nothing on
+a machine that does not have that font — so the roll carries the font files themselves, inside the
+scene collection, and renders the same wherever the collection is opened. **Fonts...** in the
+designer lists every family the roll is set in and where each one stands; for a font that cannot be
+carried, because its licence says so or because it is not a file at all, you name the installed
+family that stands in for it, and that choice renders the same everywhere rather than leaving each
+machine to pick. Anything still unaccounted for is called out under the preview and in the OBS log
+rather than quietly substituted. Carrying font files is redistributing them, so the switch can be
+turned off per roll and the window says so where the switch is.
 
 **Logos can move.** Any slot that takes a logo — a heading's, a wordmark, a cell in a sponsor
 grid, an ornament in the middle of a divider — takes an animated GIF, APNG or animated WebP, and

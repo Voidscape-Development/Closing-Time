@@ -86,6 +86,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerArt.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/FontBundle.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/FontBundle.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/AnimatedLogo.cpp"
@@ -94,6 +96,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FontResolution.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FontResolution.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.cpp"
@@ -104,6 +108,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/FontFiles.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/FontFiles.hpp"
 )
 
 target_sources(
@@ -117,6 +123,8 @@ target_sources(
     src/ui/CsvImportDialog.hpp
     src/ui/DesignerDialog.cpp
     src/ui/DesignerDialog.hpp
+    src/ui/FontDialog.cpp
+    src/ui/FontDialog.hpp
     src/ui/PreviewWidget.cpp
     src/ui/PreviewWidget.hpp
     src/ui/SectionEditor.cpp

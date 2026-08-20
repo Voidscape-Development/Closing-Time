@@ -23,6 +23,7 @@ action live in the normal OBS properties dialog.
 | Style reuse | Named presets on the document; sections bind by name and fall back to their own style |
 | Shared styles | One machine-wide library file; a document's preset may *link* to it, keeping a copy as the fallback |
 | Animated logos | The strip leaves a hole and the artwork is drawn over it as its own quad, per frame |
+| Missing fonts | The roll carries its own font files inside the scene collection, with a recorded stand-in for the ones it cannot carry |
 
 Rendering with QPainter rather than native libobs text sources buys exact WYSIWYG parity
 between the designer preview and the video output, real text layout (wrapping, alignment,
@@ -42,6 +43,7 @@ src/
     DividerArt.{hpp,cpp}   the table of divider shapes, and which of the three slots each serves
     EndingAction.{hpp,cpp} ending-action config and execution
     StyleLibrary.{hpp,cpp} the machine-wide style library file, and reading it into a document
+    FontBundle.{hpp,cpp}   the font files a document carries, and collecting them off the machine
   render/
     RenderThread.{hpp,cpp} the shared rasterisation thread and its job queue
     AnimatedLogo.{hpp,cpp} decoding animated artwork (Qt) and video (FFmpeg), and frame timing
@@ -50,6 +52,7 @@ src/
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
     DividerArtRenderer.{hpp,cpp} divider part sizing and arm tiling, on top of SvgArt
     ImageEffects.{hpp,cpp} box blur and tinting, shared by both shadow paths
+    FontResolution.{hpp,cpp} registering a document's fonts, standing in for the rest, reporting what is left
   source/
     CreditsSource.{hpp,cpp} obs_source_info: playback, GPU upload, draw, hotkeys, properties
   ui/
@@ -60,8 +63,10 @@ src/
     PreviewWidget.{hpp,cpp}  scaled preview of the rendered strip
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
     StyleLibraryDialog.{hpp,cpp} the two-list manager: this roll's presets, and the machine's
+    FontDialog.{hpp,cpp}     what this roll carries, and what stands in for what it cannot
   util/
     CsvParser.{hpp,cpp}     RFC 4180 parser and delimiter guessing
+    FontFiles.{hpp,cpp}     which file on this machine a font family came out of
 ```
 
 The dependency direction is strictly `ui → render → model` and `source → render → model`.
@@ -1031,11 +1036,117 @@ from the header, which is also what the preview's header shows, falling back to 
 when there is no header row or the name is blank. Toggling the header checkbox re-labels the
 rows in place rather than rebuilding them, so a mapping the user has already set survives.
 
+## Fonts
+
+A style names a font by **family**, and a family name means nothing on a machine that does not
+have that font. Qt substitutes something rather than failing, the roll still renders, and every
+line comes out a different width from the one it was designed at — the failure mode a credit roll
+can least afford, since a roll is a list of names and a name that has re-wrapped is a name that is
+now in the wrong column.
+
+Naming the missing family is not fixing it. So three things happen, in this order, and the order
+is what makes each of them a fallback for the one before:
+
+1. **The files the document carries are registered.** A roll bundles the font files behind the
+   families it uses, inside the source's settings, so the scene collection is the one thing that
+   has to be copied.
+2. **A family still missing is rewritten to its stand-in**, if the document records one.
+3. **Whatever is left is reported** — named under the designer's preview, logged once by the
+   source.
+
+`render/FontResolution.hpp` is all three, and `StripRenderer::render()` and `measure()` go through
+it rather than each caller doing so: a roll cannot be rendered in a font the document did not ask
+for by somebody forgetting to resolve it first. The common case — every family present — copies
+nothing and hands the document straight back.
+
+### Carrying the files
+
+`refreshFontBundle()` collects the file behind each family used and puts it in `bundledFonts`,
+base64 inside `obs_data`. Four decisions are worth recording.
+
+**The files are found by reading them, not by asking Qt.** Qt names every installed family and
+never says where any of them lives. `util/FontFiles.hpp` walks the platform's font directories and
+reads each file's own sfnt `name` table, because a file name is a guess — `DejaVuSans-Bold.ttf` is
+a convention and a foundry that names its files by serial number defeats it entirely. The obvious
+alternative, handing every candidate to `QFontDatabase::addApplicationFont()` to ask what it holds,
+mutates a process-wide database the render thread is laying text out against, for every file in
+every font directory on the machine. Parsing a few hundred bytes per file touches nothing.
+
+**Every file declaring the family comes along**, not just the one Qt would pick for the style as
+written. The regular, the bold and the italic of a family are separate files, and a roll that sets
+one heading bold on the machine it was designed on needs the bold file on the machine it is
+played back on.
+
+**Collection happens on Apply, never on the render path.** Walking the machine's font directories
+is a second's work the first time, and the render thread is the one place in this plugin that
+cannot afford a second. Apply is also the moment the content is settled, so a font chosen two
+keystrokes ago is in the bundle by the time the source is told anything. A family already carried
+is not read again, so an ordinary Apply goes to the disk only for a family that has just appeared;
+**Collect Now** in the font window is what reads them all again, for the case where the answer has
+changed underneath — a font installed since.
+
+**A file that cannot be found here never un-carries the one in hand.** This is the point at which
+the feature could quietly undo itself: a roll opened on a machine that does not have its fonts,
+edited, and applied would re-collect, find nothing, and throw away exactly the files it travelled
+with. So a family the document already carries keeps what it carries whenever this machine offers
+nothing for it. A family the roll has *stopped using* is dropped, which is a different question and
+one this machine can answer.
+
+**An installed family is never overridden by a bundled one.** Registering a second file under a
+name Qt already knows leaves two families under one name and no way for a style to say which it
+meant; the installed one is at least the font the user chose to install. Nothing is ever
+*un*registered either — removing an application font invalidates font engines other threads may be
+mid-layout with, and a few hundred kilobytes for the life of the process is not worth that.
+
+Files are extracted to `obs_module_config_path("fonts")` and registered from there, named by
+content hash: two rolls carrying the same font share one cached file, an updated font does not
+overwrite the version an older collection was designed against, and a family name with a slash in
+it cannot name a path outside the cache. With no cache directory set — the test harness, or any
+caller with nowhere to write — the bytes go to Qt directly instead.
+
+There are caps, because a scene collection is rewritten on every save and read back on every load,
+so a bundle is paid for over and over rather than once: 8 MB per file, 32 MB per roll. Past them
+the family keeps its name, reports as uncarried, and is left to a stand-in or an install. For the
+same reason `renderKey()` reduces the bundle to its file sizes rather than serialising it — that
+key is built once per frame of a slider drag.
+
+Bundling is on by default and switchable off per roll, which is the setting that makes a
+collection self-contained without anybody having to know fonts are a problem before they hit one.
+The window says, permanently and next to the switch, that carrying a font file is redistributing
+it and that most commercial licences have something to say about that. It is not a dialog to be
+clicked away, because nothing has gone wrong: the person choosing is the only one who can know
+what their licence says.
+
+### Standing in for what cannot be carried
+
+The other half is for the fonts that cannot travel — a licence that forbids passing the file on, a
+webfont that is not a file at all, a family this machine does not have either.
+`fontSubstitutions` records a stand-in per family, and the renderer rewrites styles set in a
+missing family to it.
+
+**A stand-in is a fallback, not an override.** Which families are missing is a question only the
+render layer can answer, so it asks and passes the answer into
+`Document::applyFontSubstitutions()`; the model has no business knowing what is installed. What
+falls out of doing it that way is the property that matters: install the real font and the roll
+goes back to using it with nothing to undo. A machine that has the family never reaches the
+stand-in at all.
+
+Recording the choice is better than letting Qt make it even though the roll still is not in the
+font it was designed in, because a recorded choice renders the same everywhere, including on the
+machine it was made on. What goes to air is then what somebody approved rather than whatever each
+machine's font matching happened to land on.
+
+The rewrite reaches section styles and presets — a bound section is drawn from a preset — and
+deliberately not `bridgeStyle`, since a bridge keeps its row's font and takes only ink from its own
+style, so the family recorded there is never drawn with. `usedFontFamilies()` leaves it out for the
+same reason: reporting it would send the user after a font nothing uses.
+
 ## Known limitations
 
-1. **A missing font is reported, not resolved.** The designer names the substituted families
-   under the preview and the source logs them once, but nothing embeds or bundles a font, so
-   a roll still renders differently on a machine that lacks one.
+1. **A bundled font is a whole font.** Nothing is subset to the glyphs the roll actually uses, so
+   a CJK family costs its full size in every scene collection that carries it and may not fit
+   under the per-file cap at all. Subsetting means rewriting the font's own tables, and a roll
+   that renders every glyph but one is worse than one that reports the family as uncarried.
 2. **Undo does not reach across Apply.** The stack is per-designer-window and starts empty
    each time the window opens; Cancel still discards everything since the last Apply.
 3. **One ending action per source.** A roll that needs to do two things has to chain them
@@ -1075,6 +1186,8 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 - Per-document style presets, with editing a bound style editing the preset.
 - Undo/redo in the designer, over sections and presets.
 - Missing fonts are surfaced in the designer and the log instead of silently substituted.
+- A missing font is now resolved rather than only reported: the roll carries its own font files
+  inside the scene collection, and names a stand-in for the ones it cannot carry.
 - Gradient fills, outlines and drop shadows on any style, preset or not.
 - Bridges drawn from SVG art rather than from a string of characters, from a table of types
   that takes a new one without the renderer or the editor changing.
@@ -1294,6 +1407,27 @@ parked offset is the right share of the travel at each end and the middle, clamp
 and re-resolves against a strip that has since been rebuilt taller; and that a hundred and twenty
 ticks in manual mode leave the offset, the phase and the pending action exactly as they were, with
 a control fixture that advances under the same ticks.
+
+Font resolution is checked the same way, and against the same deliberately broken builds: a
+`applyFontSubstitutions` that returns without doing anything, an extraction that never writes the
+cache, and a `name` table reader that indexes the full name instead of the family. What is pinned
+is that `usedFontFamilies()` reports what is really drawn — hidden sections and logo headings
+contributing nothing, a divider only when its centre stack holds text, a bound section's preset
+rather than its own style, and never a bridge style; that a bundle and its stand-ins survive the
+`obs_data` round trip byte for byte, that a document written before any of it existed loads
+carrying fonts by default, and that an unreadable bundle entry is dropped rather than taken; that
+the family read out of an installed file is a name **Qt** knows that font by, which is what stops
+the reader from agreeing only with itself and indexing every file under a name no lookup asks for;
+that a family is found in a file whose name says nothing about it; that registration extracts once,
+shares one cached file between two rolls carrying the same font, skips a family the machine already
+has, and registers nothing at all from bytes that are not a font.
+
+The substitution check is written as a relation rather than as pixel counts, since what a stand-in
+means is "render as though the style had named this family": a roll with the stand-in inks exactly
+as wide and as tall as the same roll naming that family outright, and measures to the same height.
+It is also made able to fail — the stand-in is chosen from the families whose metrics differ from
+what an unknown family falls back to, because one that measured the same would make "the
+substitution was applied" and "nothing happened" the same picture.
 
 What is still unverified: the designer's own wiring, since nothing here drives Qt Widgets, and
 `update()`'s re-arm and park paths, which want a live `obs_source_t` rather than a document.

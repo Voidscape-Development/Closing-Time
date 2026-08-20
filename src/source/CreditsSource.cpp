@@ -34,6 +34,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/CreditsModel.hpp"
 #include "model/StyleLibrary.hpp"
+#include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
 #include "render/StripRenderer.hpp"
 #include "ui/DesignerDialog.hpp"
@@ -189,6 +190,16 @@ QString renderKey(const Document &document)
 	content.scrollPosition = 0.0;
 	content.endingAction = EndingActionConfig();
 
+	/*
+	 * The bundled font files are reduced to their sizes rather than carried. This key is built
+	 * on every update -- which is once per frame of a slider drag -- and a font runs to
+	 * megabytes: serialising them here would cost more than the rebuild it exists to avoid.
+	 * What is left still names every family and every file, which is what a bundle changing
+	 * actually looks like.
+	 */
+	for (BundledFont &font : content.bundledFonts)
+		font.data = QByteArray::number(font.data.size());
+
 	return content.toJson();
 }
 
@@ -228,16 +239,37 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 	CreditsSourceData *data = task->data;
 
 	/*
-	 * A missing font is not fatal -- Qt substitutes one -- but it silently changes what
-	 * goes to air, so each family is called out once per source in the OBS log.
+	 * The roll's own font files, registered before anything is measured against them. Doing it
+	 * here rather than at load means it happens on the render thread, which is the one thread
+	 * these documents are laid out on, and it costs a hash lookup on every rebuild after the
+	 * first. The renderer asks for them again itself -- see documentWithFontsResolved -- so this
+	 * is only what makes them reportable in the log.
+	 */
+	for (const QString &family : installDocumentFonts(task->document)) {
+		obs_log(LOG_INFO, "font '%s' is not installed; '%s' is rendering it from its own bundle",
+			family.toUtf8().constData(), task->sourceName.toUtf8().constData());
+	}
+
+	/*
+	 * A missing font is not fatal -- Qt substitutes one -- but it silently changes what goes to
+	 * air, so each family is called out once per source in the OBS log. A family with a stand-in
+	 * recorded for it is called out too, at a lower level: what it renders as is the designer's
+	 * choice rather than Qt's, which makes it worth saying but not worth warning about.
 	 */
 	for (const QString &family : missingFontFamilies(task->document)) {
 		if (data->warnedFonts.contains(family))
 			continue;
 
 		data->warnedFonts.insert(family);
-		obs_log(LOG_WARNING, "font '%s' is not installed; '%s' will render with a substitute",
-			family.toUtf8().constData(), task->sourceName.toUtf8().constData());
+
+		const QString substitute = task->document.fontSubstitute(family);
+		if (substitute.isEmpty())
+			obs_log(LOG_WARNING, "font '%s' is not installed; '%s' will render with a substitute",
+				family.toUtf8().constData(), task->sourceName.toUtf8().constData());
+		else
+			obs_log(LOG_INFO, "font '%s' is not installed; '%s' will render it as '%s'",
+				family.toUtf8().constData(), task->sourceName.toUtf8().constData(),
+				substitute.toUtf8().constData());
 	}
 
 	StripRenderer renderer(&data->logos, &data->animations);

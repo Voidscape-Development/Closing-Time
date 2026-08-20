@@ -49,7 +49,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/StyleLibrary.hpp"
 #include "render/AnimatedLogo.hpp"
+#include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
+#include "ui/FontDialog.hpp"
 #include "ui/PreviewWidget.hpp"
 #include "ui/SectionEditor.hpp"
 #include "ui/StyleLibraryDialog.hpp"
@@ -494,9 +496,12 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 
 	auto *libraryButton = new QPushButton(moduleText("Designer.StyleLibrary"), this);
 	libraryButton->setToolTip(moduleText("Designer.StyleLibrary.Tip"));
+	auto *fontsButton = new QPushButton(moduleText("Designer.Fonts"), this);
+	fontsButton->setToolTip(moduleText("Designer.Fonts.Tip"));
 	auto *importButton = new QPushButton(moduleText("Designer.ImportJson"), this);
 	auto *exportButton = new QPushButton(moduleText("Designer.ExportJson"), this);
 	footer->addWidget(libraryButton);
+	footer->addWidget(fontsButton);
 	footer->addWidget(importButton);
 	footer->addWidget(exportButton);
 	footer->addStretch();
@@ -531,6 +536,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	connect(editor, &SectionEditor::presetSaveRequested, this, &DesignerDialog::savePreset);
 	connect(editor, &SectionEditor::presetDeleteRequested, this, &DesignerDialog::deletePreset);
 	connect(libraryButton, &QPushButton::clicked, this, &DesignerDialog::openStyleLibrary);
+	connect(fontsButton, &QPushButton::clicked, this, &DesignerDialog::openFonts);
 	connect(importButton, &QPushButton::clicked, this, &DesignerDialog::importJson);
 	connect(exportButton, &QPushButton::clicked, this, &DesignerDialog::exportJson);
 	connect(buttons, &QDialogButtonBox::accepted, this, [this] {
@@ -612,6 +618,18 @@ void DesignerDialog::flushLibraryEdits()
 	librarySerial = library.serial();
 }
 
+void DesignerDialog::openFonts()
+{
+	/* A family typed into the section editor and not yet committed is one this window is about. */
+	commitCurrentSection();
+
+	FontDialog dialog(&document, this);
+	connect(&dialog, &FontDialog::documentAboutToChange, this, [this] { beginUndoStep(); });
+	connect(&dialog, &FontDialog::documentChanged, this, [this] { schedulePreviewRefresh(); });
+
+	dialog.exec();
+}
+
 void DesignerDialog::openStyleLibrary()
 {
 	commitCurrentSection();
@@ -691,6 +709,18 @@ void DesignerDialog::writeToSource()
 	merged.load(settings);
 	merged.sections = document.sections;
 	merged.stylePresets = document.stylePresets;
+	merged.bundleFonts = document.bundleFonts;
+	merged.fontSubstitutions = document.fontSubstitutions;
+	merged.bundledFonts = document.bundledFonts;
+
+	/*
+	 * Applying is where the roll's fonts are collected, because it is the one moment the content
+	 * is settled and the window is not being typed into: a font added to a heading two keystrokes
+	 * ago is in the bundle by the time the source is told about it, and a family that has not
+	 * changed costs a comparison rather than a walk of the machine's font directories.
+	 */
+	merged.refreshFontBundle();
+	document.bundledFonts = merged.bundledFonts;
 
 	OBSDataAutoRelease updated = obs_data_create();
 	merged.save(updated);
@@ -723,7 +753,8 @@ void DesignerDialog::refreshSectionList(int selectRow)
 
 DesignerDialog::DocumentSnapshot DesignerDialog::snapshot() const
 {
-	return DocumentSnapshot{document.sections, document.stylePresets, currentIndex};
+	return DocumentSnapshot{document.sections,     document.stylePresets,      document.bundleFonts,
+				document.bundledFonts, document.fontSubstitutions, currentIndex};
 }
 
 void DesignerDialog::beginUndoStep()
@@ -759,6 +790,9 @@ void DesignerDialog::restore(const DocumentSnapshot &state)
 
 	document.sections = state.sections;
 	document.stylePresets = state.stylePresets;
+	document.bundleFonts = state.bundleFonts;
+	document.bundledFonts = state.bundledFonts;
+	document.fontSubstitutions = state.fontSubstitutions;
 
 	/* Cleared first so refreshSectionList cannot write the editor back into a stale row. */
 	currentIndex = -1;
@@ -1116,9 +1150,25 @@ void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, 
 
 	QStringList warnings;
 
-	const QStringList missingFonts = missingFontFamilies(rendered);
-	if (!missingFonts.isEmpty())
-		warnings.append(moduleText("Designer.MissingFonts").arg(missingFonts.join(QStringLiteral(", "))));
+	/*
+	 * Only the families nothing has been done about are a warning. One the roll carries its own
+	 * file for is not missing at all by the time this is asked -- the render registered it -- and
+	 * one with a stand-in recorded is reported separately, because a deliberate substitution is
+	 * worth saying and is not a problem to go and fix.
+	 */
+	const QStringList unresolvedFonts = unresolvedFontFamilies(rendered);
+	if (!unresolvedFonts.isEmpty())
+		warnings.append(moduleText("Designer.MissingFonts").arg(unresolvedFonts.join(QStringLiteral(", "))));
+
+	QStringList substituted;
+	for (const QString &family : missingFontFamilies(rendered)) {
+		const QString substitute = rendered.fontSubstitute(family);
+		if (!substitute.isEmpty())
+			substituted.append(QStringLiteral("%1 → %2").arg(family, substitute));
+	}
+
+	if (!substituted.isEmpty())
+		warnings.append(moduleText("Designer.SubstitutedFonts").arg(substituted.join(QStringLiteral(", "))));
 
 	/*
 	 * Reported from the strip rather than from the document, because both of these are answers
