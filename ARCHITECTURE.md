@@ -69,12 +69,12 @@ A `Document` is a canvas (`width`, `height`, `background`), playback settings
 `scrollPosition`), an `EndingActionConfig`, a list of `StylePreset`s, and an ordered list of
 `Section`s.
 
-`Section` is a single struct covering all fifteen types rather than a class hierarchy. The
+`Section` is a single struct covering all nineteen types rather than a class hierarchy. The
 fields a given type actually uses are described by five predicates —
 `sectionUsesText/Logos/Entries/Columns/Subtitles` — which drive both the layout switch and the
 editor's field visibility, plus `sectionUsesSecondaryText`, derived from two of them rather than
-tabulated because "the entry carries two texts" is true of a bridged row and a title/subtitle
-pair alike however differently they are laid out. One struct keeps serialisation trivial and
+tabulated because "it carries two texts" is true of a bridged row, a title/subtitle pair and a
+heading with a line under it alike, however differently the three are laid out. One struct keeps serialisation trivial and
 makes changing a section's type in the designer a non-destructive operation: nothing is thrown
 away, the unused fields simply stop being read.
 
@@ -95,7 +95,9 @@ side of the frame while still keeping a margin's worth of clear space off that s
 | Type | Content | Notes |
 |---|---|---|
 | `Title`, `Header` | one text block | differ only in default size/padding |
+| `TitleWithSubtitle`, `HeaderWithSubtitle` | `text` over `secondaryText` | the list's stacked pair as a single heading; see below |
 | `TitleWithLogo`, `HeaderWithLogo` | text + a logo beside it | `logoSide` picks the side, `logoPlacement` how the two relate; see below |
+| `TitleWithSubtitleAndLogo`, `HeaderWithSubtitleAndLogo` | the stacked pair + a logo beside it | the same logo row, with a pair in the text column instead of a line |
 | `LogoTitle`, `LogoHeader` | a logo, no text | for wordmarks used as the heading itself |
 | `Bridged` | entry list of left/right pairs | joined by `bridge`, e.g. `Director . . . . . . Jane Doe`; see below |
 | `TextList` | entry list, one column | |
@@ -107,8 +109,9 @@ side of the frame while still keeping a margin's worth of clear space off that s
 
 ### Logo rows
 
-`TitleWithLogo` and `HeaderWithLogo` place a logo against a line of text, and
-**`logoPlacement`** decides what "against" means:
+`TitleWithLogo` and `HeaderWithLogo` place a logo against a line of text — and
+`TitleWithSubtitleAndLogo` and `HeaderWithSubtitleAndLogo` against a stacked pair, through the
+same branch. **`logoPlacement`** decides what "against" means:
 
 | | |
 |---|---|
@@ -134,9 +137,21 @@ sat centred in that left-hand box because its title happened to be centred, whic
 placement being ignored rather than as two settings interacting. The style's alignment keeps its
 own job inside the text column, which is where a wrapped or multi-line title needs it.
 
+The four shapes differ in **what goes in the text column and in nothing else**, which is why
+they share one layout branch rather than a second copy of the placement: `placeLogoRow` is
+handed the width the column wants and whether there is anything in it, and a pair hands over
+the wider of its two lines. The logo is centred against the whole block, so a subtitle makes
+the row taller and moves the logo down with it rather than leaving it level with the title and
+the pair hanging off the bottom. A single-line type is just the pair with an empty subtitle —
+which the stack already draws as one line at one height, taking no gap with it — so the plain
+shapes go through the same call and come out exactly where they always did.
+
 `Bridged` reuses the Bridged section's machinery outright: `bridgeType`, `bridge` and
 `bridgeFill` mean exactly what they mean there, and the leader is hung off the text's own
-baseline, so it lands on the line the words sit on whatever it is drawn from. `bridgeSizing`,
+baseline, so it lands on the line the words sit on whatever it is drawn from. With a pair it is
+the baseline of whichever line ends up **on top** — the title ordinarily, the subtitle when the
+stack is flipped, and whichever one is actually filled in when only one is — so adding a
+subtitle under a bridged heading leaves the leader exactly where it was. `bridgeSizing`,
 `bridgeSplit` and `bridgeRowAlign` stay out of it — they describe two *texts* sharing a row,
 which is not the shape of this one. Here `logoGap` becomes padding at each end of the span,
 so the leader touches neither the logo nor the text.
@@ -393,6 +408,21 @@ placed into columns, sharing the multi-list's `columns`, `columnGap` and `fillAc
 folded into the same layout branch; a row is as tall as the tallest pair in it, so a title
 that wraps pushes the next row down rather than overlapping the pair beneath it.
 
+`TitleWithSubtitle` and `HeaderWithSubtitle` are that same stack as a **single heading**: the
+pair comes off the section's own `text` and `secondaryText` rather than off an entry, and goes
+through the very same `layoutTitleSubtitle`. That is why the helper takes the two strings rather
+than the thing holding them — a heading and a list entry keep them in different places, and
+everything that *shapes* the stack (`subtitleGap`, `subtitleFirst`, both styles) lives on the
+section either way. The alternative, a one-entry list, was rejected on both ends: it would put
+an entry table in the editor for a section that can only ever hold one pair, and would leave a
+second entry to be silently drawn by a type with nowhere to put it.
+
+`secondaryText` is kept whatever the type, like every other field on the struct, so a heading
+switched to something else and back keeps its subtitle. A type that does not stack one never
+reads it — the layout branch passes an empty string in its place rather than testing the field —
+which is what makes a `TitleWithLogo` with a stray subtitle on it measure and draw identically
+to one without.
+
 Three things decide how a pair reads:
 
 **`subtitleGap` is a separate number from `entryGap`,** because the two say opposite things:
@@ -414,7 +444,10 @@ than the two being measured and placed as one group the way a `Hug` logo row is.
 already the full width of what it is given — unlike that logo row, which is narrower than its
 box by construction — so there is no group left to place, and aligning them separately is what
 lets a title sit hard left with its subtitle under the right-hand end of it. `sectionAlign`
-still moves the whole list, since it moves the box both lines are laid out in.
+still moves the whole list, since it moves the box both lines are laid out in. A `Hug` logo row
+is the one case where a pair is *not* given the full width: there the group is sized from the
+wider of the two lines and both are laid out into that one column, so the two still align
+against each other rather than against whatever the section left over.
 
 An empty line takes neither height nor gap with it, so an entry carrying only one of its two
 texts occupies exactly what that one line does. That is what lets a heading row sit in an
@@ -892,12 +925,14 @@ rows in place rather than rebuilding them, so a mapping the user has already set
 - A Section Divider type: an ornamental rule composed from an end cap, a rule and a list of
   centrepieces, drawn from a shape library that takes a new shape without the renderer, the
   editor or the persistence format changing.
+- Title and Header types that carry a subtitle of their own, with and without a logo, so the
+  stacked pair the lists have always offered can be set as a single heading.
 
 ## Verifying changes
 
 The plugin builds clean against libobs and Qt 6 with `-Wextra -Werror`. There is no test
 target in the template yet; renderer and parser changes were validated with an offscreen
-harness covering the `obs_data` round trip for all fifteen section types, measure/render
+harness covering the `obs_data` round trip for all nineteen section types, measure/render
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
 
@@ -971,7 +1006,28 @@ across and filling down putting the same entries in demonstrably different colum
 clearing the tallest pair above it; the `obs_data` round trip for both new fields across every
 section type; a document written before either existed loading title-first with the default gap,
 and a stored gap of zero surviving as zero rather than being read back as that default; and
-measure/render agreement plus tile contiguity over a document holding all fifteen types.
+measure/render agreement plus tile contiguity over a document holding all nineteen types.
+
+The subtitle headings were validated offscreen the same way, each case against a deliberately
+broken build as well as the working one so that it is known to fail before it passes — a logo
+centred on the title line rather than on the block, a leader pinned to the title's baseline
+whatever the stacking order says, a `Section::save` that drops the new field, and a `Hug` group
+measured from the title alone. Over 311 checks: every section type's id round-tripping and
+staying unique, with the four new ids checked by name since a scene collection carries them; the
+`obs_data` round trip for `secondaryText` across every type and through the designer's JSON
+export, a section written before the type existed loading without a subtitle, and a stored
+`subtitleGap` of zero surviving as zero; the defaults, including the logo variants inheriting the
+`Hug` placement and the drawn bridge every logo type is handed, and the plain `Title` keeping the
+defaults it had; a heading with its subtitle blank measuring *exactly* as tall as a plain
+`Title`; the two lines separated by `subtitleGap` and by nothing else, both laid out into the
+full content column, with flipping the stack swapping which line is on top and leaving the height
+alone; nothing drawn into either padding; the logo row's block centred against the logo rather
+than the title line, `logoGap` holding exactly, the hugged column widening for a subtitle wider
+than the title with both lines sharing it, and a short logo leaving the pair deciding the row's
+height; a `Bridged` logo row's leader staying put when a subtitle is added under it and moving
+when the stack is flipped, and an empty heading still placing a leader rather than failing; and
+measure/render agreement, tile contiguity and every reported box staying inside its own section's
+box over a document holding all nineteen types at once.
 
 The designer's layout was checked offscreen too, by giving the editor more height than it needs
 and measuring the largest run of empty space between its visible controls — 6 px for every

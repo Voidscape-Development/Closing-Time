@@ -538,6 +538,10 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	textEdit->setMaximumHeight(80);
 	form->addRow(moduleText("Designer.Text"), textEdit);
 
+	subtitleEdit = new QPlainTextEdit(this);
+	subtitleEdit->setMaximumHeight(80);
+	form->addRow(moduleText("Designer.Subtitle"), subtitleEdit);
+
 	auto *logoRow = new QWidget(this);
 	auto *logoLayout = new QHBoxLayout(logoRow);
 	logoLayout->setContentsMargins(0, 0, 0, 0);
@@ -917,6 +921,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(labelEdit, &QLineEdit::textChanged, this, notify);
 	connect(visibleBox, &QCheckBox::toggled, this, notify);
 	connect(textEdit, &QPlainTextEdit::textChanged, this, notify);
+	connect(subtitleEdit, &QPlainTextEdit::textChanged, this, notify);
 	connect(logoPath, &QLineEdit::textChanged, this, notify);
 	connect(logoHeight, &QSpinBox::valueChanged, this, notify);
 	connect(logoSide, &QComboBox::currentIndexChanged, this, notify);
@@ -1015,6 +1020,7 @@ void SectionEditor::setSection(const Section &source)
 	labelEdit->setText(source.label);
 	visibleBox->setChecked(source.visible);
 	textEdit->setPlainText(source.text);
+	subtitleEdit->setPlainText(source.secondaryText);
 	logoPath->setText(source.logo.path);
 	logoHeight->setValue(source.logo.maxHeight);
 	selectByData(logoPlacement, static_cast<int>(source.logoPlacement));
@@ -1090,6 +1096,7 @@ Section SectionEditor::section() const
 	result.label = labelEdit->text();
 	result.visible = visibleBox->isChecked();
 	result.text = textEdit->toPlainText();
+	result.secondaryText = subtitleEdit->toPlainText();
 	result.logo.path = logoPath->text();
 	result.logo.maxHeight = logoHeight->value();
 	result.logoPlacement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
@@ -1164,11 +1171,16 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 
 	/* Single-line text lives on the section; list text lives in the entry table. */
 	const bool singleLineText = hasText && !hasEntries;
-	/* Only the "... w/ Logo" pair carries a logo alongside text on the section itself. */
+	/* Only the "... w/ Logo" types carry a logo alongside text on the section itself. */
 	const bool sectionLogo = hasLogos && !hasEntries;
 	const bool logoBesideText = sectionLogo && hasText;
 
 	form->setRowVisible(textEdit, singleLineText);
+	/*
+	 * A heading's own subtitle. The list types stack one too, but theirs is the entry table's
+	 * second column, so the field belongs to the single-heading shapes alone.
+	 */
+	form->setRowVisible(subtitleEdit, singleLineText && sectionUsesSubtitles(type));
 	form->setRowVisible(logoPath->parentWidget(), sectionLogo);
 	form->setRowVisible(logoHeight, sectionLogo);
 	form->setRowVisible(logoSide, logoBesideText);

@@ -39,10 +39,14 @@ namespace closingtime {
  */
 enum class SectionType {
 	Title,
+	TitleWithSubtitle,
 	TitleWithLogo,
+	TitleWithSubtitleAndLogo,
 	LogoTitle,
 	Header,
+	HeaderWithSubtitle,
 	HeaderWithLogo,
+	HeaderWithSubtitleAndLogo,
 	LogoHeader,
 	Bridged,
 	TextList,
@@ -72,12 +76,17 @@ bool sectionUsesLogos(SectionType type);
 bool sectionUsesEntries(SectionType type);
 /* True when the type spreads its entries over a configurable number of columns. */
 bool sectionUsesColumns(SectionType type);
-/* True when the type stacks a subtitle against each entry's title. */
+/*
+ * True when the type stacks a subtitle under a title -- under each entry's title for the list
+ * shapes, under the section's own for the single-heading ones. Either way it is what says that
+ * `subtitleGap` and `subtitleFirst` have something to act on.
+ */
 bool sectionUsesSubtitles(SectionType type);
 /*
- * True when an entry carries two texts rather than one, whatever the type does with them --
- * the two sides of a bridged row, or a title and the subtitle under it. This is what decides
- * that the entry table has a second column and that the secondary style is worth offering.
+ * True when the type carries two texts rather than one, whatever it does with them -- the two
+ * sides of a bridged row, or a title and the subtitle under it. This is what decides that the
+ * entry table has a second column, that a single heading has a subtitle field beside its text,
+ * and that the secondary style is worth offering at all.
  */
 bool sectionUsesSecondaryText(SectionType type);
 
@@ -359,8 +368,20 @@ struct Section {
 	/* Shown in the designer's section list only; never rendered. */
 	QString label;
 
-	/* Single-line content for Title/Header and their logo variants. */
+	/* Single-line content for Title/Header and their subtitle and logo variants. */
 	QString text;
+	/*
+	 * The second line of a "... w/ Subtitle" heading, drawn under `text` exactly as a
+	 * title/subtitle list draws an entry's `secondaryText` under its `text` -- same styles, same
+	 * `subtitleGap`, same `subtitleFirst`, same helper in the renderer.
+	 *
+	 * It is a field of its own rather than a one-entry list because a heading is not a list: a
+	 * list would put an entry table in the editor for a section that can only ever hold one pair,
+	 * and would leave a second entry to be silently drawn by a type with nowhere to put it. Kept
+	 * whatever the type, so a heading switched to something else and back keeps its subtitle, the
+	 * same way every other field survives a change of type.
+	 */
+	QString secondaryText;
 	LogoRef logo;
 	LogoSide logoSide = LogoSide::Left;
 	LogoPlacement logoPlacement = LogoPlacement::Edge;
@@ -377,17 +398,18 @@ struct Section {
 	int entryGap = 8;
 
 	/*
-	 * Title/subtitle lists only: the gap between the two lines of one entry, in pixels. Kept
+	 * Subtitle-carrying types only: the gap between the two lines of one pair, in pixels. Kept
 	 * separate from `entryGap` because the two say opposite things -- this one binds a pair
 	 * together, that one holds consecutive pairs apart -- and a list where both are the same
 	 * number reads as a single run of alternating lines rather than as a list of pairs.
 	 */
 	int subtitleGap = 4;
 	/*
-	 * Title/subtitle lists only: draw the subtitle above the title rather than below it. The
-	 * fields keep their meaning either way -- `text` is still the title and `secondaryText`
-	 * still the subtitle, styled by `style` and `secondaryStyle` respectively -- so flipping
-	 * this is purely a placement change and never moves content between fields.
+	 * Subtitle-carrying types only: draw the subtitle above the title rather than below it. The
+	 * fields keep their meaning either way -- the title is still `text` (or an entry's `text`)
+	 * and the subtitle still `secondaryText`, styled by `style` and `secondaryStyle`
+	 * respectively -- so flipping this is purely a placement change and never moves content
+	 * between fields.
 	 */
 	bool subtitleFirst = false;
 
@@ -534,8 +556,8 @@ struct Section {
 
 	/*
 	 * Styling. `secondaryStyle` is the second text a section carries: the right-hand side of a
-	 * Bridged section, or the subtitle of a title/subtitle list. Left off, both are drawn in
-	 * the primary style.
+	 * Bridged section, or the subtitle under a heading or a list entry. Left off, both are drawn
+	 * in the primary style.
 	 */
 	TextStyle style;
 	TextStyle secondaryStyle;

@@ -15,7 +15,9 @@ out of sections:
 | Section type | What it is |
 |---|---|
 | Title / Header | A heading, at two default sizes |
+| Title w/ Subtitle, Header w/ Subtitle | A heading with a second line under it, in a style of its own |
 | Title w/ Logo, Header w/ Logo | A heading with a logo beside it, hugging the text, pinned to the edge, or bridged across to it |
+| Title w/ Subtitle & Logo, Header w/ Subtitle & Logo | The same logo beside the stacked pair, centred against both lines |
 | Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
 | Text to Text Bridged | `Director ······ Jane Doe` role-to-person pairs, joined by a leader of dots, dashes, diamonds, a rule, your own SVG, or plain text |
 | Text List | A single column of names |
@@ -34,6 +36,15 @@ between pairs — that difference is what groups the two lines together — and 
 be flipped to put the name on top instead without retyping anything. Leave one of the two blank
 and the entry takes only the height of the line you did fill in, which is how a heading sits in
 the middle of a list. Import a spreadsheet of roles and names straight into either shape.
+
+The **w/ Subtitle** headings are that same pair as a single heading rather than a list — a film
+title over its tagline, a section head over the line explaining it, a name under `Directed by`.
+Everything the list offers applies: two independent styles, the gap inside the pair, and the
+flip that puts the smaller line on top without retyping either field. Leave the subtitle blank
+and the section is exactly a plain Title again, to the pixel. The logo variants put a logo
+beside the whole pair — centred against both lines together, not just the title — and can hug
+it, sit against the section edge, or bridge across to it, with the leader running along the
+baseline of whichever line ends up on top.
 
 In a bridged row the **bridge** joining the two texts is drawn from artwork rather than from
 characters, so a leader is a real shape at a thickness you set instead of whatever full stops

@@ -531,13 +531,18 @@ struct LogoRow {
  * instead left the one setting named after placing a section unable to move it. The text's
  * alignment still does its own job inside the column, which is where a wrapped or multi-line
  * title needs it.
+ *
+ * What goes in the text column is the caller's business: `naturalWidth` is the width that column
+ * would like and `hasText` whether there is anything in it to be held off the logo. A heading with
+ * a subtitle under it hands over the wider of its two lines and is divided from its logo exactly
+ * as a single line is, which is the whole of the difference between the two shapes.
  */
-LogoRow placeLogoRow(const Section &section, const TextStyle &style, qreal contentX, qreal contentWidth,
-		     qreal logoWidth)
+LogoRow placeLogoRow(const Section &section, qreal contentX, qreal contentWidth, qreal logoWidth, qreal naturalWidth,
+		     bool hasText)
 {
 	const bool onLeft = section.logoSide == LogoSide::Left;
 	/* Nothing to separate the logo from when there is no text. */
-	const qreal gap = section.text.isEmpty() ? 0.0 : section.logoGap;
+	const qreal gap = hasText ? section.logoGap : 0.0;
 
 	LogoRow row;
 
@@ -549,8 +554,7 @@ LogoRow placeLogoRow(const Section &section, const TextStyle &style, qreal conte
 		break;
 
 	case LogoPlacement::Hug: {
-		row.textWidth =
-			std::min(naturalTextWidth(section.text, style), std::max(0.0, contentWidth - logoWidth - gap));
+		row.textWidth = std::min(naturalWidth, std::max(0.0, contentWidth - logoWidth - gap));
 
 		const qreal groupWidth = logoWidth + gap + row.textWidth;
 		const qreal groupX = contentX + alignOffset(section.sectionAlign, contentWidth, groupWidth);
@@ -561,8 +565,7 @@ LogoRow placeLogoRow(const Section &section, const TextStyle &style, qreal conte
 	}
 
 	case LogoPlacement::Bridged: {
-		row.textWidth =
-			std::min(naturalTextWidth(section.text, style), std::max(0.0, contentWidth - logoWidth));
+		row.textWidth = std::min(naturalWidth, std::max(0.0, contentWidth - logoWidth));
 
 		row.logoX = onLeft ? contentX : contentX + contentWidth - logoWidth;
 		row.textX = onLeft ? contentX + contentWidth - row.textWidth : contentX;
@@ -807,31 +810,71 @@ int paintBridge(QPainter *painter, const PreparedBridge &bridge, const Section &
 }
 
 /*
- * One entry of a title/subtitle list: two lines stacked inside the column they are given,
- * separated by `subtitleGap`, and returning the height the pair occupies.
+ * One line of a stacked pair, as the pair's own drawing order leaves it.
+ *
+ * A pointer pair rather than a copy because both of them are already owned by the section or
+ * the entry being laid out, and a style is the larger half of what would otherwise be copied
+ * once per row of a long list.
+ */
+struct StackedLine {
+	const QString *text;
+	const TextStyle *style;
+};
+
+/*
+ * The line of a title/subtitle pair that really is drawn on top.
+ *
+ * Ordinarily `subtitleFirst` decides it outright, but a pair with one of its two texts left
+ * blank draws the other at the top of the block -- so anything anchoring on the top of a pair
+ * from the outside, which is to say the leader of a bridged logo row, hangs off the line that is
+ * there rather than off one that was skipped.
+ *
+ * A pair with nothing in it at all reports the line the order would have put second, which is
+ * the title in the ordinary case: an empty run has no baseline to offer and the caller falls
+ * back to the font's own ascent, so what matters is only which font it falls back to.
+ */
+StackedLine topStackedLine(const Section &section, const QString &title, const QString &subtitle,
+			   const TextStyle &titleStyle, const TextStyle &subtitleStyle)
+{
+	const StackedLine first{section.subtitleFirst ? &subtitle : &title,
+				section.subtitleFirst ? &subtitleStyle : &titleStyle};
+	if (!first.text->isEmpty())
+		return first;
+
+	return StackedLine{section.subtitleFirst ? &title : &subtitle,
+			   section.subtitleFirst ? &titleStyle : &subtitleStyle};
+}
+
+/*
+ * One title/subtitle pair: two lines stacked inside the column they are given, separated by
+ * `subtitleGap`, and returning the height the pair occupies.
+ *
+ * Takes the two texts rather than the thing holding them, because the same stack serves a list
+ * entry and a section's own heading, and the two keep them in different places. Everything that
+ * shapes the stack still comes off the section, which is where all of it lives.
  *
  * Each line is aligned by its own style within the full column rather than the two being
  * measured and placed as one group, which is what lets a title sit left with its subtitle
  * right, or either of them be centred against a run of names of differing lengths.
  *
- * `subtitleFirst` swaps only the placement. The title is still `text` drawn in `titleStyle`
- * and the subtitle still `secondaryText` drawn in `subtitleStyle`, so flipping the order
- * never moves content between the two fields.
+ * `subtitleFirst` swaps only the placement. The title is still `title` drawn in `titleStyle`
+ * and the subtitle still `subtitle` drawn in `subtitleStyle`, so flipping the order never
+ * moves content between the two fields.
  */
 template<typename Record>
 int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextStyle &titleStyle,
-			const TextStyle &subtitleStyle, const Entry &entry, int x, int y, int width,
-			const Record &record)
+			const TextStyle &subtitleStyle, const QString &title, const QString &subtitle, qreal x, qreal y,
+			qreal width, const Record &record)
 {
-	const QString &first = section.subtitleFirst ? entry.secondaryText : entry.text;
-	const QString &second = section.subtitleFirst ? entry.text : entry.secondaryText;
+	const QString &first = section.subtitleFirst ? subtitle : title;
+	const QString &second = section.subtitleFirst ? title : subtitle;
 	const TextStyle &firstStyle = section.subtitleFirst ? subtitleStyle : titleStyle;
 	const TextStyle &secondStyle = section.subtitleFirst ? titleStyle : subtitleStyle;
 
-	int cursor = y;
+	qreal cursor = y;
 
 	/*
-	 * A line with no text has no height and takes no gap with it, so an entry carrying only
+	 * A line with no text has no height and takes no gap with it, so a pair carrying only
 	 * one of its two texts occupies exactly what that one line does -- a heading row in an
 	 * otherwise paired list sits where a single line would rather than reserving space for
 	 * the line that is not there.
@@ -850,8 +893,21 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 		cursor -= section.subtitleGap;
 	}
 
-	return cursor - y;
+	return qCeil(cursor - y);
 }
+
+/*
+ * The width a title/subtitle pair wants before any wrapping is imposed on it: whichever of its
+ * two lines is wider, since the two are laid out into the same column.
+ */
+qreal naturalPairWidth(const QString &title, const QString &subtitle, const TextStyle &titleStyle,
+		       const TextStyle &subtitleStyle)
+{
+	return std::max(naturalTextWidth(title, titleStyle), naturalTextWidth(subtitle, subtitleStyle));
+}
+
+/* Collects nothing, for the measure pass a caller makes before it knows where to place a pair. */
+const auto kIgnoreBoxes = [](LayoutBox::Kind, const QRectF &) { /* deliberately nothing */ };
 
 /*
  * Where every part of one Section Divider goes, in strip space.
@@ -1182,6 +1238,19 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		break;
 	}
 
+	case SectionType::TitleWithSubtitle:
+	case SectionType::HeaderWithSubtitle: {
+		/*
+		 * The section's own pair, through the very stack a title/subtitle list lays each of its
+		 * entries out with. A heading with a line under it and a list of one pair are the same
+		 * geometry, so `subtitleGap`, `subtitleFirst` and the empty-line courtesy come across
+		 * whole rather than being written a second time and drifting from it.
+		 */
+		y += layoutTitleSubtitle(painter, section, style, document.effectiveSecondaryStyle(section),
+					 section.text, section.secondaryText, contentX, y, contentWidth, record);
+		break;
+	}
+
 	case SectionType::LogoTitle:
 	case SectionType::LogoHeader: {
 		const QImage image = logos->get(section.logo.path, section.logo.maxHeight);
@@ -1195,24 +1264,49 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	}
 
 	case SectionType::TitleWithLogo:
-	case SectionType::HeaderWithLogo: {
+	case SectionType::HeaderWithLogo:
+	case SectionType::TitleWithSubtitleAndLogo:
+	case SectionType::HeaderWithSubtitleAndLogo: {
+		/*
+		 * The four shapes differ in what goes in the text column and in nothing else: the column
+		 * is measured, divided from the logo and centred against it the same way whether it holds
+		 * one line or a pair. That is why they share a branch rather than a second copy of the
+		 * placement -- the alternative is two logo rows that agree until one of them is edited.
+		 *
+		 * A single-line type is the pair with an empty subtitle, which the stack already draws as
+		 * the one line at the one height, taking no gap with it. So the plain shapes go through
+		 * the same call and come out where they always did.
+		 */
+		const TextStyle &subtitleStyle = document.effectiveSecondaryStyle(section);
+		const QString subtitle = sectionUsesSubtitles(section.type) ? section.secondaryText : QString();
+		const bool hasText = !section.text.isEmpty() || !subtitle.isEmpty();
+
 		const QImage image = logos->get(section.logo.path, section.logo.maxHeight);
 		const int logoBudget = std::max(1, contentWidth / 3);
 		const QSize logoSize = logoDrawSize(image, section.logo, logoBudget);
 
-		const LogoRow row = placeLogoRow(section, style, contentX, contentWidth, logoSize.width());
+		const LogoRow row = placeLogoRow(section, contentX, contentWidth, logoSize.width(),
+						 naturalPairWidth(section.text, subtitle, style, subtitleStyle),
+						 hasText);
 
-		const int textHeight = layoutText(nullptr, section.text, style, 0, 0, row.textWidth);
+		/*
+		 * Measured with nothing collected, because where the block goes is not known until its
+		 * height is: the boxes are recorded by the placing pass below, at the top the row
+		 * actually gives it.
+		 */
+		const int textHeight = layoutTitleSubtitle(nullptr, section, style, subtitleStyle, section.text,
+							   subtitle, 0, 0, row.textWidth, kIgnoreBoxes);
 		const int rowHeight = std::max(logoSize.height(), textHeight);
 		const qreal textTop = y + (rowHeight - textHeight) / 2.0;
 
-		/* The logo and the text are centred against each other within the row. */
+		/* The logo and the text block are centred against each other within the row. */
 		const QRect logoBox(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize);
 		paintLogo(painter, image, logoBox, style);
-		layoutText(painter, section.text, style, row.textX, textTop, row.textWidth);
-
 		record(LayoutBox::Kind::Logo, QRectF(logoBox));
-		record(LayoutBox::Kind::Text, QRectF(row.textX, textTop, row.textWidth, textHeight));
+
+		/* Records the box of each line it actually draws, so the overlay is the stack's own. */
+		layoutTitleSubtitle(painter, section, style, subtitleStyle, section.text, subtitle, row.textX, textTop,
+				    row.textWidth, record);
 
 		if (section.logoPlacement == LogoPlacement::Bridged) {
 			/*
@@ -1228,10 +1322,15 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * bridge is made of: text in the same font needs no offset at all, and art
 			 * sits on the same line rather than on the top of the text's box. A row with
 			 * no text at all still has the font's own ascent to hang it from.
+			 *
+			 * With a subtitle it is the baseline of whichever line is drawn on top, so
+			 * adding a second line under a bridged heading leaves the leader exactly where
+			 * it was -- and flipping the stack moves it to the line that took the top.
 			 */
-			const qreal textAscent = section.text.isEmpty()
-							 ? QFontMetricsF(makeFont(style)).ascent()
-							 : firstBaseline(section.text, style, row.textWidth);
+			const StackedLine top = topStackedLine(section, section.text, subtitle, style, subtitleStyle);
+			const qreal textAscent = top.text->isEmpty()
+							 ? QFontMetricsF(makeFont(*top.style)).ascent()
+							 : firstBaseline(*top.text, *top.style, row.textWidth);
 			const qreal baseline = textTop + textAscent;
 			const qreal bridgeTop = baseline - bridge.ascent(section);
 			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
@@ -1319,8 +1418,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const TextStyle &subtitleStyle = document.effectiveSecondaryStyle(section);
 
 		for (const Entry &entry : section.entries) {
-			y += layoutTitleSubtitle(painter, section, style, subtitleStyle, entry, contentX, y,
-						 contentWidth, record);
+			y += layoutTitleSubtitle(painter, section, style, subtitleStyle, entry.text,
+						 entry.secondaryText, contentX, y, contentWidth, record);
 			y += section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -1389,7 +1488,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					 * the entry beneath it.
 					 */
 					const int height = layoutTitleSubtitle(painter, section, style, subtitleStyle,
-									       entry, x, y, columnWidth, record);
+									       entry.text, entry.secondaryText, x, y,
+									       columnWidth, record);
 					rowHeight = std::max(rowHeight, height);
 				} else {
 					const int height = layoutText(painter, entry.text, style, x, y, columnWidth);
