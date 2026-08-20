@@ -156,6 +156,8 @@ private:
 
 	/* Opens the library manager on this document. */
 	void openStyleLibrary();
+	/* The font window: what this roll carries, and what stands in for what it cannot. */
+	void openFonts();
 
 	/*
 	 * Writes the pending edits to a linked preset out to the library file.
@@ -201,6 +203,14 @@ private:
 	struct DocumentSnapshot {
 		QVector<Section> sections;
 		QVector<StylePreset> stylePresets;
+		/*
+		 * The font settings ride along because the font window is undoable like everything
+		 * else here. Carrying the bundle costs nothing per step: a QVector of QByteArrays
+		 * copies by sharing, and nothing here ever edits one in place.
+		 */
+		bool bundleFonts = true;
+		QVector<BundledFont> bundledFonts;
+		QVector<FontSubstitution> fontSubstitutions;
 		int currentIndex = -1;
 	};
 

@@ -23,7 +23,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QFont>
-#include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QGlyphRun>
 #include <QImageReader>
@@ -41,6 +40,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "render/BridgeArtRenderer.hpp"
 #include "render/DividerArtRenderer.hpp"
+#include "render/FontResolution.hpp"
 #include "render/ImageEffects.hpp"
 
 namespace closingtime {
@@ -1779,65 +1779,6 @@ QBrush textFillBrush(const TextStyle &style, const QRectF &box)
 	return QBrush(gradient);
 }
 
-bool fontFamilyAvailable(const QString &family)
-{
-	if (family.isEmpty())
-		return true;
-
-	/*
-	 * Qt maps these onto whatever the platform's default is for the category, so they are
-	 * never a substitution there is anything to be done about.
-	 */
-	static const QStringList generics = {
-		QStringLiteral("Sans Serif"), QStringLiteral("Serif"),   QStringLiteral("Monospace"),
-		QStringLiteral("Cursive"),    QStringLiteral("Fantasy"), QStringLiteral("System"),
-	};
-
-	for (const QString &generic : generics) {
-		if (family.compare(generic, Qt::CaseInsensitive) == 0)
-			return true;
-	}
-
-	return QFontDatabase::hasFamily(family);
-}
-
-QStringList missingFontFamilies(const Document &document)
-{
-	QStringList missing;
-
-	const auto consider = [&missing](const QString &family) {
-		if (family.isEmpty() || missing.contains(family) || fontFamilyAvailable(family))
-			return;
-		missing.append(family);
-	};
-
-	for (const Section &section : document.sections) {
-		if (!section.visible)
-			continue;
-
-		/*
-		 * A divider draws text only when its centre stack holds some, so it is asked rather
-		 * than assumed: reporting a missing font for a roll whose every divider is pure
-		 * artwork would send the user hunting for a substitution that never happened.
-		 */
-		const bool dividerText = section.type == SectionType::SectionDivider &&
-					 std::any_of(section.dividerCentre.cbegin(), section.dividerCentre.cend(),
-						     [](const DividerPiece &piece) {
-							     return piece.kind == DividerPiece::Kind::Text &&
-								    !piece.text.isEmpty();
-						     });
-
-		if (!sectionUsesText(section.type) && !dividerText)
-			continue;
-
-		consider(document.effectiveStyle(section).family);
-		consider(document.effectiveSecondaryStyle(section).family);
-	}
-
-	missing.sort(Qt::CaseInsensitive);
-	return missing;
-}
-
 QImage LogoCache::get(const QString &path, int maxHeight)
 {
 	if (path.isEmpty())
@@ -1887,8 +1828,12 @@ void LogoCache::invalidate(const QString &path)
 	}
 }
 
-int StripRenderer::measure(const Document &document) const
+int StripRenderer::measure(const Document &input) const
 {
+	/* Measured against the fonts the roll will really be drawn in; see render() below. */
+	Document resolved;
+	const Document &document = documentWithFontsResolved(input, resolved);
+
 	/*
 	 * The bridge tiles are parsed for the length of the call and dropped again. Unlike a
 	 * decoded logo there is nothing here worth holding on to between renders -- a tile is a
@@ -1908,8 +1853,16 @@ int StripRenderer::measure(const Document &document) const
 	return total - document.leadIn - document.leadOut;
 }
 
-Strip StripRenderer::render(const Document &document, LayoutBoxes *boxes) const
+Strip StripRenderer::render(const Document &input, LayoutBoxes *boxes) const
 {
+	/*
+	 * Fonts are resolved here rather than by each caller, so nothing can render a roll in a
+	 * font the document did not ask for by forgetting to. The common case -- every family
+	 * present -- hands `input` straight back and copies nothing.
+	 */
+	Document resolved;
+	const Document &document = documentWithFontsResolved(input, resolved);
+
 	Strip strip;
 	strip.width = std::max(1, document.width);
 

@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "model/BridgeArt.hpp"
 #include "model/DividerArt.hpp"
 #include "model/EndingAction.hpp"
+#include "model/FontBundle.hpp"
 
 namespace closingtime {
 
@@ -828,6 +829,74 @@ struct Document {
 	 * library on one machine does not unstyle the rolls that were bound to it.
 	 */
 	bool refreshLinkedPresets();
+
+	/* --- fonts ---------------------------------------------------------------------------- */
+
+	/*
+	 * Carry the files behind this roll's fonts inside the document, so it renders the same on a
+	 * machine that does not have them installed. See `refreshFontBundle`.
+	 *
+	 * On by default, which is the setting that makes a scene collection self-contained without
+	 * anybody having to know that fonts are a problem before they hit it. Off is for the roll
+	 * whose fonts may not be passed on -- most commercial licences say so -- and for the one whose
+	 * collection has to stay small.
+	 */
+	bool bundleFonts = true;
+
+	/* The files themselves. Written by `refreshFontBundle`, registered by the render layer. */
+	QVector<BundledFont> bundledFonts;
+
+	/*
+	 * Stand-ins for families that could not be carried. Applied only to a family this machine
+	 * actually lacks, so a substitution is a fallback rather than an override: install the real
+	 * font and the roll goes back to using it with nothing to undo here.
+	 */
+	QVector<FontSubstitution> fontSubstitutions;
+
+	/*
+	 * Every family the roll's visible text is actually set in, deduplicated and sorted.
+	 *
+	 * Resolved through preset bindings, and asked of a Section Divider rather than assumed of it:
+	 * reporting a font for a roll whose every divider is pure artwork would send the user hunting
+	 * for a substitution that never happened. A `bridgeStyle` contributes nothing because a bridge
+	 * takes only ink from it and keeps the row's own font (see `effectiveBridgeStyle`).
+	 */
+	QStringList usedFontFamilies() const;
+
+	/* The stand-in recorded for `family`, or an empty string when there is none. */
+	QString fontSubstitute(const QString &family) const;
+
+	/* Records a stand-in, replacing any already held for `from`. An empty `to` removes it. */
+	void setFontSubstitute(const QString &from, const QString &to);
+
+	/*
+	 * Rewrites every style set in one of `families` to the stand-in recorded for it, and returns
+	 * true when anything moved. Presets are rewritten too, since a bound section is drawn from one.
+	 *
+	 * Which families are missing is a question only the render layer can answer, so it is asked
+	 * there and the answer passed in -- the model has no business knowing what this machine has
+	 * installed, and this is what keeps a substitution from applying on the machine that has the
+	 * real font.
+	 */
+	bool applyFontSubstitutions(const QStringList &families);
+
+	/*
+	 * Brings `bundledFonts` in line with the families the roll uses, and returns true when it
+	 * changed. Clears the bundle outright when `bundleFonts` is off.
+	 *
+	 * Walking the machine's font directories is a second's work the first time, so this is called
+	 * from the designer -- when a document is applied, and from the font window -- and never from
+	 * the render path, which only ever registers what it is handed.
+	 *
+	 * A family already carried is left alone unless `recollect` says to read it again, so an
+	 * ordinary Apply touches the disk only for a family that has just appeared. Either way, a
+	 * family whose file cannot be found *here* keeps whatever the document is already carrying
+	 * for it: this is the machine that does not have the font, which is the one the bundle exists
+	 * for, and re-reading is no reason to throw it away.
+	 *
+	 * `skipped`, when given, receives the families whose file was found but too large to carry.
+	 */
+	bool refreshFontBundle(QStringList *skipped = nullptr, bool recollect = false);
 
 	void save(obs_data_t *data) const;
 

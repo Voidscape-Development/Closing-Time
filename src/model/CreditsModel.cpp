@@ -1330,6 +1330,166 @@ void Document::removeStylePreset(const QString &name)
 	}
 }
 
+QStringList Document::usedFontFamilies() const
+{
+	QStringList families;
+
+	const auto consider = [&families](const QString &family) {
+		if (family.isEmpty() || families.contains(family))
+			return;
+		families.append(family);
+	};
+
+	for (const Section &section : sections) {
+		if (!section.visible)
+			continue;
+
+		/*
+		 * A divider draws text only when its centre stack holds some, so it is asked rather
+		 * than assumed: reporting a font for a roll whose every divider is pure artwork
+		 * would send the user hunting for a substitution that never happened.
+		 */
+		const bool dividerText = section.type == SectionType::SectionDivider &&
+					 std::any_of(section.dividerCentre.cbegin(), section.dividerCentre.cend(),
+						     [](const DividerPiece &piece) {
+							     return piece.kind == DividerPiece::Kind::Text &&
+								    !piece.text.isEmpty();
+						     });
+
+		if (!sectionUsesText(section.type) && !dividerText)
+			continue;
+
+		consider(effectiveStyle(section).family);
+		consider(effectiveSecondaryStyle(section).family);
+	}
+
+	families.sort(Qt::CaseInsensitive);
+	return families;
+}
+
+QString Document::fontSubstitute(const QString &family) const
+{
+	for (const FontSubstitution &substitution : fontSubstitutions) {
+		if (substitution.from.compare(family, Qt::CaseInsensitive) == 0)
+			return substitution.to;
+	}
+
+	return QString();
+}
+
+void Document::setFontSubstitute(const QString &from, const QString &to)
+{
+	if (from.isEmpty())
+		return;
+
+	for (int i = 0; i < fontSubstitutions.size(); ++i) {
+		if (fontSubstitutions.at(i).from.compare(from, Qt::CaseInsensitive) != 0)
+			continue;
+
+		if (to.isEmpty())
+			fontSubstitutions.removeAt(i);
+		else
+			fontSubstitutions[i].to = to;
+		return;
+	}
+
+	if (!to.isEmpty())
+		fontSubstitutions.append(FontSubstitution{from, to});
+}
+
+bool Document::applyFontSubstitutions(const QStringList &families)
+{
+	if (fontSubstitutions.isEmpty() || families.isEmpty())
+		return false;
+
+	bool changed = false;
+
+	const auto rewrite = [this, &families, &changed](TextStyle &style) {
+		if (style.family.isEmpty() || !families.contains(style.family))
+			return;
+
+		const QString substitute = fontSubstitute(style.family);
+		if (substitute.isEmpty() || substitute == style.family)
+			return;
+
+		style.family = substitute;
+		changed = true;
+	};
+
+	for (StylePreset &preset : stylePresets)
+		rewrite(preset.style);
+
+	for (Section &section : sections) {
+		rewrite(section.style);
+		rewrite(section.secondaryStyle);
+		/*
+		 * `bridgeStyle` is deliberately left alone: a bridge keeps the row's own font and
+		 * takes only ink from it, so the family recorded there is never drawn with.
+		 */
+	}
+
+	return changed;
+}
+
+bool Document::refreshFontBundle(QStringList *skipped, bool recollect)
+{
+	const QVector<BundledFont> before = bundledFonts;
+
+	if (!bundleFonts) {
+		bundledFonts.clear();
+		return !before.isEmpty();
+	}
+
+	QVector<BundledFont> kept;
+
+	for (const QString &family : usedFontFamilies()) {
+		/*
+		 * A family with a stand-in recorded is one the designer has already answered for, and
+		 * on the machine that recorded it there was no file to find anyway.
+		 */
+		if (!fontSubstitute(family).isEmpty())
+			continue;
+
+		QVector<BundledFont> carried;
+		for (const BundledFont &font : before) {
+			if (font.family.compare(family, Qt::CaseInsensitive) == 0)
+				carried.append(font);
+		}
+
+		/*
+		 * Already carried and nobody asked for a fresh read: nothing to go to the disk for.
+		 * This is the common case on every Apply after the first, and it is what keeps the
+		 * machine's font directories out of the path of an ordinary edit.
+		 */
+		if (!carried.isEmpty() && !recollect) {
+			kept += carried;
+			continue;
+		}
+
+		const QVector<BundledFont> found = collectBundledFonts({family}, skipped);
+
+		/*
+		 * A file that cannot be found here does not un-carry the one already in hand. This is
+		 * the machine that does not have the font -- the one the bundle exists for -- and
+		 * dropping it because a local file could not be read would throw the roll's fonts away
+		 * on the first edit made anywhere but home.
+		 */
+		kept += found.isEmpty() ? carried : found;
+	}
+
+	bundledFonts = kept;
+
+	if (bundledFonts.size() != before.size())
+		return true;
+
+	for (int i = 0; i < bundledFonts.size(); ++i) {
+		if (bundledFonts.at(i).family != before.at(i).family || bundledFonts.at(i).data != before.at(i).data)
+			return true;
+	}
+
+	return false;
+}
+
 void Document::save(obs_data_t *data) const
 {
 	obs_data_set_int(data, "width", width);
@@ -1359,6 +1519,22 @@ void Document::save(obs_data_t *data) const
 			static_cast<const QVector<Section> *>(context)->at(index).save(item);
 		},
 		&sections);
+
+	obs_data_set_bool(data, "bundle_fonts", bundleFonts);
+
+	saveArray(
+		data, "bundled_fonts", bundledFonts.size(),
+		[](obs_data_t *item, int index, const void *context) {
+			static_cast<const QVector<BundledFont> *>(context)->at(index).save(item);
+		},
+		&bundledFonts);
+
+	saveArray(
+		data, "font_substitutions", fontSubstitutions.size(),
+		[](obs_data_t *item, int index, const void *context) {
+			static_cast<const QVector<FontSubstitution> *>(context)->at(index).save(item);
+		},
+		&fontSubstitutions);
 }
 
 void Document::load(obs_data_t *data, bool *migrated)
@@ -1418,6 +1594,43 @@ void Document::load(obs_data_t *data, bool *migrated)
 	}
 
 	/*
+	 * Off is a deliberate choice -- a roll whose fonts may not be passed on -- and a document
+	 * written before fonts could travel has made no choice at all, so a missing key has to be
+	 * told apart from a stored false rather than inferred from it.
+	 */
+	bundleFonts = obs_data_has_user_value(data, "bundle_fonts") ? obs_data_get_bool(data, "bundle_fonts") : true;
+
+	bundledFonts.clear();
+	OBSDataArrayAutoRelease fontArray = obs_data_get_array(data, "bundled_fonts");
+	if (fontArray) {
+		const size_t count = obs_data_array_count(fontArray);
+		bundledFonts.reserve(static_cast<int>(count));
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(fontArray, i);
+			BundledFont font;
+			font.load(item);
+			/* A font with no family names nothing and can resolve nothing. */
+			if (!font.family.isEmpty() && !font.isEmpty())
+				bundledFonts.append(font);
+		}
+	}
+
+	fontSubstitutions.clear();
+	OBSDataArrayAutoRelease substitutionArray = obs_data_get_array(data, "font_substitutions");
+	if (substitutionArray) {
+		const size_t count = obs_data_array_count(substitutionArray);
+		fontSubstitutions.reserve(static_cast<int>(count));
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(substitutionArray, i);
+			FontSubstitution substitution;
+			substitution.load(item);
+			/* Neither half is any use without the other. */
+			if (!substitution.from.isEmpty() && !substitution.to.isEmpty())
+				fontSubstitutions.append(substitution);
+		}
+	}
+
+	/*
 	 * A document arriving from a scene collection carries whatever the library held when it was
 	 * last saved, under whatever names it held them under. Bringing it up to date here -- renames
 	 * followed, copies refreshed -- means a roll is styled by the library from the first frame it
@@ -1443,6 +1656,7 @@ void Document::defaults(obs_data_t *data)
 	obs_data_set_default_double(data, "start_delay", 0.0);
 	obs_data_set_default_bool(data, "manual_scroll", false);
 	obs_data_set_default_double(data, "scroll_position", 0.0);
+	obs_data_set_default_bool(data, "bundle_fonts", true);
 
 	EndingActionConfig::defaults(data);
 }
