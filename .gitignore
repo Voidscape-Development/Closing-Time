@@ -2,11 +2,13 @@
 /*
 
 # Except for default project files
+!/.claude
 !/.github
 !/build-aux
 !/cmake
 !/data
 !/src
+!/tests
 !.clang-format
 !.gersemirc
 !.gitignore

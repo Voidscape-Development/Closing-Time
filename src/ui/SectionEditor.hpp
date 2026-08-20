@@ -209,6 +209,8 @@ private:
 	QLineEdit *labelEdit = nullptr;
 	QCheckBox *visibleBox = nullptr;
 	QPlainTextEdit *textEdit = nullptr;
+	/* The second line of a "... w/ Subtitle" heading; a list's subtitles live in the entry table. */
+	QPlainTextEdit *subtitleEdit = nullptr;
 
 	QLineEdit *logoPath = nullptr;
 	QToolButton *logoBrowse = nullptr;

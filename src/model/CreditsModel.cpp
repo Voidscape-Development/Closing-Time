@@ -45,10 +45,22 @@ struct SectionTypeInfo {
 /* Listed in the order the designer's "Add Section" menu presents them. */
 const SectionTypeInfo kSectionTypes[] = {
 	{SectionType::Title, "title", "Title", true, false, false, false, false},
+	/*
+	 * The subtitle variants say yes to `subtitles` without saying yes to `entries`: the flag is
+	 * about a subtitle being stacked under a title, which a single heading does as much as a list
+	 * of pairs does, and it is what gives `subtitleGap` and `subtitleFirst` something to act on.
+	 */
+	{SectionType::TitleWithSubtitle, "title_with_subtitle", "Title w/ Subtitle", true, false, false, false, true},
 	{SectionType::TitleWithLogo, "title_with_logo", "Title w/ Logo", true, true, false, false, false},
+	{SectionType::TitleWithSubtitleAndLogo, "title_with_subtitle_logo", "Title w/ Subtitle & Logo", true, true,
+	 false, false, true},
 	{SectionType::LogoTitle, "logo_title", "Logo Title", false, true, false, false, false},
 	{SectionType::Header, "header", "Header", true, false, false, false, false},
+	{SectionType::HeaderWithSubtitle, "header_with_subtitle", "Header w/ Subtitle", true, false, false, false,
+	 true},
 	{SectionType::HeaderWithLogo, "header_with_logo", "Header w/ Logo", true, true, false, false, false},
+	{SectionType::HeaderWithSubtitleAndLogo, "header_with_subtitle_logo", "Header w/ Subtitle & Logo", true, true,
+	 false, false, true},
 	{SectionType::LogoHeader, "logo_header", "Logo Header", false, true, false, false, false},
 	{SectionType::Bridged, "bridged", "Text to Text Bridged", true, false, true, false, false},
 	{SectionType::TextList, "text_list", "Text List", true, false, true, false, false},
@@ -602,6 +614,7 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_string(data, "type", sectionTypeId(type));
 	obs_data_set_string(data, "label", label.toUtf8().constData());
 	obs_data_set_string(data, "text", text.toUtf8().constData());
+	obs_data_set_string(data, "secondary_text", secondaryText.toUtf8().constData());
 	obs_data_set_string(data, "logo_side", logoSideId(logoSide));
 	obs_data_set_string(data, "logo_placement", logoPlacementId(logoPlacement));
 	obs_data_set_int(data, "logo_gap", logoGap);
@@ -686,6 +699,9 @@ void Section::load(obs_data_t *data)
 	type = sectionTypeFromId(obs_data_get_string(data, "type"), SectionType::Title);
 	label = QString::fromUtf8(obs_data_get_string(data, "label"));
 	text = QString::fromUtf8(obs_data_get_string(data, "text"));
+	/* Absent in every document written before the subtitle headings existed, none of which had a
+	 * second line to carry -- and an empty one draws nothing, so there is no fallback to pick. */
+	secondaryText = QString::fromUtf8(obs_data_get_string(data, "secondary_text"));
 	logoSide = logoSideFromId(obs_data_get_string(data, "logo_side"), LogoSide::Left);
 	/* Documents written before this setting existed were laid out against Edge. */
 	logoPlacement = logoPlacementFromId(obs_data_get_string(data, "logo_placement"), LogoPlacement::Edge);
@@ -875,6 +891,38 @@ Section Section::makeDefault(SectionType type)
 		section.paddingBottom = 32;
 		break;
 
+	case SectionType::TitleWithSubtitle:
+	case SectionType::TitleWithSubtitleAndLogo:
+	case SectionType::HeaderWithSubtitle:
+	case SectionType::HeaderWithSubtitleAndLogo: {
+		/*
+		 * The heading's own defaults, with a second line under it set at roughly half the size
+		 * and without the weight. The difference between the two lines is the whole point of the
+		 * type -- a pair drawn in one style at one size is two headings that happen to touch --
+		 * so the secondary style is turned on here rather than left for the user to find.
+		 */
+		const bool title = type == SectionType::TitleWithSubtitle ||
+				   type == SectionType::TitleWithSubtitleAndLogo;
+
+		section.text = title ? QStringLiteral("Title") : QStringLiteral("Header");
+		section.secondaryText = QStringLiteral("Subtitle");
+		section.style.pixelSize = title ? 72 : 44;
+		section.style.bold = true;
+		section.secondaryStyle = section.style;
+		section.secondaryStyle.pixelSize = title ? 36 : 26;
+		section.secondaryStyle.bold = false;
+		section.useSecondaryStyle = true;
+		/*
+		 * Wider than the 4 px a list entry starts at, because a heading's two lines are set
+		 * larger than a list's and the same absolute gap under them reads as the pair being
+		 * crushed together rather than as one item.
+		 */
+		section.subtitleGap = 8;
+		section.paddingTop = title ? 48 : 32;
+		section.paddingBottom = title ? 32 : 16;
+		break;
+	}
+
 	case SectionType::LogoTitle:
 		section.logo.maxHeight = 200;
 		section.paddingTop = 48;
@@ -1021,9 +1069,18 @@ QString Section::displayLabel() const
 
 	switch (type) {
 	case SectionType::Title:
+	case SectionType::TitleWithSubtitle:
 	case SectionType::TitleWithLogo:
+	case SectionType::TitleWithSubtitleAndLogo:
 	case SectionType::Header:
+	case SectionType::HeaderWithSubtitle:
 	case SectionType::HeaderWithLogo:
+	case SectionType::HeaderWithSubtitleAndLogo:
+		/*
+		 * The title names the section even when a subtitle is set: a list of headings reads by
+		 * the line the eye lands on, and falling back to the subtitle would put the smaller of
+		 * the two lines in the list for a heading whose title is still to be typed.
+		 */
 		return text.isEmpty() ? QString::fromUtf8(sectionTypeName(type)) : text;
 
 	case SectionType::LogoTitle:

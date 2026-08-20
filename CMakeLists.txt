@@ -38,30 +38,40 @@ set_target_properties(
   PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
 )
 
+# The document, the renderer and the parser. None of them carry Q_OBJECT or touch Qt Widgets,
+# which is what lets the test harness compile them on their own -- so the list is shared between
+# the two targets rather than written out twice and left to drift.
+set(
+  CLOSING_TIME_CORE_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/BridgeArt.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/BridgeArt.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CreditsModel.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CreditsModel.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerArt.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerArt.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/StripRenderer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/StripRenderer.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.hpp"
+)
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
-    src/model/BridgeArt.cpp
-    src/model/BridgeArt.hpp
-    src/model/CreditsModel.cpp
-    src/model/CreditsModel.hpp
-    src/model/DividerArt.cpp
-    src/model/DividerArt.hpp
-    src/model/EndingAction.cpp
-    src/model/EndingAction.hpp
+    ${CLOSING_TIME_CORE_SOURCES}
     src/plugin-main.cpp
-    src/render/BridgeArtRenderer.cpp
-    src/render/BridgeArtRenderer.hpp
-    src/render/DividerArtRenderer.cpp
-    src/render/DividerArtRenderer.hpp
-    src/render/ImageEffects.cpp
-    src/render/ImageEffects.hpp
-    src/render/RenderThread.cpp
-    src/render/RenderThread.hpp
-    src/render/StripRenderer.cpp
-    src/render/StripRenderer.hpp
-    src/render/SvgArt.cpp
-    src/render/SvgArt.hpp
     src/source/CreditsSource.cpp
     src/source/CreditsSource.hpp
     src/ui/CsvImportDialog.cpp
@@ -76,8 +86,15 @@ target_sources(
     src/ui/StyleControls.hpp
     src/ui/ToolButtons.cpp
     src/ui/ToolButtons.hpp
-    src/util/CsvParser.cpp
-    src/util/CsvParser.hpp
 )
+
+# Off by default so a plain plugin build is unchanged, and so nobody packaging the plugin has to
+# have a test runner they never asked for. See tests/README.md for how to turn it on.
+option(ENABLE_TESTS "Build the offscreen test harness" OFF)
+
+if(ENABLE_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
