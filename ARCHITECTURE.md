@@ -939,12 +939,47 @@ rows in place rather than rebuilding them, so a mapping the user has already set
   editor or the persistence format changing.
 - Title and Header types that carry a subtitle of their own, with and without a logo, so the
   stacked pair the lists have always offered can be set as a single heading.
+- A committed offscreen test harness, so a graphical change is checked and looked at without
+  building one from scratch first.
 
 ## Verifying changes
 
-The plugin builds clean against libobs and Qt 6 with `-Wextra -Werror`. There is no test
-target in the template yet; renderer and parser changes were validated with an offscreen
-harness covering the `obs_data` round trip for all nineteen section types, measure/render
+The plugin builds clean against libobs and Qt 6 with `-Wextra -Werror`.
+
+### The test harness
+
+`tests/` is a CTest target built by `-DENABLE_TESTS=ON`, off by default so a plain plugin build
+is unchanged. It compiles `model/`, `render/` and `util/` directly rather than linking the plugin
+module: none of them carry `Q_OBJECT` or touch Qt Widgets, so the harness needs no moc, no UI and
+no running OBS, and the whole run is a few seconds while a single `--filter`ed suite is tens of
+milliseconds — fast enough to sit in a loop with while a layout is being worked out. See
+`tests/README.md`.
+
+Three things about its shape are deliberate, and each of them was arrived at by getting it wrong:
+
+**Boxes and ink are different questions.** The layout boxes say where the layout *put* something;
+the ink says where pixels landed. A centred title in a wide column inks the middle of it, so a
+check meaning "the leader reaches the words" has to ask about ink while one meaning "the column
+is the full width" has to ask about boxes. Asking the wrong one is the main way a check passes
+while the thing it names is broken, and `Probe.hpp` offers both under names that say which.
+
+**No golden images.** Text rasterises differently across font versions, hinting settings and
+platforms, so a committed PNG would fail on machines where nothing is wrong. `--artifacts` writes
+the scenes out to look at; everything that must hold is a measurement, and measurements are
+written as relations between two renders rather than as absolute pixel counts wherever they can
+be — `this pair is as tall as that single line` survives a font update, `this pair is 84 px` does
+not.
+
+**Every check is broken on purpose before it is trusted.** A check that has never failed may be
+asserting nothing. Writing the break first is also what catches a check that is *too strong*: the
+first version of the bridged-leader check asserted that adding a subtitle never moves the leader,
+which is only true when the text block is taller than the logo beside it — with a taller logo the
+block is centred and the leader rises with it. The invariant that actually holds everywhere is
+that the leader hangs a fixed distance below the top line of the block, and that is what is
+asserted now, with the two regimes checked separately underneath it.
+
+Renderer and parser changes before the harness existed were validated with the same approach in
+an ad-hoc form, covering the `obs_data` round trip for all nineteen section types, measure/render
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
 
@@ -1108,4 +1143,5 @@ harness should take:
   side while `Edge` demonstrably does not, and that a `Bridged` logo row caps both ends with
   the leader padded off each.
 
-Promoting all of it into a real CTest target is the obvious next infrastructure step.
+Most of that has since been promoted into the CTest target described above; what remains outside
+it is the designer's own wiring, since nothing there drives Qt Widgets.
