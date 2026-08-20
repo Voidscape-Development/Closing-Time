@@ -156,6 +156,18 @@ subtitle under a bridged heading leaves the leader exactly where it was. `bridge
 which is not the shape of this one. Here `logoGap` becomes padding at each end of the span,
 so the leader touches neither the logo nor the text.
 
+One consequence of a pair is worth naming, because it looks like the `Edge` trap and is not one.
+A single line's column *is* that line, so `logoGap` is the distance drawn to the words whatever
+the style's alignment says. A pair's column is sized by the **wider** of its two lines, and the
+narrower one is then placed inside it by its own alignment — so a centred title over a longer
+subtitle sits further from the logo than `logoGap` asks, measured to the *title*, while the block
+as a whole still clears the logo by exactly that gap. That is the documented rule (each line
+aligned by its own style) doing its job rather than the gap being ignored: the block has to clear
+its widest line, and pointing the two lines at the logo — `Left` with the logo on the left —
+closes the distance to precisely what a single line gets. The alternative, a placement that
+overrides the style's alignment, was rejected: it would buy the invariant by taking away a centred
+title over a wider strapline, which is a layout people actually want.
+
 ### Bridged rows
 
 A bridged row is three parts — left text, bridge, right text — and three settings decide what
@@ -1028,6 +1040,21 @@ height; a `Bridged` logo row's leader staying put when a subtitle is added under
 when the stack is flipped, and an empty heading still placing a leader rather than failing; and
 measure/render agreement, tile contiguity and every reported box staying inside its own section's
 box over a document holding all nineteen types at once.
+
+Two of those checks are there because a report of a subtitle "running off the edge" turned out to
+be neither. Nothing was clipped — the ink stopped two pixels short — and a plain `Header` set in
+the same string, size and alignment inked the same final column, so what was being seen was
+right-aligned text in a box whose edge is the canvas edge, which is true of every section type in
+the plugin and of `marginX` being zero. A **containment sweep** now pins that down: 5,832
+configurations of a logo row — three types across placement × side × alignment × gap × section
+width × margin × nine title/subtitle pairs — with no box the layout places leaving its content
+area, and it catches a `Bridged` column that stops being clamped to the space the logo leaves.
+What the report *did* turn up is the gap above: measured, a bridged pair's leader reached the
+title at 86 px against the 28 px a single line gets, purely because the title was centred in a
+column its subtitle had sized. That is now pinned from both ends — a pair pointed at its leader
+closing the gap to exactly what a single line closes it to, and the alignment demonstrably being
+the knob that moves it, so a placement that silently overrode alignment could not pass by
+looking like the fix.
 
 The designer's layout was checked offscreen too, by giving the editor more height than it needs
 and measuring the largest run of empty space between its visible controls — 6 px for every
