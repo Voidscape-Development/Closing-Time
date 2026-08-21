@@ -55,6 +55,25 @@ namespace closingtime {
 bool fontFamilyAvailable(const QString &family);
 
 /*
+ * Every face `family` ships, by the names the family gives them -- "Book", "Semibold Italic",
+ * "Condensed Black". Empty for a family this machine does not have, and for the generics, which
+ * are a category rather than a font and have no faces of their own to list.
+ */
+QStringList fontStyleNames(const QString &family);
+
+/*
+ * True when this machine really has a face of `family` called `styleName`, which is the question
+ * that has to be asked before a QFont is told to use it.
+ *
+ * Naming a face is not a hint the way a family name is: QFont::setStyleName() switches off the
+ * synthetic bold and slant Qt would otherwise apply, so a face that is not installed does not
+ * degrade to the nearest thing -- it degrades to the family's plain face, and a roll designed in
+ * Semibold goes to air in Regular with nothing said about it. An empty `styleName` is the
+ * family's own default face and is always available.
+ */
+bool fontStyleAvailable(const QString &family, const QString &styleName);
+
+/*
  * Families a document's visible text asks for that this machine cannot supply, deduplicated and
  * sorted. Preset bindings are resolved first, so only fonts that really get drawn count.
  */

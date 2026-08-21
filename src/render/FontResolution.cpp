@@ -121,6 +121,32 @@ bool fontFamilyAvailable(const QString &family)
 	return QFontDatabase::hasFamily(family);
 }
 
+QStringList fontStyleNames(const QString &family)
+{
+	if (family.isEmpty())
+		return QStringList();
+
+	return QFontDatabase::styles(family);
+}
+
+bool fontStyleAvailable(const QString &family, const QString &styleName)
+{
+	if (styleName.isEmpty())
+		return true;
+
+	/*
+	 * Compared case-insensitively because the name travels in the document as text and comes
+	 * back on a machine whose copy of the family may spell it differently -- "SemiBold" against
+	 * "Semibold" is the same face, and refusing it would drop the roll to Regular for a capital.
+	 */
+	for (const QString &candidate : fontStyleNames(family)) {
+		if (candidate.compare(styleName, Qt::CaseInsensitive) == 0)
+			return true;
+	}
+
+	return false;
+}
+
 QStringList missingFontFamilies(const Document &document)
 {
 	QStringList missing;

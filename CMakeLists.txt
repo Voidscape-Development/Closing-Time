@@ -125,6 +125,8 @@ target_sources(
     src/ui/DesignerDialog.hpp
     src/ui/FontDialog.cpp
     src/ui/FontDialog.hpp
+    src/ui/FontPickerDialog.cpp
+    src/ui/FontPickerDialog.hpp
     src/ui/PreviewWidget.cpp
     src/ui/PreviewWidget.hpp
     src/ui/SectionEditor.cpp

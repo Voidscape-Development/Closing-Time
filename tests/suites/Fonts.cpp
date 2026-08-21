@@ -158,6 +158,45 @@ QString distinctFamily()
 	return QString();
 }
 
+/*
+ * An installed family that ships a bold face of its own, and whose bold measures differently
+ * from its regular, or empty when this machine has none.
+ *
+ * Both halves matter. A family whose bold is synthesised would make "the named face was used" and
+ * "the bold flag was used" the same picture, and a family whose two faces happen to measure alike
+ * would make the check pass whichever of them was drawn.
+ */
+QString facedFamily()
+{
+	for (const QString &family : QFontDatabase::families()) {
+		bool hasBold = false;
+		for (const QString &face : QFontDatabase::styles(family))
+			hasBold = hasBold ||
+				  (QFontDatabase::bold(family, face) && !QFontDatabase::italic(family, face));
+
+		if (!hasBold)
+			continue;
+
+		/*
+		 * Measured off the rendered strip rather than off QFontMetricsF, because the strip is
+		 * what the checks compare. A family whose bold is a wider advance but the same run of
+		 * inked pixels would have the premise pass and every check under it be untestable.
+		 *
+		 * A title is bold by default, so the regular is asked for rather than assumed.
+		 */
+		Document regular = headingIn(family);
+		regular.sections[0].style.bold = false;
+
+		Document bold = headingIn(family);
+		bold.sections[0].style.bold = true;
+
+		if (inkOf(renderImage(regular)).width() != inkOf(renderImage(bold)).width())
+			return family;
+	}
+
+	return QString();
+}
+
 int filesIn(const QString &directory)
 {
 	return QDir(directory).entryList(QDir::Files).size();
@@ -560,4 +599,185 @@ CT_SUITE(fonts_substitution_render, "A stand-in renders as the family it stands 
 	 */
 	check(standingInk.width() != fallbackInk.width(),
 	      "and is not what the same roll renders as with no stand-in recorded");
+}
+
+CT_SUITE(fonts_face_persistence, "The face a style names surviving the round trip")
+{
+	TextStyle chosen;
+	chosen.family = QStringLiteral("Some Family");
+	chosen.styleName = QStringLiteral("Semibold Italic");
+	chosen.bold = true;
+	chosen.italic = true;
+	chosen.underline = true;
+	chosen.strikeOut = true;
+
+	OBSDataAutoRelease data = obs_data_create();
+	chosen.save(data);
+
+	TextStyle loaded;
+	loaded.load(data);
+
+	checkEq(loaded.styleName, chosen.styleName, "the face's own name comes back");
+	check(loaded.bold && loaded.italic, "and so do the flags that stand in for it on a machine without that face");
+	check(loaded.underline, "underline comes back");
+	check(loaded.strikeOut, "and so does strikeout");
+
+	/*
+	 * A style written before the picker existed names no face, and must not be given one: the
+	 * family's default face is what that roll has always rendered in.
+	 */
+	OBSDataAutoRelease older = obs_data_create();
+	obs_data_set_string(older, "family", "Some Family");
+	obs_data_set_bool(older, "bold", true);
+
+	TextStyle legacy;
+	legacy.load(older);
+
+	check(legacy.styleName.isEmpty(), "an old style names no face");
+	check(legacy.bold, "and the bold flag it does carry still carries it");
+	check(!legacy.underline && !legacy.strikeOut, "effects it never had are off");
+
+	/*
+	 * Two styles differing only in the face are different styles. Equality is what decides
+	 * whether a strip is rebuilt, so a face-only edit that compared equal would be an edit the
+	 * preview never showed.
+	 */
+	TextStyle plain;
+	TextStyle faced = plain;
+	faced.styleName = QStringLiteral("Semibold");
+	check(plain != faced, "a face-only change counts as a change");
+
+	TextStyle ruled = plain;
+	ruled.underline = true;
+	check(plain != ruled, "and so does an underline");
+}
+
+CT_SUITE(fonts_face_render, "A named face rendering, and falling back when it cannot be had")
+{
+	const QString family = facedFamily();
+	check(!family.isEmpty(), "this machine has a family with a bold face of its own");
+	if (family.isEmpty())
+		return;
+
+	/* A title is bold by default, so the regular has to be asked for rather than assumed. */
+	Document regular = headingIn(family);
+	regular.sections[0].style.bold = false;
+
+	Document bold = headingIn(family);
+	bold.sections[0].style.bold = true;
+
+	const int regularWidth = inkOf(renderImage(regular)).width();
+	const int boldWidth = inkOf(renderImage(bold)).width();
+	check(regularWidth != boldWidth, "the family's bold really is a different width from its regular");
+
+	/*
+	 * The face this machine does not have. Naming one must leave the roll rendering in the
+	 * nearest weight it can reach rather than dropping it to the regular: QFont::setStyleName()
+	 * switches off Qt's synthetic bold, so a renderer that named the face regardless would send
+	 * a roll designed in a semibold to air in the plain face with nothing said about it.
+	 */
+	Document absentFace = headingIn(family);
+	absentFace.sections[0].style.bold = true;
+	absentFace.sections[0].style.styleName = QStringLiteral("Closing Time Absent Face Name");
+
+	checkEq(inkOf(renderImage(absentFace)).width(), boldWidth,
+		"a face this machine lacks falls back to the weight the style also carries");
+
+	/* And the face it does have is used, rather than being quietly ignored for the flags. */
+	const QStringList faces = fontStyleNames(family);
+	check(!faces.isEmpty(), "the family reports the faces it ships");
+
+	QString boldFace;
+	for (const QString &face : faces) {
+		if (QFontDatabase::bold(family, face) && !QFontDatabase::italic(family, face)) {
+			boldFace = face;
+			break;
+		}
+	}
+
+	check(!boldFace.isEmpty(), "one of them is its bold");
+	if (boldFace.isEmpty())
+		return;
+
+	/*
+	 * Named with the bold flag deliberately off, so the width can only have come from the face.
+	 * With the flag left on, a renderer that ignored the name entirely would draw the same
+	 * picture and the check would prove nothing.
+	 */
+	Document namedFace = headingIn(family);
+	namedFace.sections[0].style.bold = false;
+	namedFace.sections[0].style.styleName = boldFace;
+
+	checkEq(inkOf(renderImage(namedFace)).width(), boldWidth, "naming the bold face renders bold without the flag");
+	check(inkOf(renderImage(namedFace)).width() != regularWidth, "and not as the family's regular");
+
+	check(fontStyleAvailable(family, boldFace.toUpper()),
+	      "a face is recognised whatever the document spelled its capitals as");
+	check(!fontStyleAvailable(family, QStringLiteral("Closing Time Absent Face Name")),
+	      "and a face the family does not ship is not");
+}
+
+CT_SUITE(fonts_decorations, "Underline and strikeout, on both of the renderer's paths")
+{
+	/*
+	 * Two letters with a gap between them, so the question can be asked of a column that the
+	 * letterforms themselves never ink: a rule is the only thing that can put a pixel there.
+	 */
+	Section base = unpadded(SectionType::Title);
+	base.text = QStringLiteral("I    I");
+	base.style.pixelSize = 64;
+
+	const auto inksGap = [](const Document &document) {
+		const QImage image = renderImage(document);
+		const Ink ink = inkOf(image);
+		if (ink.isEmpty())
+			return false;
+
+		return inksColumn(image, (ink.left + ink.right) / 2);
+	};
+
+	check(!inksGap(documentWith(base)), "the gap between the letters is empty to start with");
+
+	Section underlined = base;
+	underlined.style.underline = true;
+	check(inksGap(documentWith(underlined)), "an underline rules across the gap");
+
+	Section struck = base;
+	struck.style.strikeOut = true;
+	check(inksGap(documentWith(struck)), "and so does a strikeout");
+
+	/* An underline is drawn below the letters rather than through them. */
+	const Ink plainInk = inkOf(renderImage(documentWith(base)));
+	const Ink underlinedInk = inkOf(renderImage(documentWith(underlined)));
+	check(underlinedInk.bottom > plainInk.bottom, "the underline sits below the letters it is under");
+
+	/*
+	 * The same, on the path that draws the effects. That one never calls QTextLayout::draw() --
+	 * it works from the glyph outlines, and a rule is not a glyph -- so this is a different piece
+	 * of code answering the same question, and it is the one that would silently draw nothing.
+	 */
+	Section outlined = base;
+	outlined.style.outline.enabled = true;
+	outlined.style.outline.width = 2.0;
+
+	check(outlined.style.hasEffects(), "the outlined heading takes the effects path");
+	check(!inksGap(documentWith(outlined)), "which inks nothing in the gap on its own");
+
+	Section outlinedStruck = outlined;
+	outlinedStruck.style.strikeOut = true;
+	check(inksGap(documentWith(outlinedStruck)), "a strikeout is drawn there too");
+
+	Section outlinedUnderlined = outlined;
+	outlinedUnderlined.style.underline = true;
+	check(inksGap(documentWith(outlinedUnderlined)), "and so is an underline");
+
+	/*
+	 * And it is drawn as part of the letterforms rather than beside them: the outline grows the
+	 * ink of a struck-out heading past what the same heading inks unstruck, which it could only
+	 * do if the rule went into the path the outline is stroked around.
+	 */
+	const Ink outlinedInk = inkOf(renderImage(documentWith(outlined)));
+	const Ink outlinedStruckInk = inkOf(renderImage(documentWith(outlinedStruck)));
+	check(outlinedStruckInk.width() > outlinedInk.width(),
+	      "the strikeout is outlined along with the letters, so it reaches past them");
 }

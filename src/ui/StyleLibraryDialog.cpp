@@ -52,10 +52,24 @@ QString describe(const TextStyle &style)
 	QStringList parts;
 	parts.append(QStringLiteral("%1 %2px").arg(style.family).arg(style.pixelSize));
 
-	if (style.bold)
+	/*
+	 * The face's own name when the style names one, and the flags it falls back to when it does
+	 * not. A style set in Semibold that described itself as neither bold nor italic would read
+	 * as the family's regular, which is the one thing it is not.
+	 */
+	if (!style.styleName.isEmpty())
+		parts.append(style.styleName);
+	else if (style.bold && style.italic)
+		parts.append(moduleText("FontPicker.Face.BoldItalic"));
+	else if (style.bold)
 		parts.append(moduleText("Designer.Bold"));
-	if (style.italic)
+	else if (style.italic)
 		parts.append(moduleText("Designer.Italic"));
+
+	if (style.underline)
+		parts.append(moduleText("FontPicker.Underline"));
+	if (style.strikeOut)
+		parts.append(moduleText("FontPicker.Strikeout"));
 	if (style.fill != TextFill::Solid)
 		parts.append(moduleText("Designer.Gradient"));
 	if (style.outline.enabled)

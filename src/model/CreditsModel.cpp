@@ -448,9 +448,18 @@ double TextStyle::effectBleed() const
 void TextStyle::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "family", family.toUtf8().constData());
+	obs_data_set_string(data, "style_name", styleName.toUtf8().constData());
 	obs_data_set_int(data, "pixel_size", pixelSize);
+	/*
+	 * Written beside the face name rather than instead of it. They are what the roll falls back
+	 * to on a machine that does not have that exact face, and they are also what a reader older
+	 * than the picker sees -- which is the whole of what it sees, so a bold face has to leave
+	 * `bold` true behind it.
+	 */
 	obs_data_set_bool(data, "bold", bold);
 	obs_data_set_bool(data, "italic", italic);
+	obs_data_set_bool(data, "underline", underline);
+	obs_data_set_bool(data, "strikeout", strikeOut);
 	obs_data_set_int(data, "color", static_cast<long long>(color.rgba()));
 	obs_data_set_string(data, "align", hAlignId(align));
 	obs_data_set_double(data, "line_spacing", lineSpacing);
@@ -481,12 +490,21 @@ void TextStyle::load(obs_data_t *data)
 	if (family.isEmpty())
 		family = QStringLiteral("Sans Serif");
 
+	/*
+	 * Absent in every document written before the font picker existed, where the family's own
+	 * default face was the only one a style could name. Empty is exactly that, so there is
+	 * nothing to migrate: the bold and italic flags below carry those styles as they always did.
+	 */
+	styleName = QString::fromUtf8(obs_data_get_string(data, "style_name"));
+
 	pixelSize = static_cast<int>(obs_data_get_int(data, "pixel_size"));
 	if (pixelSize <= 0)
 		pixelSize = 32;
 
 	bold = obs_data_get_bool(data, "bold");
 	italic = obs_data_get_bool(data, "italic");
+	underline = obs_data_get_bool(data, "underline");
+	strikeOut = obs_data_get_bool(data, "strikeout");
 	color = QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "color")));
 	align = hAlignFromId(obs_data_get_string(data, "align"), HAlign::Center);
 
@@ -521,9 +539,12 @@ void TextStyle::load(obs_data_t *data)
 void TextStyle::defaults(obs_data_t *data, int pixelSize, bool bold)
 {
 	obs_data_set_default_string(data, "family", "Sans Serif");
+	obs_data_set_default_string(data, "style_name", "");
 	obs_data_set_default_int(data, "pixel_size", pixelSize);
 	obs_data_set_default_bool(data, "bold", bold);
 	obs_data_set_default_bool(data, "italic", false);
+	obs_data_set_default_bool(data, "underline", false);
+	obs_data_set_default_bool(data, "strikeout", false);
 	obs_data_set_default_int(data, "color", static_cast<long long>(qRgba(255, 255, 255, 255)));
 	obs_data_set_default_string(data, "align", "center");
 	obs_data_set_default_double(data, "line_spacing", 1.0);

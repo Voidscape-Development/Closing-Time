@@ -76,6 +76,19 @@ QFont makeFont(const TextStyle &style)
 	font.setPixelSize(std::max(1, style.pixelSize));
 	font.setBold(style.bold);
 	font.setItalic(style.italic);
+
+	/*
+	 * The exact face, but only on a machine that has it. Naming one switches off the synthetic
+	 * bold and slant Qt applies to the flags above, so asking for a face that is not installed
+	 * is worse than not asking: the roll would come out in the family's plain face rather than
+	 * in the nearest weight to what was chosen. Asked first, so the flags are still standing
+	 * when the answer is no.
+	 */
+	if (!style.styleName.isEmpty() && fontStyleAvailable(style.family, style.styleName))
+		font.setStyleName(style.styleName);
+
+	font.setUnderline(style.underline);
+	font.setStrikeOut(style.strikeOut);
 	return font;
 }
 
@@ -133,6 +146,46 @@ QPainterPath glyphPath(const QTextLayout &layout, const QPointF &origin)
 			glyph.translate(origin + positions.at(i));
 			path.addPath(glyph);
 		}
+	}
+
+	return path;
+}
+
+/*
+ * The underline and the strike-out of a laid-out run, as rectangles positioned at `origin`.
+ *
+ * QTextLayout::draw() rules these itself from the font's own flags, and the plain path lets it.
+ * The effects path never calls it -- it works from QRawFont::pathForGlyph, and a rule is not a
+ * glyph -- so a struck-out heading drawn there would come out with an outlined, gradient-filled,
+ * shadow-casting set of letters and a rule that had none of it, which reads as the outline being
+ * broken rather than as a rule somebody forgot to draw.
+ *
+ * Measured off the style's own font rather than off each run's, so the rule stays one straight
+ * line at one thickness across a row a fallback font supplied part of.
+ */
+QPainterPath textDecorations(const QTextLayout &layout, const QPointF &origin, const TextStyle &style)
+{
+	QPainterPath path;
+	if (!style.underline && !style.strikeOut)
+		return path;
+
+	const QFontMetricsF metrics(layout.font());
+	const qreal thickness = std::max(1.0, metrics.lineWidth());
+
+	for (int index = 0; index < layout.lineCount(); ++index) {
+		const QTextLine line = layout.lineAt(index);
+		const qreal width = line.naturalTextWidth();
+		if (width <= 0.0)
+			continue;
+
+		const qreal left = origin.x() + line.x();
+		const qreal baseline = origin.y() + line.y() + line.ascent();
+
+		/* Both are measured from the baseline: the underline below it, the strike-out above. */
+		if (style.underline)
+			path.addRect(QRectF(left, baseline + metrics.underlinePos(), width, thickness));
+		if (style.strikeOut)
+			path.addRect(QRectF(left, baseline - metrics.strikeOutPos(), width, thickness));
 	}
 
 	return path;
@@ -232,7 +285,19 @@ void paintStyledLayout(QPainter *painter, const QTextLayout &layout, const TextS
 		return;
 	}
 
-	const QPainterPath path = glyphPath(layout, origin);
+	QPainterPath path = glyphPath(layout, origin);
+
+	/*
+	 * United rather than added, and this is the one place in the renderer that pays for a
+	 * boolean op. A rule added to the same path crosses the descenders it passes through, and
+	 * two overlapping contours wound opposite ways cancel under any fill rule -- which would
+	 * punch the shape of the rule out of the tail of every 'g' it crossed. Only a run that is
+	 * both decorated and effected comes through here at all.
+	 */
+	const QPainterPath decorations = textDecorations(layout, origin, style);
+	if (!decorations.isEmpty())
+		path = path.united(decorations);
+
 	if (path.isEmpty())
 		return;
 

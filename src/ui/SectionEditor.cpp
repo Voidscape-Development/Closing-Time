@@ -24,7 +24,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
-#include <QFontComboBox>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -46,6 +45,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "render/AnimatedLogo.hpp"
 #include "ui/CsvImportDialog.hpp"
+#include "ui/FontPickerDialog.hpp"
 #include "ui/ToolButtons.hpp"
 
 namespace closingtime {
@@ -192,23 +192,14 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	presetBox->addItem(moduleText("Designer.StylePreset.None"), QString());
 	deletePresetButton->setEnabled(false);
 
-	family = new QFontComboBox(this);
-	layout->addRow(moduleText("Designer.FontFamily"), family);
+	fontButton = new QPushButton(this);
+	fontButton->setToolTip(moduleText("Designer.Font.Tip"));
+	layout->addRow(moduleText("Designer.Font"), fontButton);
 
 	pixelSize = new QSpinBox(this);
 	pixelSize->setRange(1, 1024);
 	pixelSize->setSuffix(QStringLiteral(" px"));
 	layout->addRow(moduleText("Designer.FontSize"), pixelSize);
-
-	auto *weightRow = new QWidget(this);
-	auto *weightLayout = new QHBoxLayout(weightRow);
-	weightLayout->setContentsMargins(0, 0, 0, 0);
-	bold = new QCheckBox(moduleText("Designer.Bold"), weightRow);
-	italic = new QCheckBox(moduleText("Designer.Italic"), weightRow);
-	weightLayout->addWidget(bold);
-	weightLayout->addWidget(italic);
-	weightLayout->addStretch();
-	layout->addRow(QString(), weightRow);
 
 	alignment = new QComboBox(this);
 	addAlignmentOptions(alignment);
@@ -281,10 +272,8 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 		notifyEdited();
 	};
 
-	connect(family, &QFontComboBox::currentFontChanged, this, notify);
+	connect(fontButton, &QPushButton::clicked, this, &StyleEditor::pickFont);
 	connect(pixelSize, &QSpinBox::valueChanged, this, notify);
-	connect(bold, &QCheckBox::toggled, this, notify);
-	connect(italic, &QCheckBox::toggled, this, notify);
 	connect(alignment, &QComboBox::currentIndexChanged, this, notify);
 	connect(lineSpacing, &QDoubleSpinBox::valueChanged, this, notify);
 	connect(colourButton, &ColourButton::colourChanged, this, notify);
@@ -305,6 +294,8 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	connect(savePresetButton, &QPushButton::clicked, this, &StyleEditor::savePreset);
 	connect(deletePresetButton, &QPushButton::clicked, this, &StyleEditor::deletePreset);
 
+	/* So the button reads as a font rather than as a blank before any style is written into it. */
+	updateFontButton();
 	applyFillVisibility();
 }
 
@@ -312,10 +303,15 @@ void StyleEditor::writeFields(const TextStyle &style)
 {
 	loaded = style;
 
-	family->setCurrentFont(QFont(style.family));
+	chosenFont.family = style.family;
+	chosenFont.styleName = style.styleName;
+	chosenFont.bold = style.bold;
+	chosenFont.italic = style.italic;
+	chosenFont.underline = style.underline;
+	chosenFont.strikeOut = style.strikeOut;
+	updateFontButton();
+
 	pixelSize->setValue(style.pixelSize);
-	bold->setChecked(style.bold);
-	italic->setChecked(style.italic);
 	colourButton->setColour(style.color);
 	selectByData(alignment, static_cast<int>(style.align));
 	lineSpacing->setValue(style.lineSpacing);
@@ -336,6 +332,32 @@ void StyleEditor::writeFields(const TextStyle &style)
 	shadowColour->setColour(style.shadow.color);
 
 	applyFillVisibility();
+}
+
+void StyleEditor::pickFont()
+{
+	FontPickerDialog dialog(chosenFont, this);
+	if (dialog.exec() != QDialog::Accepted)
+		return;
+
+	const FontChoice picked = dialog.choice();
+	if (picked == chosenFont)
+		return;
+
+	chosenFont = picked;
+	updateFontButton();
+
+	/*
+	 * Reported the same way a spin box's edit is. Opening the picker on a bound preset and
+	 * choosing a face is an edit to that preset, which is what restyles every section following
+	 * it -- there is nothing special about the font here.
+	 */
+	notifyEdited();
+}
+
+void StyleEditor::updateFontButton()
+{
+	fontButton->setText(describeFontChoice(chosenFont));
 }
 
 void StyleEditor::setStyle(const TextStyle &style)
@@ -460,10 +482,13 @@ TextStyle StyleEditor::style() const
 	TextStyle style = loaded;
 
 	if (!inkOnly) {
-		style.family = family->currentFont().family();
+		style.family = chosenFont.family;
+		style.styleName = chosenFont.styleName;
+		style.bold = chosenFont.bold;
+		style.italic = chosenFont.italic;
+		style.underline = chosenFont.underline;
+		style.strikeOut = chosenFont.strikeOut;
 		style.pixelSize = pixelSize->value();
-		style.bold = bold->isChecked();
-		style.italic = italic->isChecked();
 		style.align = static_cast<HAlign>(alignment->currentData().toInt());
 		style.lineSpacing = lineSpacing->value();
 	}
@@ -494,10 +519,8 @@ void StyleEditor::setInkOnly(bool value)
 {
 	inkOnly = value;
 
-	form->setRowVisible(family, !inkOnly);
+	form->setRowVisible(fontButton, !inkOnly);
 	form->setRowVisible(pixelSize, !inkOnly);
-	/* The bold and italic boxes share one row, hidden by the widget that holds them. */
-	form->setRowVisible(bold->parentWidget(), !inkOnly);
 	form->setRowVisible(alignment, !inkOnly);
 	form->setRowVisible(lineSpacing, !inkOnly);
 
