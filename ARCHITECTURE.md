@@ -64,6 +64,7 @@ src/
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
     StyleLibraryDialog.{hpp,cpp} the two-list manager: this roll's presets, and the machine's
     FontDialog.{hpp,cpp}     what this roll carries, and what stands in for what it cannot
+    FontPickerDialog.{hpp,cpp} picking a family and one of its faces, with no size in it
   util/
     CsvParser.{hpp,cpp}     RFC 4180 parser and delimiter guessing
     FontFiles.{hpp,cpp}     which file on this machine a font family came out of
@@ -525,6 +526,13 @@ the fill, which covers the inner half back up and leaves the outline growing out
 Shadows are drawn into a scratch buffer and softened with three box passes; the buffer is
 bounded, and a blur too large to buffer falls back to a hard shadow with a log line.
 
+An underline or a strike-out is not a glyph, so the effects path draws no rule at all unless one
+is put there: the decorations are built as rectangles from the laid-out lines and **united** with
+the glyph path, so the outline is stroked around letters and rule together and the gradient runs
+across both. United rather than added, because two overlapping contours wound opposite ways
+cancel — adding the rule would punch its own shape out of every descender it crossed. The plain
+path leaves the rules to `QTextLayout::draw()`, which does them from the font's own flags.
+
 All of that cost lands on rasterisation, which happens once per document change on the render
 thread, not per frame — playback still draws the same tiles it always did.
 
@@ -622,6 +630,10 @@ Enums persist by **string id**, never by ordinal (`sectionTypeId`, `endingAction
 
 Font sizes are stored and laid out in **pixels**, not points, so a roll renders identically
 regardless of the DPI of whatever screen OBS happens to be running on.
+
+A style's face travels as the face's own name (`style_name`) with `bold` and `italic` written
+beside it rather than instead of it — they are what renders on a machine without that exact face,
+and they are the whole of what a reader older than the picker sees.
 
 ## Render pipeline
 
@@ -1037,6 +1049,63 @@ when there is no header row or the name is blank. Toggling the header checkbox r
 rows in place rather than rebuilding them, so a mapping the user has already set survives.
 
 ## Fonts
+
+### Naming a face, not a weight
+
+A family is a set of faces, and most of them cannot be reached by a weight and a slant. There is
+no combination of bold and italic that means Condensed, and a family shipping Light, Regular,
+Medium, Semibold and Black has five answers to "not bold" and no way to say which was meant. So a
+style names a **face** as well as a family — `TextStyle::styleName`, the face's own name as the
+family gives it — and `ui/FontPickerDialog` is where one is chosen: families on the left, that
+family's faces beside them, effects and a sample underneath.
+
+There is deliberately **no size in the picker**. A roll is laid out in video pixels and every
+other measurement in the designer is a pixel spin box beside the thing it measures; a point-size
+list inside a font dialog would be a second, differently-scaled answer to a question already
+asked. The size row stays in the style editor with the rest of them.
+
+`bold` and `italic` did not go away, and are written beside the face name rather than instead of
+it. They are the **fallback**, and the reason they have to exist is that `QFont::setStyleName()`
+switches off Qt's synthetic bold and slant: naming a face the machine does not have would drop a
+roll designed in Semibold to the family's plain face rather than to the nearest weight it can
+reach. So `makeFont()` asks `fontStyleAvailable()` first and only names the face when the answer
+is yes, leaving the flags standing when it is not. They are also what a family shipping no bold
+or no italic at all is drawn with — the picker offers those faces marked as synthesised, since
+dropping them would take faux-bold away from every single-face family on the machine.
+
+**A face is a file, not a family.** `DejaVuSans-Bold.ttf` holds the Bold and nothing else, so the
+bundle records which faces each carried file declares (`BundledFont::styleNames`), read from the
+file's own `name` table — ids 1/2 for the legacy pair and 16/17 for the typographic one, kept
+apart so "Inter SemiBold" is never crossed with "SemiBold" to invent a face no font declares.
+Three things fall out of knowing it:
+
+- **The right file is carried.** `collectBundledFonts` reads the files supplying a face the roll
+  actually names *first*, so a family too large to carry whole carries the faces the roll is set
+  in rather than whichever files the directory walk reached before the cap.
+- **A new face re-collects.** `refreshFontBundle` asks whether what is already carried supplies
+  every face now used, not merely whether the family is carried. Setting one heading to a
+  family's semibold changes nothing about the family and everything about which file has to
+  travel.
+- **A bundled file is registered for one face.** `installBundledFonts` used to skip any family the
+  machine already had. It now skips only when every face the file declares is also already
+  drawable — having Inter installed but not its semibold is an ordinary state, and there the
+  bundled file is the only thing that can supply it.
+
+The font window reports the same thing one level down: a family row carries a child row per face
+the roll names, saying what will happen rather than only that something is absent, since a missing
+face is the quiet failure — the family is there, the layout holds, and the roll goes out a weight
+off. Faces are only listed where a style named one, so a roll that has never opened the picker
+shows exactly what it always did.
+
+A style written before any of this names no face, which is exactly what an empty `styleName`
+means, so there is nothing to migrate. A bundle written before faces were recorded declares none,
+which means *unknown* rather than *none*: such a file answers for its whole family, exactly as it
+always has. The picker matches such a style by its flags and prefers a
+real face over a synthesised one, so opening an old bold heading lands on the family's designed
+Bold. A face the machine does not have is kept in the list, marked, and preselected: opening the
+picker to see what a travelled roll is set in must not rewrite it on the way out.
+
+### When the machine does not have the font
 
 A style names a font by **family**, and a family name means nothing on a machine that does not
 have that font. Qt substitutes something rather than failing, the roll still renders, and every

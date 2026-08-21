@@ -96,8 +96,25 @@ void appendUnique(QStringList &list, const QString &value)
 	list.append(value);
 }
 
-/* Families declared by the face whose table directory starts at `faceOffset`. */
-void collectFaceFamilies(QFile &file, quint32 faceOffset, QStringList &families)
+/*
+ * The names one face records, kept in the four lists the `name` table keeps them in.
+ *
+ * The two pairs are not interchangeable and must not be crossed. A file holding Inter's semibold
+ * records the legacy pair as ("Inter SemiBold", "Regular") and the typographic pair as ("Inter",
+ * "SemiBold"): pairing the legacy family with the typographic style would invent "Inter SemiBold
+ * SemiBold", a face no font has ever declared.
+ */
+struct FaceNames {
+	/* name id 1, and the subfamily that goes with it. */
+	QStringList legacyFamilies;
+	QStringList legacyStyles;
+	/* name id 16, and the subfamily that goes with it. */
+	QStringList typographicFamilies;
+	QStringList typographicStyles;
+};
+
+/* Names declared by the face whose table directory starts at `faceOffset`. */
+void collectFaceNames(QFile &file, quint32 faceOffset, FaceNames &names)
 {
 	if (!file.seek(faceOffset))
 		return;
@@ -139,16 +156,90 @@ void collectFaceFamilies(QFile &file, quint32 faceOffset, QStringList &families)
 			break;
 
 		const quint16 nameId = readU16(table, record + 6);
-		/* 1 is the family a font installs under, 16 the typographic family it belongs to. */
-		if (nameId != 1 && nameId != 16)
+		/*
+		 * 1 is the family a font installs under and 2 the face of it this file is; 16 and 17
+		 * are the same pair told typographically, for the families too large for the four
+		 * faces the legacy pair can describe.
+		 */
+		QStringList *target = nullptr;
+		switch (nameId) {
+		case 1:
+			target = &names.legacyFamilies;
+			break;
+		case 2:
+			target = &names.legacyStyles;
+			break;
+		case 16:
+			target = &names.typographicFamilies;
+			break;
+		case 17:
+			target = &names.typographicStyles;
+			break;
+		default:
 			continue;
+		}
 
 		const quint16 platformId = readU16(table, record);
 		const quint16 length = readU16(table, record + 8);
 		const quint16 offset = readU16(table, record + 10);
 
-		appendUnique(families, decodeNameRecord(platformId, table.mid(stringBase + offset, length)));
+		appendUnique(*target, decodeNameRecord(platformId, table.mid(stringBase + offset, length)));
 	}
+}
+
+/*
+ * The faces `families` x `styles` describes, appended to `faces` without repeats.
+ *
+ * A face recording no subfamily at all is the family's default face, and is reported with an
+ * empty style rather than dropped: a file that names only a family still supplies something.
+ */
+void appendFaces(QVector<FontFace> &faces, const QStringList &families, const QStringList &styles)
+{
+	const auto append = [&faces](const QString &family, const QString &style) {
+		if (family.isEmpty())
+			return;
+
+		for (const FontFace &existing : faces) {
+			if (existing.family.compare(family, Qt::CaseInsensitive) == 0 &&
+			    existing.styleName.compare(style, Qt::CaseInsensitive) == 0)
+				return;
+		}
+
+		faces.append(FontFace{family, style});
+	};
+
+	for (const QString &family : families) {
+		if (styles.isEmpty()) {
+			append(family, QString());
+			continue;
+		}
+
+		for (const QString &style : styles)
+			append(family, style);
+	}
+}
+
+/* The face offsets in a font file, or empty when it is not one this reader claims to know. */
+QVector<quint32> faceOffsets(QFile &file)
+{
+	const QByteArray header = file.read(12);
+	if (header.size() < 12)
+		return QVector<quint32>();
+
+	QVector<quint32> faces;
+	const quint32 tag = readU32(header, 0);
+
+	if (tag == 0x74746366u /* 'ttcf' */) {
+		const quint32 count = qMin(readU32(header, 8), kMaxFacesPerFile);
+		const QByteArray offsets = file.read(static_cast<qint64>(count) * 4);
+		for (quint32 i = 0; i < count && static_cast<int>(i * 4 + 4) <= offsets.size(); ++i)
+			faces.append(readU32(offsets, static_cast<int>(i * 4)));
+	} else if (tag == 0x00010000u || tag == 0x74727565u /* 'true' */ || tag == 0x4F54544Fu /* 'OTTO' */) {
+		faces.append(0);
+	}
+
+	/* WOFF, Type 1, bitmap fonts: real fonts, but not ones this reader claims to know. */
+	return faces;
 }
 
 struct FontIndex {
@@ -244,34 +335,34 @@ QStringList fontSearchPaths()
 
 QStringList fontFamiliesInFile(const QString &path)
 {
-	QFile file(path);
-	if (!file.open(QIODevice::ReadOnly))
-		return QStringList();
-
-	const QByteArray header = file.read(12);
-	if (header.size() < 12)
-		return QStringList();
-
-	QVector<quint32> faces;
-	const quint32 tag = readU32(header, 0);
-
-	if (tag == 0x74746366u /* 'ttcf' */) {
-		const quint32 count = qMin(readU32(header, 8), kMaxFacesPerFile);
-		const QByteArray offsets = file.read(static_cast<qint64>(count) * 4);
-		for (quint32 i = 0; i < count && static_cast<int>(i * 4 + 4) <= offsets.size(); ++i)
-			faces.append(readU32(offsets, static_cast<int>(i * 4)));
-	} else if (tag == 0x00010000u || tag == 0x74727565u /* 'true' */ || tag == 0x4F54544Fu /* 'OTTO' */) {
-		faces.append(0);
-	} else {
-		/* WOFF, Type 1, bitmap fonts: real fonts, but not ones this reader claims to know. */
-		return QStringList();
-	}
-
 	QStringList families;
-	for (quint32 face : faces)
-		collectFaceFamilies(file, face, families);
+	for (const FontFace &face : fontFacesInFile(path))
+		appendUnique(families, face.family);
 
 	return families;
+}
+
+QVector<FontFace> fontFacesInFile(const QString &path)
+{
+	QFile file(path);
+	if (!file.open(QIODevice::ReadOnly))
+		return QVector<FontFace>();
+
+	QVector<FontFace> faces;
+
+	for (quint32 offset : faceOffsets(file)) {
+		/*
+		 * Per face rather than per file: a collection holds several, and crossing one face's
+		 * family with another's subfamily would report faces the file does not have.
+		 */
+		FaceNames names;
+		collectFaceNames(file, offset, names);
+
+		appendFaces(faces, names.typographicFamilies, names.typographicStyles);
+		appendFaces(faces, names.legacyFamilies, names.legacyStyles);
+	}
+
+	return faces;
 }
 
 QStringList fontFilesForFamily(const QString &family)

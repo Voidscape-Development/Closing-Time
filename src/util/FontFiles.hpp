@@ -20,8 +20,24 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 namespace closingtime {
+
+/*
+ * One face a font file holds: the family it belongs to and the name that family gives it.
+ *
+ * A file is not a family. `DejaVuSans-Bold.ttf` holds the Bold of DejaVu Sans and nothing else,
+ * and a roll set in the Bold needs that file rather than any of the family's others -- which is
+ * the question a bundle has to be able to answer before it can be trusted to carry a face.
+ *
+ * `styleName` is empty for a file that declares no subfamily at all, which means the family's
+ * default face.
+ */
+struct FontFace {
+	QString family;
+	QString styleName;
+};
 
 /*
  * Which file on this machine a font family came out of.
@@ -50,6 +66,17 @@ QStringList fontSearchPaths();
  * varies by platform: a lookup has to be able to find the file by whichever one it was given.
  */
 QStringList fontFamiliesInFile(const QString &path);
+
+/*
+ * Every family/face pair `path` declares, read from the same `name` table as the families above.
+ *
+ * Both spellings of each face are reported, for the same reason both spellings of the family are.
+ * A file holding Inter's semibold records the legacy pair ("Inter SemiBold", "Regular") -- which
+ * is what fits the four-face model Windows was built around -- and the typographic pair
+ * ("Inter", "SemiBold"), which is what the family really is. Which of the two Qt reports varies
+ * by platform, so a lookup has to be able to match on either.
+ */
+QVector<FontFace> fontFacesInFile(const QString &path);
 
 /*
  * The files declaring `family`, in the order the index found them. Usually more than one -- the

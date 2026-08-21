@@ -448,9 +448,18 @@ double TextStyle::effectBleed() const
 void TextStyle::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "family", family.toUtf8().constData());
+	obs_data_set_string(data, "style_name", styleName.toUtf8().constData());
 	obs_data_set_int(data, "pixel_size", pixelSize);
+	/*
+	 * Written beside the face name rather than instead of it. They are what the roll falls back
+	 * to on a machine that does not have that exact face, and they are also what a reader older
+	 * than the picker sees -- which is the whole of what it sees, so a bold face has to leave
+	 * `bold` true behind it.
+	 */
 	obs_data_set_bool(data, "bold", bold);
 	obs_data_set_bool(data, "italic", italic);
+	obs_data_set_bool(data, "underline", underline);
+	obs_data_set_bool(data, "strikeout", strikeOut);
 	obs_data_set_int(data, "color", static_cast<long long>(color.rgba()));
 	obs_data_set_string(data, "align", hAlignId(align));
 	obs_data_set_double(data, "line_spacing", lineSpacing);
@@ -481,12 +490,21 @@ void TextStyle::load(obs_data_t *data)
 	if (family.isEmpty())
 		family = QStringLiteral("Sans Serif");
 
+	/*
+	 * Absent in every document written before the font picker existed, where the family's own
+	 * default face was the only one a style could name. Empty is exactly that, so there is
+	 * nothing to migrate: the bold and italic flags below carry those styles as they always did.
+	 */
+	styleName = QString::fromUtf8(obs_data_get_string(data, "style_name"));
+
 	pixelSize = static_cast<int>(obs_data_get_int(data, "pixel_size"));
 	if (pixelSize <= 0)
 		pixelSize = 32;
 
 	bold = obs_data_get_bool(data, "bold");
 	italic = obs_data_get_bool(data, "italic");
+	underline = obs_data_get_bool(data, "underline");
+	strikeOut = obs_data_get_bool(data, "strikeout");
 	color = QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "color")));
 	align = hAlignFromId(obs_data_get_string(data, "align"), HAlign::Center);
 
@@ -521,9 +539,12 @@ void TextStyle::load(obs_data_t *data)
 void TextStyle::defaults(obs_data_t *data, int pixelSize, bool bold)
 {
 	obs_data_set_default_string(data, "family", "Sans Serif");
+	obs_data_set_default_string(data, "style_name", "");
 	obs_data_set_default_int(data, "pixel_size", pixelSize);
 	obs_data_set_default_bool(data, "bold", bold);
 	obs_data_set_default_bool(data, "italic", false);
+	obs_data_set_default_bool(data, "underline", false);
+	obs_data_set_default_bool(data, "strikeout", false);
 	obs_data_set_default_int(data, "color", static_cast<long long>(qRgba(255, 255, 255, 255)));
 	obs_data_set_default_string(data, "align", "center");
 	obs_data_set_default_double(data, "line_spacing", 1.0);
@@ -1333,11 +1354,30 @@ void Document::removeStylePreset(const QString &name)
 QStringList Document::usedFontFamilies() const
 {
 	QStringList families;
+	for (const FontUse &use : usedFonts())
+		families.append(use.family);
 
-	const auto consider = [&families](const QString &family) {
-		if (family.isEmpty() || families.contains(family))
+	return families;
+}
+
+QVector<FontUse> Document::usedFonts() const
+{
+	QVector<FontUse> fonts;
+
+	const auto consider = [&fonts](const TextStyle &style) {
+		if (style.family.isEmpty())
 			return;
-		families.append(family);
+
+		for (FontUse &use : fonts) {
+			if (use.family != style.family)
+				continue;
+
+			if (!use.styleNames.contains(style.styleName))
+				use.styleNames.append(style.styleName);
+			return;
+		}
+
+		fonts.append(FontUse{style.family, {style.styleName}});
 	};
 
 	for (const Section &section : sections) {
@@ -1359,12 +1399,18 @@ QStringList Document::usedFontFamilies() const
 		if (!sectionUsesText(section.type) && !dividerText)
 			continue;
 
-		consider(effectiveStyle(section).family);
-		consider(effectiveSecondaryStyle(section).family);
+		consider(effectiveStyle(section));
+		consider(effectiveSecondaryStyle(section));
 	}
 
-	families.sort(Qt::CaseInsensitive);
-	return families;
+	std::sort(fonts.begin(), fonts.end(), [](const FontUse &left, const FontUse &right) {
+		return left.family.compare(right.family, Qt::CaseInsensitive) < 0;
+	});
+
+	for (FontUse &use : fonts)
+		use.styleNames.sort(Qt::CaseInsensitive);
+
+	return fonts;
 }
 
 QString Document::fontSubstitute(const QString &family) const
@@ -1442,31 +1488,47 @@ bool Document::refreshFontBundle(QStringList *skipped, bool recollect)
 
 	QVector<BundledFont> kept;
 
-	for (const QString &family : usedFontFamilies()) {
+	for (const FontUse &use : usedFonts()) {
 		/*
 		 * A family with a stand-in recorded is one the designer has already answered for, and
 		 * on the machine that recorded it there was no file to find anyway.
 		 */
-		if (!fontSubstitute(family).isEmpty())
+		if (!fontSubstitute(use.family).isEmpty())
 			continue;
 
 		QVector<BundledFont> carried;
 		for (const BundledFont &font : before) {
-			if (font.family.compare(family, Qt::CaseInsensitive) == 0)
+			if (font.family.compare(use.family, Qt::CaseInsensitive) == 0)
 				carried.append(font);
 		}
 
 		/*
-		 * Already carried and nobody asked for a fresh read: nothing to go to the disk for.
-		 * This is the common case on every Apply after the first, and it is what keeps the
-		 * machine's font directories out of the path of an ordinary edit.
+		 * Whether what is already carried covers every face the roll now names. Asked per face
+		 * rather than per family, because setting one heading to the family's semibold changes
+		 * nothing about the family and everything about which file has to travel: a bundle that
+		 * stopped at "this family is carried" would leave that heading rendering in the nearest
+		 * weight on every other machine, silently.
 		 */
-		if (!carried.isEmpty() && !recollect) {
+		bool complete = !carried.isEmpty();
+		for (const QString &styleName : use.styleNames) {
+			bool supplied = false;
+			for (const BundledFont &font : carried)
+				supplied = supplied || font.supplies(use.family, styleName);
+
+			complete = complete && supplied;
+		}
+
+		/*
+		 * Already carried, covering every face, and nobody asked for a fresh read: nothing to go
+		 * to the disk for. This is the common case on every Apply after the first, and it is what
+		 * keeps the machine's font directories out of the path of an ordinary edit.
+		 */
+		if (complete && !recollect) {
 			kept += carried;
 			continue;
 		}
 
-		const QVector<BundledFont> found = collectBundledFonts({family}, skipped);
+		const QVector<BundledFont> found = collectBundledFonts({use}, skipped);
 
 		/*
 		 * A file that cannot be found here does not un-carry the one already in hand. This is
@@ -1483,7 +1545,9 @@ bool Document::refreshFontBundle(QStringList *skipped, bool recollect)
 		return true;
 
 	for (int i = 0; i < bundledFonts.size(); ++i) {
-		if (bundledFonts.at(i).family != before.at(i).family || bundledFonts.at(i).data != before.at(i).data)
+		if (bundledFonts.at(i).family != before.at(i).family ||
+		    bundledFonts.at(i).styleNames != before.at(i).styleNames ||
+		    bundledFonts.at(i).data != before.at(i).data)
 			return true;
 	}
 

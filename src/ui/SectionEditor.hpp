@@ -21,12 +21,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 
 #include "model/CreditsModel.hpp"
+#include "ui/FontPickerDialog.hpp"
 #include "ui/StyleControls.hpp"
 
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
-class QFontComboBox;
 class QFormLayout;
 class QGroupBox;
 class QLineEdit;
@@ -88,6 +88,11 @@ signals:
 
 private:
 	void writeFields(const TextStyle &style);
+
+	/* Opens the picker, and keeps what it comes back with. */
+	void pickFont();
+	/* Puts the chosen family and face on the button's face. */
+	void updateFontButton();
 	void onPresetSelected();
 	void applySelectedPreset(bool applySelectedStyle);
 	void savePreset();
@@ -106,10 +111,14 @@ private:
 	QPushButton *savePresetButton = nullptr;
 	QPushButton *deletePresetButton = nullptr;
 
-	QFontComboBox *family = nullptr;
+	/*
+	 * The whole font choice behind one button, rather than a family dropdown with a bold and an
+	 * italic box beside it. A dropdown can only offer families and the two boxes can only offer
+	 * a weight and a slant, which between them cannot name Semibold, Book or Condensed Light --
+	 * the picker the button opens lists the faces the family actually ships.
+	 */
+	QPushButton *fontButton = nullptr;
 	QSpinBox *pixelSize = nullptr;
-	QCheckBox *bold = nullptr;
-	QCheckBox *italic = nullptr;
 	ColourButton *colourButton = nullptr;
 	QComboBox *alignment = nullptr;
 	QDoubleSpinBox *lineSpacing = nullptr;
@@ -132,6 +141,12 @@ private:
 
 	/* Kept alongside the widgets so a gradient's stops survive a trip through Solid. */
 	GradientSpec gradient;
+
+	/*
+	 * The font, held here rather than read back off a widget: a button has no state of its own,
+	 * and the face name is the part of the choice a family dropdown could never have carried.
+	 */
+	FontChoice chosenFont;
 
 	/*
 	 * The style the fields were last filled from. style() is built on top of it, which is what

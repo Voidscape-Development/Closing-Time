@@ -250,12 +250,26 @@ struct TextShadow {
 struct TextStyle {
 	QString family = QStringLiteral("Sans Serif");
 	/*
+	 * Which face inside the family, by the name the family itself gives it: "Semibold",
+	 * "Condensed Light Italic", "Book". A family is a set of faces and most of them cannot be
+	 * reached by a weight and a slant -- there is no combination of the two that means Condensed,
+	 * and a family with Light, Regular, Medium and Semibold has four answers to "not bold".
+	 *
+	 * Empty means the family's own default face, which is what every style written before the
+	 * picker existed has. `bold` and `italic` below are kept in step with whatever is named here
+	 * and are what a machine missing this exact face falls back to: see makeFont() in the
+	 * renderer, which will not name a face the machine does not have.
+	 */
+	QString styleName;
+	/*
 	 * Sized in pixels rather than points: the strip is laid out in video pixels and has
 	 * to come out identical no matter the DPI of the screen OBS is running on.
 	 */
 	int pixelSize = 32;
 	bool bold = false;
 	bool italic = false;
+	bool underline = false;
+	bool strikeOut = false;
 	QColor color = QColor(255, 255, 255);
 	HAlign align = HAlign::Center;
 	/* Extra space between lines, as a multiplier of the font's natural line height. */
@@ -281,8 +295,9 @@ struct TextStyle {
 	 */
 	bool operator==(const TextStyle &other) const
 	{
-		return family == other.family && pixelSize == other.pixelSize && bold == other.bold &&
-		       italic == other.italic && color == other.color && align == other.align &&
+		return family == other.family && styleName == other.styleName && pixelSize == other.pixelSize &&
+		       bold == other.bold && italic == other.italic && underline == other.underline &&
+		       strikeOut == other.strikeOut && color == other.color && align == other.align &&
 		       qFuzzyCompare(lineSpacing + 1.0, other.lineSpacing + 1.0) && fill == other.fill &&
 		       gradient == other.gradient && outline == other.outline && shadow == other.shadow;
 	}
@@ -862,6 +877,16 @@ struct Document {
 	 * takes only ink from it and keeps the row's own font (see `effectiveBridgeStyle`).
 	 */
 	QStringList usedFontFamilies() const;
+
+	/*
+	 * The same, each family carrying the faces of it the roll names -- sorted, deduplicated, and
+	 * with an empty entry standing for the family's default face.
+	 *
+	 * This is what `usedFontFamilies` is built on, and what the bundle needs in order to carry
+	 * the right file: a family is several files, the roll uses some of them, and only the
+	 * document knows which.
+	 */
+	QVector<FontUse> usedFonts() const;
 
 	/* The stand-in recorded for `family`, or an empty string when there is none. */
 	QString fontSubstitute(const QString &family) const;
