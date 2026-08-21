@@ -878,6 +878,16 @@ struct Document {
 	 */
 	QStringList usedFontFamilies() const;
 
+	/*
+	 * The same, each family carrying the faces of it the roll names -- sorted, deduplicated, and
+	 * with an empty entry standing for the family's default face.
+	 *
+	 * This is what `usedFontFamilies` is built on, and what the bundle needs in order to carry
+	 * the right file: a family is several files, the roll uses some of them, and only the
+	 * document knows which.
+	 */
+	QVector<FontUse> usedFonts() const;
+
 	/* The stand-in recorded for `family`, or an empty string when there is none. */
 	QString fontSubstitute(const QString &family) const;
 

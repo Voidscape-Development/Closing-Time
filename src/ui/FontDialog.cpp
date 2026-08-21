@@ -69,6 +69,28 @@ QString describeState(const FontStatus &status)
 	return moduleText("Fonts.State.Missing");
 }
 
+/*
+ * The same for one face, which has a different worst case and so a different worst message.
+ *
+ * A missing family re-wraps every line and is unmissable once it goes to air. A missing face is
+ * not: the family is there, the layout holds, and the roll comes out in the nearest weight Qt can
+ * reach. Nothing about looking at it says so, which is the whole reason this row exists, so the
+ * row says what will happen rather than only that something is absent.
+ */
+QString describeFaceState(const FontFaceStatus &face)
+{
+	if (face.fromBundle)
+		return moduleText("Fonts.Face.Bundled");
+
+	if (face.available)
+		return face.bundled ? moduleText("Fonts.Face.InstalledAndBundled") : moduleText("Fonts.Face.Installed");
+
+	if (face.bundled)
+		return moduleText("Fonts.Face.CarriedNotInstalled");
+
+	return moduleText("Fonts.Face.Missing");
+}
+
 } // namespace
 
 FontDialog::FontDialog(Document *document, QWidget *parent) : QDialog(parent), document(document)
@@ -84,13 +106,22 @@ FontDialog::FontDialog(Document *document, QWidget *parent) : QDialog(parent), d
 	layout->addWidget(intro);
 
 	table = new QTreeWidget(this);
-	table->setRootIsDecorated(false);
+	/*
+	 * Decorated, because a family with faces under it has children now. A roll that has never
+	 * named a face has none, so the twisty column costs it a few pixels of indent and nothing
+	 * else -- and a roll that has named one is exactly the roll that wants to see them.
+	 */
 	table->setUniformRowHeights(true);
 	table->setColumnCount(3);
 	table->setHeaderLabels({moduleText("Fonts.Column.Family"), moduleText("Fonts.Column.State"),
 				moduleText("Fonts.Column.Substitute")});
-	table->header()->setSectionResizeMode(FamilyColumn, QHeaderView::Stretch);
-	table->header()->setSectionResizeMode(StateColumn, QHeaderView::ResizeToContents);
+	/*
+	 * The name column is sized to its contents and the state column takes what is left, rather
+	 * than the other way round. What a row *is* has to survive a narrow window; what is wrong
+	 * with it can elide, because the summary underneath says it again in full.
+	 */
+	table->header()->setSectionResizeMode(FamilyColumn, QHeaderView::ResizeToContents);
+	table->header()->setSectionResizeMode(StateColumn, QHeaderView::Stretch);
 	table->header()->setSectionResizeMode(SubstituteColumn, QHeaderView::ResizeToContents);
 	layout->addWidget(table, 1);
 
@@ -145,9 +176,24 @@ void FontDialog::refreshRows()
 		 * A family this machine has needs no stand-in and is offered none: the choice would
 		 * be recorded and then never act, which reads as a setting that does nothing. The row
 		 * still says where the family stands, which is what it is there for.
+		 *
+		 * Its faces get a row each, for the same reason and with the same restraint: a family
+		 * that is *not* here takes every one of its faces with it, so listing them under a
+		 * missing family would be five rows each saying a smaller version of what the family
+		 * row has already said.
 		 */
 		if (status.available) {
 			row->setText(SubstituteColumn, QStringLiteral("—"));
+
+			for (const FontFaceStatus &face : status.faces) {
+				auto *faceRow = new QTreeWidgetItem(row);
+				faceRow->setText(FamilyColumn, face.styleName);
+				faceRow->setText(StateColumn, describeFaceState(face));
+				faceRow->setText(SubstituteColumn, QStringLiteral("—"));
+			}
+
+			/* Expanded, because a missing face is the thing this window is open to find. */
+			row->setExpanded(status.hasMissingFace());
 			continue;
 		}
 
@@ -199,6 +245,25 @@ void FontDialog::updateSummary()
 	const QStringList unresolved = unresolvedFontFamilies(*document);
 	if (!unresolved.isEmpty())
 		lines.append(moduleText("Fonts.Summary.Unresolved").arg(unresolved.join(QStringLiteral(", "))));
+
+	/*
+	 * Named separately from the families, because what happens to them is different and much
+	 * quieter: the roll still lays out correctly and goes to air a weight off. Only faces of a
+	 * family that *is* here are counted -- under a missing family the family is the problem.
+	 */
+	QStringList missingFaces;
+	for (const FontStatus &status : fontStatus(*document)) {
+		if (!status.available)
+			continue;
+
+		for (const FontFaceStatus &face : status.faces) {
+			if (!face.available)
+				missingFaces.append(QStringLiteral("%1 %2").arg(status.family, face.styleName));
+		}
+	}
+
+	if (!missingFaces.isEmpty())
+		lines.append(moduleText("Fonts.Summary.MissingFaces").arg(missingFaces.join(QStringLiteral(", "))));
 
 	summaryLabel->setText(lines.join(QStringLiteral("\n")));
 }

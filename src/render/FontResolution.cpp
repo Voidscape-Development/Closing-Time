@@ -46,7 +46,36 @@ struct FontRegistry {
 	QSet<QString> handled;
 	/* Lower-cased families Qt has only because something here handed it a file. */
 	QSet<QString> supplied;
+	/*
+	 * The same, one entry deeper: "family|face", lower-cased. A machine can have the family
+	 * installed and be missing the one face the roll is set in, in which case the bundle is
+	 * supplying that face and nothing else, and the family is not "from the bundle" at all.
+	 */
+	QSet<QString> suppliedFaces;
 };
+
+/* The key a family and one of its faces are remembered under. */
+QString faceKey(const QString &family, const QString &styleName)
+{
+	return family.toLower() + QLatin1Char('|') + styleName.toLower();
+}
+
+/*
+ * True when every face this file declares is one the machine can already draw, so registering it
+ * would add nothing.
+ *
+ * A file that declares no faces at all -- a bundle written before they were recorded -- says
+ * nothing either way, and is treated as adding nothing, which is the behaviour it already had.
+ */
+bool suppliesNothingMissing(const BundledFont &font)
+{
+	for (const QString &styleName : font.styleNames) {
+		if (!styleName.isEmpty() && !fontStyleAvailable(font.family, styleName))
+			return false;
+	}
+
+	return true;
+}
 
 FontRegistry &registry()
 {
@@ -178,14 +207,35 @@ QVector<FontStatus> fontStatus(const Document &document)
 		bundled[font.family] += font.data.size();
 
 	QVector<FontStatus> statuses;
-	for (const QString &family : document.usedFontFamilies()) {
+	for (const FontUse &use : document.usedFonts()) {
 		FontStatus status;
-		status.family = family;
-		status.available = fontFamilyAvailable(family);
-		status.fromBundle = fontFamilySuppliedByBundle(family);
-		status.bundled = bundled.contains(family);
-		status.bundledBytes = bundled.value(family);
-		status.substitute = document.fontSubstitute(family);
+		status.family = use.family;
+		status.available = fontFamilyAvailable(use.family);
+		status.fromBundle = fontFamilySuppliedByBundle(use.family);
+		status.bundled = bundled.contains(use.family);
+		status.bundledBytes = bundled.value(use.family);
+		status.substitute = document.fontSubstitute(use.family);
+
+		for (const QString &styleName : use.styleNames) {
+			/*
+			 * The family's default face is not a face anybody chose, and the family row
+			 * already answers for it. A row saying "Regular: installed" under every family
+			 * would be noise on every roll that has never opened the picker.
+			 */
+			if (styleName.isEmpty())
+				continue;
+
+			FontFaceStatus face;
+			face.styleName = styleName;
+			face.available = fontStyleAvailable(use.family, styleName);
+			face.fromBundle = fontFaceSuppliedByBundle(use.family, styleName);
+
+			for (const BundledFont &font : document.bundledFonts)
+				face.bundled = face.bundled || font.supplies(use.family, styleName);
+
+			status.faces.append(face);
+		}
+
 		statuses.append(status);
 	}
 
@@ -224,13 +274,19 @@ QStringList installBundledFonts(const QVector<BundledFont> &fonts)
 		 * Asked before the hash, and per file rather than once per family. Before, because
 		 * this call sits in front of every render and hashing a bundle nobody needs would be
 		 * megabytes of work per keystroke; on the machine a roll was designed on, where every
-		 * family is installed, it means no hashing at all. Per file, because the four files of
-		 * a family arrive together and the first of them is what makes the name available.
+		 * family and every face is installed, it means no hashing at all. Per file, because the
+		 * four files of a family arrive together and the first of them is what makes the name
+		 * available.
 		 *
-		 * A family this machine already has is left to the installed file either way: two
-		 * families under one name says nothing about which a style meant.
+		 * A family this machine already has is left to the installed file -- two families under
+		 * one name says nothing about which a style meant -- *unless* this file carries a face
+		 * of it that the machine does not have. Having Inter installed and not its semibold is
+		 * an ordinary state for a machine to be in, and it is the one case where the installed
+		 * family and the bundled file are not answering the same question: the file is the only
+		 * thing that can supply that face, and skipping it leaves the roll a weight off with
+		 * nothing said about it.
 		 */
-		if (fontFamilyAvailable(font.family))
+		if (fontFamilyAvailable(font.family) && suppliesNothingMissing(font))
 			continue;
 
 		const QString hash = font.hash();
@@ -259,6 +315,14 @@ QStringList installBundledFonts(const QVector<BundledFont> &fonts)
 			state.supplied.insert(family.toLower());
 			if (!registered.contains(family))
 				registered.append(family);
+
+			/*
+			 * Asked of Qt now that the file is in, rather than taken from what the file
+			 * declared: the name table says what the designer of the font called a face,
+			 * and this says what the roll will find when it goes looking for one.
+			 */
+			for (const QString &styleName : QFontDatabase::styles(family))
+				state.suppliedFaces.insert(faceKey(family, styleName));
 		}
 	}
 
@@ -273,6 +337,20 @@ bool fontFamilySuppliedByBundle(const QString &family)
 	FontRegistry &state = registry();
 	const std::lock_guard<std::mutex> lock(state.mutex);
 	return state.supplied.contains(family.toLower());
+}
+
+bool fontFaceSuppliedByBundle(const QString &family, const QString &styleName)
+{
+	if (family.isEmpty())
+		return false;
+
+	/* The family's default face is the family's business, and is answered for by the family. */
+	if (styleName.isEmpty())
+		return fontFamilySuppliedByBundle(family);
+
+	FontRegistry &state = registry();
+	const std::lock_guard<std::mutex> lock(state.mutex);
+	return state.suppliedFaces.contains(faceKey(family, styleName));
 }
 
 QStringList installDocumentFonts(const Document &document)

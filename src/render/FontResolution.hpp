@@ -86,6 +86,24 @@ QStringList missingFontFamilies(const Document &document);
  */
 QStringList unresolvedFontFamilies(const Document &document);
 
+/*
+ * Where one face of a family stands, for the rows the font window puts under a family.
+ *
+ * A missing face is a milder failure than a missing family and a different one: the family is
+ * there, the lines do not re-wrap, and the roll comes out a weight off. That is exactly why it
+ * needs saying -- nothing about the rendered strip announces it.
+ */
+struct FontFaceStatus {
+	/* The face as the style names it. Never empty: a default face has nothing to report. */
+	QString styleName;
+	/* Qt can draw this exact face, from an installed file or from one this roll carries. */
+	bool available = false;
+	/* Qt can draw it because the bundle supplied it. */
+	bool fromBundle = false;
+	/* The roll carries a file declaring it, whether or not this machine needed it. */
+	bool bundled = false;
+};
+
 /* Where each family in a document stands, for the designer's font window and its warnings. */
 struct FontStatus {
 	QString family;
@@ -104,8 +122,32 @@ struct FontStatus {
 	/* The family standing in for it, empty when none is recorded. */
 	QString substitute;
 
+	/*
+	 * The faces of this family the roll names, in the order the document reports them.
+	 *
+	 * Only faces a style actually asks for by name are here: a roll that has never named one --
+	 * every roll written before they could be -- reports none, and there is nothing about its
+	 * faces worth a row. The family's own default face is not a face anybody chose and is
+	 * likewise absent; the family row answers for it.
+	 */
+	QVector<FontFaceStatus> faces;
+
 	/* Missing, with nothing recorded to put in its place. */
 	bool isUnresolved() const { return !available && substitute.isEmpty(); }
+
+	/*
+	 * A face this machine cannot draw. Only meaningful when the family itself is available --
+	 * a missing family takes every one of its faces with it, and is the bigger thing to say.
+	 */
+	bool hasMissingFace() const
+	{
+		for (const FontFaceStatus &face : faces) {
+			if (!face.available)
+				return true;
+		}
+
+		return false;
+	}
 };
 
 /* One entry per family the roll's visible text is set in, in the order `usedFontFamilies` gives. */
@@ -139,6 +181,12 @@ QStringList installBundledFonts(const QVector<BundledFont> &fonts);
 
 /* True when `family` is available on this machine only because a bundle registered it. */
 bool fontFamilySuppliedByBundle(const QString &family);
+
+/*
+ * The same question one face deeper: Qt can draw this exact face because a bundled file brought
+ * it, rather than because the machine had it. An empty face asks about the family.
+ */
+bool fontFaceSuppliedByBundle(const QString &family, const QString &styleName);
 
 /* `installBundledFonts(document.bundledFonts)`. */
 QStringList installDocumentFonts(const Document &document);

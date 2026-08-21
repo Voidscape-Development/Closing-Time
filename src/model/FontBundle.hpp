@@ -43,9 +43,25 @@ namespace closingtime {
 struct BundledFont {
 	/* The family this file was collected for, as the document's styles name it. */
 	QString family;
+	/*
+	 * The faces of that family this file supplies, as the file's own `name` table declares them.
+	 * An empty entry is the family's default face.
+	 *
+	 * Recorded because a family is not one file and the roll does not use all of them. Without
+	 * it, a bundle arriving on a machine that has the family installed but not the semibold has
+	 * no way to know that the file it is carrying is the one thing that can supply it, and the
+	 * font window has no way to say which faces travelled and which did not.
+	 *
+	 * Empty in a bundle written before this was recorded, which means "unknown" rather than
+	 * "none": such a file is treated as standing for the whole family, exactly as it used to be.
+	 */
+	QStringList styleNames;
 	/* The file's own base name. Carried for the log and for the cache file's extension. */
 	QString fileName;
 	QByteArray data;
+
+	/* True when this file declares a face of `family` called `styleName`, spelling aside. */
+	bool supplies(const QString &family, const QString &styleName) const;
 
 	/*
 	 * Content hash, hex. Names the extracted cache file and is how two rolls that carry the
@@ -100,6 +116,21 @@ constexpr qint64 kMaxBundledFontBytes = 8 * 1024 * 1024;
 constexpr qint64 kMaxFontBundleBytes = 32 * 1024 * 1024;
 
 /*
+ * A family the roll is set in, and the faces of it the roll actually names.
+ *
+ * The faces are what makes a bundle able to carry the right file when it cannot carry them all.
+ * An empty entry in `styleNames` is the family's default face, which is what every style written
+ * before faces could be named asks for.
+ */
+struct FontUse {
+	QString family;
+	QStringList styleNames;
+
+	bool operator==(const FontUse &other) const { return family == other.family && styleNames == other.styleNames; }
+	bool operator!=(const FontUse &other) const { return !(*this == other); }
+};
+
+/*
  * Reads the files behind each family off this machine, ready to be carried with the document.
  *
  * Every file declaring the family comes along, not just the one Qt would pick: the regular, the
@@ -107,10 +138,16 @@ constexpr qint64 kMaxFontBundleBytes = 32 * 1024 * 1024;
  * the file the bold is in. Families with no file to be found -- a generic, a webfont, one this
  * machine does not have either -- contribute nothing and are simply absent from the result.
  *
+ * The files that supply a face the roll actually names are read **first**, so that a family too
+ * large to carry whole carries the faces the roll is set in rather than whichever files the
+ * directory walk happened to reach before the cap. Carrying a family's four unused faces and
+ * dropping the semibold it is actually set in is the one outcome worse than carrying nothing,
+ * because it looks like it worked.
+ *
  * `skipped`, when given, receives the families a file was found for but not carried, because that
  * one file or the bundle as a whole would have gone past the caps above.
  */
-QVector<BundledFont> collectBundledFonts(const QStringList &families, QStringList *skipped = nullptr);
+QVector<BundledFont> collectBundledFonts(const QVector<FontUse> &fonts, QStringList *skipped = nullptr);
 
 /* Total size of the files in a bundle, in bytes. */
 qint64 fontBundleBytes(const QVector<BundledFont> &fonts);

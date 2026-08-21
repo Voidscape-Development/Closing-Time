@@ -26,6 +26,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QFontMetricsF>
+#include <QHash>
+#include <QPair>
 #include <QTemporaryDir>
 
 #include "harness/Fixtures.hpp"
@@ -195,6 +197,81 @@ QString facedFamily()
 	}
 
 	return QString();
+}
+
+/*
+ * A family this machine holds in two files, one face each, or empty when it has none.
+ *
+ * This is what a check about carrying the right *file* needs: two files under one family that are
+ * not interchangeable. A family in a single file cannot tell "the bundle chose well" apart from
+ * "the bundle had one choice".
+ */
+struct TwoFaceFamily {
+	QString family;
+	QString firstPath;
+	QString firstStyle;
+	QString secondPath;
+	QString secondStyle;
+
+	bool isValid() const { return !family.isEmpty(); }
+};
+
+TwoFaceFamily findTwoFaceFamily()
+{
+	static const QStringList filters = {QStringLiteral("*.ttf"), QStringLiteral("*.otf")};
+
+	/* Family -> the (file, face) pairs found for it, one entry per face a file declares. */
+	QHash<QString, QVector<QPair<QString, QString>>> byFamily;
+
+	for (const QString &directory : fontSearchPaths()) {
+		QDirIterator walk(directory, filters, QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+		while (walk.hasNext()) {
+			const QString path = walk.next();
+			if (QFileInfo(path).size() > kMaxBundledFontBytes)
+				continue;
+
+			for (const FontFace &face : fontFacesInFile(path)) {
+				if (face.styleName.isEmpty())
+					continue;
+
+				byFamily[face.family].append({path, face.styleName});
+			}
+		}
+	}
+
+	/*
+	 * Walked in name order rather than in the hash's. QHash randomises its iteration per process,
+	 * which would have this pick a different family on each run -- and a check that fails on one
+	 * machine in four runs is one nobody can reproduce.
+	 */
+	QStringList families = byFamily.keys();
+	families.sort(Qt::CaseInsensitive);
+
+	for (const QString &family : families) {
+		const QVector<QPair<QString, QString>> &found = byFamily[family];
+
+		for (int i = 0; i < found.size(); ++i) {
+			for (int j = i + 1; j < found.size(); ++j) {
+				/* Different files, and faces that are really different faces. */
+				if (found.at(i).first == found.at(j).first ||
+				    found.at(i).second.compare(found.at(j).second, Qt::CaseInsensitive) == 0)
+					continue;
+
+				/*
+				 * Qt has to agree that both are faces of this family, or a check about
+				 * what renders would be asking about a face nothing can draw.
+				 */
+				if (!fontStyleAvailable(family, found.at(i).second) ||
+				    !fontStyleAvailable(family, found.at(j).second))
+					continue;
+
+				return TwoFaceFamily{family, found.at(i).first, found.at(i).second, found.at(j).first,
+						     found.at(j).second};
+			}
+		}
+	}
+
+	return TwoFaceFamily();
 }
 
 int filesIn(const QString &directory)
@@ -409,17 +486,18 @@ CT_SUITE(fonts_collection, "Which files a roll carries with it")
 	check(QFile::copy(installed.path, second), "and a second file declaring the same family");
 	scoped.searchHere();
 
-	const QVector<BundledFont> bundle = collectBundledFonts({installed.family});
+	const QVector<BundledFont> bundle = collectBundledFonts({FontUse{installed.family, {QString()}}});
 	checkEq(bundle.size(), 2, "every file declaring the family is carried, not just one of them");
 	check(!bundle.value(0).isEmpty(), "with the file's bytes in it");
 	checkEq(bundle.value(0).family, installed.family, "recorded under the family it was collected for");
 	checkEq(static_cast<long long>(fontBundleBytes(bundle)), 2 * QFileInfo(regular).size(),
 		"and the bundle is as big as the files in it");
 
-	check(collectBundledFonts({kAbsentFamily}).isEmpty(), "a family with no file contributes nothing");
+	check(collectBundledFonts({FontUse{kAbsentFamily, {QString()}}}).isEmpty(),
+	      "a family with no file contributes nothing");
 
 	QStringList skipped;
-	collectBundledFonts({kAbsentFamily}, &skipped);
+	collectBundledFonts({FontUse{kAbsentFamily, {QString()}}}, &skipped);
 	check(skipped.isEmpty(), "a family with no file is not reported as skipped: there was nothing to refuse");
 
 	/* A document collects for itself, through the same switch the designer offers. */
@@ -780,4 +858,290 @@ CT_SUITE(fonts_decorations, "Underline and strikeout, on both of the renderer's 
 	const Ink outlinedStruckInk = inkOf(renderImage(documentWith(outlinedStruck)));
 	check(outlinedStruckInk.width() > outlinedInk.width(),
 	      "the strikeout is outlined along with the letters, so it reaches past them");
+}
+
+CT_SUITE(fonts_faces_in_file, "Reading which faces a font file holds")
+{
+	const TwoFaceFamily two = findTwoFaceFamily();
+	check(two.isValid(), "this machine has a family held in two files, one face each");
+	if (!two.isValid())
+		return;
+
+	const QVector<FontFace> faces = fontFacesInFile(two.firstPath);
+	check(!faces.isEmpty(), "a font file declares the faces it holds");
+
+	bool found = false;
+	for (const FontFace &face : faces) {
+		if (face.family.compare(two.family, Qt::CaseInsensitive) == 0 &&
+		    face.styleName.compare(two.firstStyle, Qt::CaseInsensitive) == 0)
+			found = true;
+	}
+	check(found, "including the family and face it was found under");
+
+	/*
+	 * The file holding one face of a family must not claim the other's, or a bundle would think
+	 * it had carried a face it never touched.
+	 */
+	bool claimsTheOther = false;
+	for (const FontFace &face : faces) {
+		if (face.family.compare(two.family, Qt::CaseInsensitive) == 0 &&
+		    face.styleName.compare(two.secondStyle, Qt::CaseInsensitive) == 0)
+			claimsTheOther = true;
+	}
+	check(!claimsTheOther, "and not the face that lives in the other file");
+
+	check(fontFacesInFile(two.firstPath + QStringLiteral(".nothing")).isEmpty(),
+	      "a file that is not there holds none");
+
+	/* The families reader is the faces reader with the faces dropped, so the two must agree. */
+	const QStringList families = fontFamiliesInFile(two.firstPath);
+	for (const FontFace &face : faces)
+		check(families.contains(face.family), "every face's family is one the file reports");
+}
+
+CT_SUITE(fonts_bundle_faces, "What a carried file says it supplies")
+{
+	BundledFont font;
+	font.family = QStringLiteral("Some Family");
+	font.styleNames = {QStringLiteral("Semibold"), QStringLiteral("Semibold Italic")};
+	font.fileName = QStringLiteral("some-family-semibold.ttf");
+	font.data = QByteArray("pretend this is a font");
+
+	check(font.supplies(QStringLiteral("Some Family"), QStringLiteral("Semibold")), "a declared face is supplied");
+	check(font.supplies(QStringLiteral("some family"), QStringLiteral("SEMIBOLD")),
+	      "spelling of neither is what decides it");
+	check(!font.supplies(QStringLiteral("Some Family"), QStringLiteral("Black")),
+	      "a face the file does not hold is not supplied");
+	check(!font.supplies(QStringLiteral("Other Family"), QStringLiteral("Semibold")),
+	      "and neither is another family's");
+
+	OBSDataAutoRelease data = obs_data_create();
+	font.save(data);
+
+	BundledFont loaded;
+	loaded.load(data);
+
+	checkEq(loaded.family, font.family, "the family survives the round trip");
+	checkEq(loaded.styleNames.size(), 2, "and both faces with it");
+	checkEq(loaded.styleNames.value(0), QStringLiteral("Semibold"), "in the order they were recorded");
+	checkEq(loaded.styleNames.value(1), QStringLiteral("Semibold Italic"), "both of them");
+	check(loaded.data == font.data, "and the bytes are untouched");
+
+	/*
+	 * A bundle written before faces were recorded says nothing about which it holds. That has to
+	 * mean "the whole family", not "none of it": reading it as none would have such a bundle stop
+	 * answering for the roll it has been carrying all along.
+	 */
+	OBSDataAutoRelease older = obs_data_create();
+	obs_data_set_string(older, "family", "Some Family");
+	obs_data_set_string(older, "file", "some-family.ttf");
+	obs_data_set_string(older, "data", QByteArray("pretend this is a font").toBase64().constData());
+
+	BundledFont legacy;
+	legacy.load(older);
+
+	check(legacy.styleNames.isEmpty(), "an old entry declares no faces");
+	check(legacy.supplies(QStringLiteral("Some Family"), QStringLiteral("Semibold")),
+	      "and answers for the whole family, as it always has");
+	check(legacy.supplies(QStringLiteral("Some Family"), QString()), "the default face included");
+}
+
+CT_SUITE(fonts_used_faces, "Which faces a roll is set in, not just which families")
+{
+	Section heading = unpadded(SectionType::Title);
+	heading.text = sample();
+	heading.style.family = QStringLiteral("Zeta Face");
+	heading.style.styleName = QStringLiteral("Black");
+
+	Section pair = unpadded(SectionType::TitleWithSubtitle);
+	pair.text = sample();
+	pair.secondaryText = QStringLiteral("and after");
+	pair.style.family = QStringLiteral("Zeta Face");
+	pair.style.styleName = QStringLiteral("Black");
+	pair.secondaryStyle.family = QStringLiteral("Zeta Face");
+	pair.secondaryStyle.styleName = QStringLiteral("Book");
+
+	Document document = documentWith({heading, pair});
+
+	const QVector<FontUse> fonts = document.usedFonts();
+	checkEq(fonts.size(), 1, "one family, however many faces of it are used");
+	checkEq(fonts.value(0).family, QStringLiteral("Zeta Face"), "which is the one the roll is set in");
+	checkEq(fonts.value(0).styleNames.size(), 2, "and the faces it names, a face used twice counted once");
+	checkEq(fonts.value(0).styleNames.value(0), QStringLiteral("Black"), "sorted");
+	checkEq(fonts.value(0).styleNames.value(1), QStringLiteral("Book"), "both of them");
+
+	checkEq(document.usedFontFamilies().size(), 1, "the families are the same list with the faces dropped");
+	checkEq(document.usedFontFamilies().value(0), QStringLiteral("Zeta Face"), "naming the same family");
+
+	/*
+	 * A roll that has never named a face reports the default one as an empty entry rather than
+	 * reporting nothing: the family still has to be collected and still has to be reported on.
+	 */
+	Section plain = unpadded(SectionType::Title);
+	plain.text = sample();
+	plain.style.family = QStringLiteral("Alpha Face");
+
+	const QVector<FontUse> plainFonts = documentWith(plain).usedFonts();
+	checkEq(plainFonts.size(), 1, "a roll naming no face still reports its family");
+	checkEq(plainFonts.value(0).styleNames.size(), 1, "with one entry for the default face");
+	check(plainFonts.value(0).styleNames.value(0).isEmpty(), "which is empty, being nobody's choice");
+}
+
+CT_SUITE(fonts_bundle_face_collection, "Carrying the file the roll's face is actually in")
+{
+	const TwoFaceFamily two = findTwoFaceFamily();
+	check(two.isValid(), "this machine has a family held in two files, one face each");
+	if (!two.isValid())
+		return;
+
+	ScopedFontPaths scoped;
+	if (!scoped.isValid())
+		return;
+
+	check(QDir().mkpath(scoped.fontDir()), "the temporary font directory was created");
+
+	const QString firstCopy = scoped.fontDir() + QStringLiteral("/first.ttf");
+	const QString secondCopy = scoped.fontDir() + QStringLiteral("/second.ttf");
+	check(QFile::copy(two.firstPath, firstCopy), "the file holding one face was placed where the index looks");
+	check(QFile::copy(two.secondPath, secondCopy), "and the file holding the other");
+	scoped.searchHere();
+
+	/*
+	 * Asked for each face in turn, and the file holding it has to come first both times. One
+	 * direction alone could be the order the directory happened to be walked in; both cannot be.
+	 */
+	const QVector<BundledFont> forFirst = collectBundledFonts({FontUse{two.family, {two.firstStyle}}});
+	checkEq(forFirst.size(), 2, "both files are carried when both fit");
+	check(forFirst.value(0).supplies(two.family, two.firstStyle),
+	      "and the one holding the face the roll uses is read first");
+
+	const QVector<BundledFont> forSecond = collectBundledFonts({FontUse{two.family, {two.secondStyle}}});
+	check(forSecond.value(0).supplies(two.family, two.secondStyle),
+	      "which holds whichever face is asked for, not whichever file was walked first");
+
+	/* And what is carried records the faces it holds, or nothing downstream can tell them apart. */
+	check(!forFirst.value(0).styleNames.isEmpty(), "a carried file records the faces it holds");
+	check(!forFirst.value(0).supplies(two.family, two.secondStyle), "and does not claim the one in the other file");
+}
+
+CT_SUITE(fonts_bundle_face_refresh, "A roll that starts using a new face collects the file for it")
+{
+	const TwoFaceFamily two = findTwoFaceFamily();
+	check(two.isValid(), "this machine has a family held in two files, one face each");
+	if (!two.isValid())
+		return;
+
+	ScopedFontPaths scoped;
+	if (!scoped.isValid())
+		return;
+
+	check(QDir().mkpath(scoped.fontDir()), "the temporary font directory was created");
+	check(QFile::copy(two.firstPath, scoped.fontDir() + QStringLiteral("/first.ttf")), "one face is available");
+	scoped.searchHere();
+
+	Document document = headingIn(two.family);
+	document.sections[0].style.styleName = two.firstStyle;
+
+	check(document.refreshFontBundle(), "the roll collects the file its face is in");
+	checkEq(document.bundledFonts.size(), 1, "which is the only file there is");
+	check(document.bundledFonts.value(0).supplies(two.family, two.firstStyle), "and it supplies that face");
+	check(!document.refreshFontBundle(), "asking again with nothing changed collects nothing");
+
+	/*
+	 * The heart of it. The family has not changed, so a bundle that stopped at families would
+	 * see nothing to do and leave the roll carrying a file that cannot draw the face it is now
+	 * set in -- rendering a weight off on every machine but this one, silently.
+	 */
+	check(QFile::copy(two.secondPath, scoped.fontDir() + QStringLiteral("/second.ttf")),
+	      "the file holding the other face arrives");
+	clearFontFileIndex();
+
+	document.sections[0].style.styleName = two.secondStyle;
+	check(document.refreshFontBundle(), "naming a face of a family already carried is still a change");
+
+	bool supplied = false;
+	for (const BundledFont &font : document.bundledFonts)
+		supplied = supplied || font.supplies(two.family, two.secondStyle);
+
+	check(supplied, "and the file that face lives in is now carried");
+}
+
+CT_SUITE(fonts_face_status, "What the font window says about a face")
+{
+	const TwoFaceFamily two = findTwoFaceFamily();
+	check(two.isValid(), "this machine has a family held in two files, one face each");
+	if (!two.isValid())
+		return;
+
+	Document document = headingIn(two.family);
+	document.sections[0].style.styleName = two.firstStyle;
+
+	QVector<FontStatus> statuses = fontStatus(document);
+	checkEq(statuses.size(), 1, "one family is reported");
+	check(statuses.value(0).available, "which this machine has");
+	checkEq(statuses.value(0).faces.size(), 1, "with a row for the face the roll names");
+	checkEq(statuses.value(0).faces.value(0).styleName, two.firstStyle, "naming that face");
+	check(statuses.value(0).faces.value(0).available, "which this machine has too");
+	check(!statuses.value(0).hasMissingFace(), "so nothing is missing");
+
+	/*
+	 * The state that had no way to be reported before: the family is installed, the roll renders,
+	 * the layout holds, and one heading is coming out a weight off.
+	 */
+	document.sections[0].style.styleName = QStringLiteral("Closing Time Absent Face Name");
+
+	statuses = fontStatus(document);
+	check(statuses.value(0).available, "a family with a face missing is still an installed family");
+	check(missingFontFamilies(document).isEmpty(), "and is not reported as a missing family");
+	checkEq(statuses.value(0).faces.size(), 1, "but the face is reported");
+	check(!statuses.value(0).faces.value(0).available, "as one this machine cannot draw");
+	check(statuses.value(0).hasMissingFace(), "which is what the family row has to know");
+
+	/*
+	 * A roll that has never named a face has nothing to say about faces. The default face is
+	 * nobody's choice and the family row already answers for it.
+	 */
+	Document plain = headingIn(two.family);
+	check(fontStatus(plain).value(0).faces.isEmpty(), "a roll naming no face reports no face rows");
+	check(!fontStatus(plain).value(0).hasMissingFace(), "and nothing missing among them");
+}
+
+CT_SUITE(fonts_face_install, "Registering a carried file for the sake of one face")
+{
+	const TwoFaceFamily two = findTwoFaceFamily();
+	if (!two.isValid())
+		return;
+
+	ScopedFontPaths scoped;
+	if (!scoped.isValid())
+		return;
+
+	QFile file(two.firstPath);
+	check(file.open(QIODevice::ReadOnly), "the font file was readable");
+	if (!file.isOpen())
+		return;
+
+	/*
+	 * Filed under a family this machine really has, which is the case that used to be skipped
+	 * outright: a bundle whose family is installed was assumed to have nothing to add.
+	 */
+	BundledFont carried;
+	carried.family = two.family;
+	carried.fileName = QFileInfo(two.firstPath).fileName();
+	carried.data = file.readAll();
+	carried.styleNames = {two.firstStyle};
+
+	check(installBundledFonts({carried}).isEmpty(),
+	      "a file whose every face this machine already has is left to the installed one");
+	checkEq(filesIn(scoped.cacheDir()), 0, "and is not even extracted");
+
+	/*
+	 * The same file, declaring a face the machine does not have. Now it is the only thing that
+	 * can supply that face, and skipping it would leave the roll a weight off.
+	 */
+	BundledFont needed = carried;
+	needed.styleNames = {QStringLiteral("Closing Time Absent Face Name")};
+
+	check(!installBundledFonts({needed}).isEmpty(), "a file carrying a face this machine lacks is registered");
+	checkEq(filesIn(scoped.cacheDir()), 1, "and extracted, exactly once");
 }

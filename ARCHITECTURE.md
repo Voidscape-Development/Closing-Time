@@ -1073,8 +1073,34 @@ is yes, leaving the flags standing when it is not. They are also what a family s
 or no italic at all is drawn with — the picker offers those faces marked as synthesised, since
 dropping them would take faux-bold away from every single-face family on the machine.
 
+**A face is a file, not a family.** `DejaVuSans-Bold.ttf` holds the Bold and nothing else, so the
+bundle records which faces each carried file declares (`BundledFont::styleNames`), read from the
+file's own `name` table — ids 1/2 for the legacy pair and 16/17 for the typographic one, kept
+apart so "Inter SemiBold" is never crossed with "SemiBold" to invent a face no font declares.
+Three things fall out of knowing it:
+
+- **The right file is carried.** `collectBundledFonts` reads the files supplying a face the roll
+  actually names *first*, so a family too large to carry whole carries the faces the roll is set
+  in rather than whichever files the directory walk reached before the cap.
+- **A new face re-collects.** `refreshFontBundle` asks whether what is already carried supplies
+  every face now used, not merely whether the family is carried. Setting one heading to a
+  family's semibold changes nothing about the family and everything about which file has to
+  travel.
+- **A bundled file is registered for one face.** `installBundledFonts` used to skip any family the
+  machine already had. It now skips only when every face the file declares is also already
+  drawable — having Inter installed but not its semibold is an ordinary state, and there the
+  bundled file is the only thing that can supply it.
+
+The font window reports the same thing one level down: a family row carries a child row per face
+the roll names, saying what will happen rather than only that something is absent, since a missing
+face is the quiet failure — the family is there, the layout holds, and the roll goes out a weight
+off. Faces are only listed where a style named one, so a roll that has never opened the picker
+shows exactly what it always did.
+
 A style written before any of this names no face, which is exactly what an empty `styleName`
-means, so there is nothing to migrate. The picker matches such a style by its flags and prefers a
+means, so there is nothing to migrate. A bundle written before faces were recorded declares none,
+which means *unknown* rather than *none*: such a file answers for its whole family, exactly as it
+always has. The picker matches such a style by its flags and prefers a
 real face over a synthesised one, so opening an old bold heading lands on the family's designed
 Bold. A face the machine does not have is kept in the list, marked, and preselected: opening the
 picker to see what a travelled roll is set in must not rewrite it on the way out.
