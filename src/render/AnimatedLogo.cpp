@@ -138,28 +138,7 @@ LogoAnimationPtr decodeWithQt(const QString &path, int maxHeight)
 	return animation;
 }
 
-/*
- * Extensions a logo file may carry that mean "this is a video".
- *
- * Nothing here is decoded -- the list exists so that a video file picked as a logo is answered
- * with a sentence rather than with an empty box. See `isVideoLogoPath`.
- */
-const QStringList &videoLogoExtensions()
-{
-	static const QStringList extensions = {
-		QStringLiteral("webm"), QStringLiteral("mp4"), QStringLiteral("m4v"),
-		QStringLiteral("mov"),  QStringLiteral("mkv"), QStringLiteral("avi"),
-		QStringLiteral("wmv"),  QStringLiteral("mpg"), QStringLiteral("mpeg"),
-	};
-	return extensions;
-}
-
 } // namespace
-
-bool isVideoLogoPath(const QString &path)
-{
-	return videoLogoExtensions().contains(QFileInfo(path).suffix().toLower());
-}
 
 QString imageLogoPatterns()
 {
@@ -226,10 +205,9 @@ LogoAnimationPtr AnimatedLogoCache::get(const QString &path, int maxHeight)
 		return it->animation;
 
 	/*
-	 * A video file gets here like anything else and comes back as no animation: QImageReader
-	 * does not read one, and this plugin does not carry a decoder that does. The designer says
-	 * so in words -- see `isVideoLogoPath` and Designer.VideoLogoUnsupported -- because a
-	 * placeholder box with no explanation is the kind of thing that gets reported as broken.
+	 * Anything QImageReader cannot step through -- a still, a video, a file that is not a
+	 * picture at all -- comes back as no animation, and the still path reports what it made of
+	 * it. Only what Qt reads animates here.
 	 */
 	const LogoAnimationPtr animation = decodeWithQt(path, height);
 

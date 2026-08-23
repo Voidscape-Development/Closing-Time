@@ -694,15 +694,15 @@ and says so, and the designer surfaces that under the preview.
 is what keeps preview and output identical for the formats logos arrive in, and what keeps the
 plugin's dependencies to the ones OBS already guarantees a plugin: libobs and Qt.
 
-Video — WebM, MP4 and the rest — is deliberately not decoded. Decoding it means libav, and a
-module that links libav is stamped with the exact FFmpeg major it was built against while OBS
-ships its own and moves it between releases; the release after a move, that stamp names a file
-the loader cannot find and the *whole module* fails to load, credit rolls and all, over artwork
-nobody has to use. Working around that costs a hand-written runtime loader, a version gate and a
-feature that switches itself off anyway. A credit roll's logo is a bug, a wordmark or a short
-sting, and an animated WebP or GIF is what that is; so `isVideoLogoPath` recognises a video by
-name in order to explain itself — in the file dialog and under the designer's preview — and
-nothing here decodes one.
+Video — WebM, MP4 and the rest — is deliberately not decoded, and nothing here knows what a
+video file is. Decoding one means libav, and a module that links libav is stamped with the exact
+FFmpeg major it was built against while OBS ships its own and moves it between releases; the
+release after a move, that stamp names a file the loader cannot find and the *whole module*
+fails to load, credit rolls and all, over artwork nobody has to use. Working around that costs a
+hand-written runtime loader, a version gate and a feature that switches itself off anyway. A
+credit roll's logo is a bug, a wordmark or a short sting, and an animated WebP or GIF is what
+that is. A video file dropped into a logo slot is therefore an unreadable picture like any
+other: `LogoCache` says so in the OBS log and the slot draws its placeholder box.
 
 **Shadows.** A logo's drop shadow is the same shadow in every frame for any artwork that keeps
 its silhouette, which is most of it, so by default the strip bakes the first frame's shadow
@@ -1231,9 +1231,9 @@ same reason: reporting it would send the user after a font nothing uses.
    plays only its first part. This is a deliberate trade — see *Animated logos* — but it does
    mean a long clip is not a logo as far as this plugin is concerned.
 5. **A logo is a picture, never a video.** GIF, APNG and animated WebP animate; WebM, MP4 and
-   the rest are not decoded at all, on any platform or build. A video chosen as a logo is
-   turned away in the file dialog, reported under the designer's preview and drawn as a
-   placeholder. Converting a clip to an animated WebP is the answer, and the reason is in
+   the rest are not decoded at all, on any platform or build, and are not recognised as
+   anything either — a video in a logo slot is an unreadable file, logged as one and drawn as
+   a placeholder. Converting a clip to an animated WebP is the answer, and the reason is in
    *Animated logos*: a linked libav is a plugin that stops loading the day OBS changes its
    FFmpeg, which is a far worse failure than not playing an MP4.
 6. **Playback settings are per section in the designer, per logo in the document.** The model

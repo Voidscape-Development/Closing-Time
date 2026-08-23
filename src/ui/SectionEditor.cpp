@@ -79,20 +79,6 @@ QString imageFilter()
 	return filter + QStringLiteral(";;%1 (*)").arg(moduleText("Designer.AllFilesFilter"));
 }
 
-/*
- * Says so when the chosen file is a video, which a logo may not be.
- *
- * The alternative is a placeholder box in the roll and a line in the OBS log, which is a long way
- * from the file dialog the user was standing in when they made the choice.
- */
-void warnIfVideoChosen(QWidget *parent, const QString &path)
-{
-	if (path.isEmpty() || !isVideoLogoPath(path))
-		return;
-
-	QMessageBox::warning(parent, moduleText("Designer.ChooseLogo"), moduleText("Designer.VideoLogoUnsupported"));
-}
-
 /* The only format QSvgRenderer reads, which is what a bridge tile is rendered through. */
 QString svgFilter()
 {
@@ -1913,7 +1899,6 @@ void SectionEditor::browseForSectionLogo()
 	if (path.isEmpty())
 		return;
 
-	warnIfVideoChosen(this, path);
 	logoPath->setText(path);
 }
 
@@ -1940,8 +1925,6 @@ void SectionEditor::browseForEntryLogo()
 							  existing ? existing->text() : QString(), imageFilter());
 	if (path.isEmpty())
 		return;
-
-	warnIfVideoChosen(this, path);
 
 	entryTable->setItem(row, 0, new QTableWidgetItem(path));
 	if (!entryTable->item(row, 1))

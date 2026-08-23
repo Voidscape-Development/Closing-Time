@@ -22,7 +22,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QImage>
 #include <QSize>
 #include <QString>
-#include <QStringList>
 #include <QVector>
 
 #include <memory>
@@ -83,16 +82,6 @@ constexpr int kMaxLogoDurationMs = 30000;
  * machine down. Decoding stops here and the animation is marked truncated.
  */
 constexpr qint64 kMaxLogoAnimationBytes = 256LL * 1024 * 1024;
-
-/*
- * True when `path` names a video file -- WebM, MP4 and the rest.
- *
- * Logos are pictures here: GIF, APNG and animated WebP animate, and video is not decoded at all.
- * This exists so that a video file chosen as a logo can be answered with a sentence rather than
- * with an empty box, in the file dialog and under the designer's preview. It reads the name, not
- * the file, which is all that answer needs.
- */
-bool isVideoLogoPath(const QString &path);
 
 /*
  * Filename patterns for a logo file dialog, e.g. "*.png *.gif".

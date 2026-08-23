@@ -118,8 +118,7 @@ turned off per roll and the window says so where the switch is.
 
 **Logos can move.** Any slot that takes a logo — a heading's, a wordmark, a cell in a sponsor
 grid, an ornament in the middle of a divider — takes an animated GIF, APNG or animated WebP.
-Video files are not logos and are not played; the designer says so if one is chosen. Each one
-sets whether it loops or plays
+Video files are not logos and are not played. Each one sets whether it loops or plays
 once, whether it starts with the roll or when it scrolls into frame, and how fast it runs against
 the artwork's own timing. Animations move with the roll rather than with the clock, so a paused
 roll is a still frame, and they carry the section's drop shadow like any other logo — from the

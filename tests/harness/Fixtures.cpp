@@ -260,27 +260,6 @@ QString testAnimatedLogoPath()
 	return path;
 }
 
-QString videoLogoPath()
-{
-	static const QString path = [] {
-		if (!assetDir().isValid())
-			return QString();
-
-		const QString file = assetDir().filePath(QStringLiteral("logo.mp4"));
-
-		QFile out(file);
-		if (!out.open(QIODevice::WriteOnly))
-			return QString();
-
-		out.write("not a video, and nothing here will ever look inside it");
-		out.close();
-
-		return file;
-	}();
-
-	return path;
-}
-
 Section &withAnimatedLogo(Section &section, int maxHeight)
 {
 	section.logo.path = testAnimatedLogoPath();
