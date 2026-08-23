@@ -146,39 +146,6 @@ QVector<MenuEntry> sourcesOfType(const QByteArray &sourceId)
 	return collector.entries;
 }
 
-/*
- * True when any logo in the roll is a video file.
- *
- * Asked only in a build without FFmpeg, to explain a logo that is drawing as a placeholder box. It
- * reads paths rather than decoding anything, which is all that is needed to answer it.
- */
-bool documentUsesVideoLogos(const Document &document)
-{
-	const auto isVideo = [](const LogoRef &logo) {
-		return !logo.isEmpty() && isVideoLogoPath(logo.path);
-	};
-
-	for (const Section &section : document.sections) {
-		if (!section.visible)
-			continue;
-
-		if (isVideo(section.logo))
-			return true;
-
-		for (const Entry &entry : section.entries) {
-			if (isVideo(entry.logo))
-				return true;
-		}
-
-		for (const DividerPiece &piece : section.dividerCentre) {
-			if (piece.kind == DividerPiece::Kind::Logo && isVideo(piece.logo))
-				return true;
-		}
-	}
-
-	return false;
-}
-
 /* Rebuilds the Tools submenu from what is loaded right now. */
 void fillDesignerMenu(QMenu *menu, const QByteArray &sourceId)
 {
@@ -1171,9 +1138,8 @@ void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, 
 		warnings.append(moduleText("Designer.SubstitutedFonts").arg(substituted.join(QStringLiteral(", "))));
 
 	/*
-	 * Reported from the strip rather than from the document, because both of these are answers
-	 * only the decoder has: how long a file turned out to be, and whether this build could open
-	 * it at all.
+	 * Reported from the strip rather than from the document, because it is an answer only the
+	 * decoder has: how long a file turned out to be once every frame of it had been read.
 	 */
 	const bool truncated = std::any_of(strip.animatedLogos.cbegin(), strip.animatedLogos.cend(),
 					   [](const AnimatedLogoPlacement &placement) {
@@ -1181,9 +1147,6 @@ void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, 
 					   });
 	if (truncated)
 		warnings.append(moduleText("Designer.LogoTruncated").arg(kMaxLogoDurationMs / 1000));
-
-	if (!animatedLogosSupportVideo() && documentUsesVideoLogos(rendered))
-		warnings.append(moduleText("Designer.VideoLogoUnsupported"));
 
 	fontWarningLabel->setVisible(!warnings.isEmpty());
 	fontWarningLabel->setText(warnings.join(QStringLiteral("\n")));

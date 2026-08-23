@@ -117,8 +117,8 @@ rather than quietly substituted. Carrying font files is redistributing them, so 
 turned off per roll and the window says so where the switch is.
 
 **Logos can move.** Any slot that takes a logo — a heading's, a wordmark, a cell in a sponsor
-grid, an ornament in the middle of a divider — takes an animated GIF, APNG or animated WebP, and
-a video file (WebM, MP4) in a build made with FFmpeg. Each one sets whether it loops or plays
+grid, an ornament in the middle of a divider — takes an animated GIF, APNG or animated WebP.
+Video files are not logos and are not played. Each one sets whether it loops or plays
 once, whether it starts with the roll or when it scrolls into frame, and how fast it runs against
 the artwork's own timing. Animations move with the roll rather than with the clock, so a paused
 roll is a still frame, and they carry the section's drop shadow like any other logo — from the
@@ -157,11 +157,6 @@ and ending actions are mutually exclusive — a looping roll never ends.
 Requires CMake 3.28+, a C++17 compiler, Qt 6 (Core, Gui, Widgets and Svg — Svg is what draws
 the bridge and divider artwork), and the OBS Studio sources/dependencies. The plugin needs both
 `ENABLE_QT` and `ENABLE_FRONTEND_API`, which are on by default.
-
-FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libswscale`) is optional and is what decodes
-**video** logos. It is looked for at configure time and the build says which way it went; without
-it the plugin builds and animates exactly the same, minus WebM and MP4. Pass
-`-DENABLE_VIDEO_LOGOS=OFF` to leave it out deliberately.
 
 ```bash
 cmake --preset ubuntu-x86_64      # or windows-x64 / macos

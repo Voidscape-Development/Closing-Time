@@ -376,8 +376,8 @@ struct LogoPlayback {
 
 /*
  * A logo reference. `path` is an absolute path to an image QImageReader can decode
- * (PNG/JPEG/SVG/etc), or to an animation -- GIF, APNG, animated WebP, and where the plugin
- * was built with FFmpeg, a video file. `maxHeight` bounds the drawn size; width follows from
+ * (PNG/JPEG/SVG/etc), or to an animation -- GIF, APNG or animated WebP. Video files are not
+ * logos and are not decoded. `maxHeight` bounds the drawn size; width follows from
  * the aspect ratio and is additionally clamped to the available column width at layout time.
  *
  * Nothing here says whether the artwork is animated: that is a property of the file, read
