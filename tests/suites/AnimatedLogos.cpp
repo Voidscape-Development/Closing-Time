@@ -80,6 +80,34 @@ CT_SUITE(animated_logo_decode, "Decoding an animation, and telling one from a st
 	check(cache.get(animated, 64) == decoded, "a second ask returns the cached decode");
 }
 
+CT_SUITE(video_logos_are_not_played, "A video file is turned away rather than decoded")
+{
+	/*
+	 * Logos are pictures: GIF, APNG and animated WebP animate through Qt, and video is not
+	 * decoded at all. What is checked here is that every part of the plugin agrees about that
+	 * -- the file dialog, the designer's playback settings, and the cache -- because the way
+	 * this goes wrong is one of them offering a file the others will not draw.
+	 */
+	const QString patterns = imageLogoPatterns();
+	for (const QString &extension : {QStringLiteral("mp4"), QStringLiteral("webm"), QStringLiteral("mov")})
+		check(!patterns.contains(extension), "the logo file dialog does not offer " + extension);
+
+	check(isVideoLogoPath(QStringLiteral("sting.WebM")), "a video is known by its extension, in any case");
+	check(isVideoLogoPath(QStringLiteral("/a/path/with.dots/clip.mp4")), "and by the last one of them");
+	check(!isVideoLogoPath(testLogoPath()), "a still picture is not a video");
+	check(!isVideoLogoPath(testAnimatedLogoPath()), "neither is an animated GIF");
+	check(!isVideoLogoPath(QString()), "and neither is nothing at all");
+
+	const QString video = videoLogoPath();
+	check(!video.isEmpty(), "the video-named fixture was written");
+	check(!logoPathLooksAnimated(video), "a video is offered no playback settings");
+
+	/* No animation, no crash, and the same answer the second time from the cache. */
+	AnimatedLogoCache cache;
+	check(cache.get(video, 64) == nullptr, "a video decodes to no animation");
+	check(cache.get(video, 64) == nullptr, "and does so again from the cache");
+}
+
 CT_SUITE(animated_logo_timing, "Which frame is showing, at a given point in an animation")
 {
 	AnimatedLogoCache cache;

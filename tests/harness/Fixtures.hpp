@@ -76,6 +76,15 @@ QString testAnimatedLogoPath();
 constexpr int kTestAnimationFrames = 2;
 constexpr int kTestAnimationFrameMs = 100;
 
+/*
+ * A file called `logo.mp4`, in the same temporary directory as the rest.
+ *
+ * Its contents are never read and are not a video: logos are pictures here, so what the checks
+ * care about is that a file *named* like a video is turned away with an explanation rather than
+ * decoded, offered playback settings, or drawn.
+ */
+QString videoLogoPath();
+
 /* Points a section's artwork -- its own and its entries' -- at the animated logo. */
 Section &withAnimatedLogo(Section &section, int maxHeight = 110);
 

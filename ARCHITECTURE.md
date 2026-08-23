@@ -46,7 +46,7 @@ src/
     FontBundle.{hpp,cpp}   the font files a document carries, and collecting them off the machine
   render/
     RenderThread.{hpp,cpp} the shared rasterisation thread and its job queue
-    AnimatedLogo.{hpp,cpp} decoding animated artwork (Qt) and video (FFmpeg), and frame timing
+    AnimatedLogo.{hpp,cpp} decoding animated artwork with Qt, and frame timing
     StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterisation
     SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
@@ -690,13 +690,19 @@ one for an hour of video, so it is bounded — 1800 frames, 30 seconds, and a 25
 artwork whose `maxHeight` makes the first two meaningless. Past a cap the animation is truncated
 and says so, and the designer surfaces that under the preview.
 
-Two decoders sit behind one cache. GIF, APNG and animated WebP come through `QImageReader`,
-which is what keeps preview and output identical for the formats most logos arrive in. Video —
-WebM, MP4 and the rest — is decoded with libav directly, behind `CLOSING_TIME_HAVE_FFMPEG`:
-FFmpeg is found at configure time if it is there, and a build without it still animates
-everything Qt can read and reports a video logo in the designer as needing a build that has it.
-Frames are scaled to `maxHeight` in `sws_scale` (sample aspect applied there too), which is why
-a 1080p sting costs what a 96-pixel logo costs.
+**One decoder, and it is Qt's.** GIF, APNG and animated WebP come through `QImageReader`, which
+is what keeps preview and output identical for the formats logos arrive in, and what keeps the
+plugin's dependencies to the ones OBS already guarantees a plugin: libobs and Qt.
+
+Video — WebM, MP4 and the rest — is deliberately not decoded. Decoding it means libav, and a
+module that links libav is stamped with the exact FFmpeg major it was built against while OBS
+ships its own and moves it between releases; the release after a move, that stamp names a file
+the loader cannot find and the *whole module* fails to load, credit rolls and all, over artwork
+nobody has to use. Working around that costs a hand-written runtime loader, a version gate and a
+feature that switches itself off anyway. A credit roll's logo is a bug, a wordmark or a short
+sting, and an animated WebP or GIF is what that is; so `isVideoLogoPath` recognises a video by
+name in order to explain itself — in the file dialog and under the designer's preview — and
+nothing here decodes one.
 
 **Shadows.** A logo's drop shadow is the same shadow in every frame for any artwork that keeps
 its silhouette, which is most of it, so by default the strip bakes the first frame's shadow
@@ -1224,9 +1230,12 @@ same reason: reporting it would send the user after a font nothing uses.
    the drawn size, so artwork longer than 30 seconds (or 1800 frames, or 256 MB of frames)
    plays only its first part. This is a deliberate trade — see *Animated logos* — but it does
    mean a long clip is not a logo as far as this plugin is concerned.
-5. **Video logos need a build with FFmpeg.** GIF, APNG and animated WebP come through Qt and
-   are always available; WebM and MP4 are compiled in only where FFmpeg was found. A build
-   without it draws a video logo as a placeholder and says so in the designer.
+5. **A logo is a picture, never a video.** GIF, APNG and animated WebP animate; WebM, MP4 and
+   the rest are not decoded at all, on any platform or build. A video chosen as a logo is
+   turned away in the file dialog, reported under the designer's preview and drawn as a
+   placeholder. Converting a clip to an animated WebP is the answer, and the reason is in
+   *Animated logos*: a linked libav is a plugin that stops loading the day OBS changes its
+   FFmpeg, which is a far worse failure than not playing an MP4.
 6. **Playback settings are per section in the designer, per logo in the document.** The model
    carries `LogoPlayback` on every `LogoRef`, and a hand-written or imported document with
    different settings per entry is honoured; the editor writes one set of settings to every
@@ -1239,9 +1248,9 @@ same reason: reporting it would send the user after a font nothing uses.
 
 ### Addressed since the first cut
 
-- Animated logos: GIF, APNG and animated WebP through Qt, video through FFmpeg where it is
-  available, drawn as their own quads over a hole the strip leaves for them, with per-logo loop,
-  start-on-entry, speed and shadow-follows-animation settings.
+- Animated logos: GIF, APNG and animated WebP through Qt, drawn as their own quads over a hole
+  the strip leaves for them, with per-logo loop, start-on-entry, speed and
+  shadow-follows-animation settings.
 - A machine-wide style library, with a document's presets linking to it, a copy kept as the
   fallback, a manager for publishing and linking, and live reload when it changes underneath a
   roll.

@@ -36,7 +36,7 @@ namespace closingtime {
  * logo is a small picture -- a bug, a sting, a sponsor loop, bounded by LogoRef::maxHeight --
  * so the whole of one is a few tens of megabytes at worst and playback becomes an index into an
  * array rather than a decoder running beside the compositor. It is the wrong trade for an hour
- * of video and the right one for the artwork this actually holds, which is why the caps below
+ * of footage and the right one for the artwork this actually holds, which is why the caps below
  * are part of the design rather than a safety net bolted on: a file that will not fit inside
  * them is not a logo, and is refused as one.
  */
@@ -84,32 +84,30 @@ constexpr int kMaxLogoDurationMs = 30000;
  */
 constexpr qint64 kMaxLogoAnimationBytes = 256LL * 1024 * 1024;
 
-/* Whether this build can decode video logos: false unless FFmpeg was found at configure time. */
-bool animatedLogosSupportVideo();
-
-/* Extensions the video path claims, with and without FFmpeg, e.g. "webm". */
-const QStringList &videoLogoExtensions();
-
-/* True when `path` names a file the video path would try to decode. */
+/*
+ * True when `path` names a video file -- WebM, MP4 and the rest.
+ *
+ * Logos are pictures here: GIF, APNG and animated WebP animate, and video is not decoded at all.
+ * This exists so that a video file chosen as a logo can be answered with a sentence rather than
+ * with an empty box, in the file dialog and under the designer's preview. It reads the name, not
+ * the file, which is all that answer needs.
+ */
 bool isVideoLogoPath(const QString &path);
 
 /*
  * Filename patterns for a logo file dialog, e.g. "*.png *.gif".
  *
  * Patterns rather than a finished filter string, because the words around them -- "Images and
- * animations", "Video" -- are translated, and `obs_module_text` needs a module this file is not
- * always compiled into. The designer joins the two halves; the video half is empty in a build
- * that cannot play one, so nothing offers a file it would only refuse.
+ * animations" -- are translated, and `obs_module_text` needs a module this file is not always
+ * compiled into.
  */
 QString imageLogoPatterns();
-QString videoLogoPatterns();
 
 /*
  * A quick answer to "would this file animate?", read from its header rather than its frames.
  *
  * For the designer, which has to decide whether to offer playback settings for a file it has no
- * reason to decode yet. A video file answers yes only in a build that can play one, since a
- * setting that cannot do anything is worse than an absent one.
+ * reason to decode yet.
  */
 bool logoPathLooksAnimated(const QString &path);
 
@@ -136,7 +134,7 @@ class AnimatedLogoCache {
 public:
 	/*
 	 * The animation in `path`, scaled so its frames are at most `maxHeight` tall, or null when
-	 * the file is a still, cannot be decoded, or is a video in a build without FFmpeg.
+	 * the file is a still or cannot be decoded.
 	 */
 	LogoAnimationPtr get(const QString &path, int maxHeight);
 

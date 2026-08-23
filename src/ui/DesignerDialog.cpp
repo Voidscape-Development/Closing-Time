@@ -149,8 +149,8 @@ QVector<MenuEntry> sourcesOfType(const QByteArray &sourceId)
 /*
  * True when any logo in the roll is a video file.
  *
- * Asked only in a build without FFmpeg, to explain a logo that is drawing as a placeholder box. It
- * reads paths rather than decoding anything, which is all that is needed to answer it.
+ * Asked to explain a logo that is drawing as a placeholder box: logos are pictures, and a video
+ * file is not one. It reads paths rather than decoding anything, which is all it needs.
  */
 bool documentUsesVideoLogos(const Document &document)
 {
@@ -1182,7 +1182,7 @@ void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, 
 	if (truncated)
 		warnings.append(moduleText("Designer.LogoTruncated").arg(kMaxLogoDurationMs / 1000));
 
-	if (!animatedLogosSupportVideo() && documentUsesVideoLogos(rendered))
+	if (documentUsesVideoLogos(rendered))
 		warnings.append(moduleText("Designer.VideoLogoUnsupported"));
 
 	fontWarningLabel->setVisible(!warnings.isEmpty());

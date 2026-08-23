@@ -29,15 +29,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "plugin-support.h"
 
-#ifdef CLOSING_TIME_HAVE_FFMPEG
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/imgutils.h>
-#include <libswscale/swscale.h>
-}
-#endif
-
 namespace closingtime {
 
 namespace {
@@ -147,225 +138,12 @@ LogoAnimationPtr decodeWithQt(const QString &path, int maxHeight)
 	return animation;
 }
 
-#ifdef CLOSING_TIME_HAVE_FFMPEG
-
-/* Frees the decode's FFmpeg objects however the decode leaves off. */
-struct VideoDecodeContext {
-	AVFormatContext *format = nullptr;
-	AVCodecContext *codec = nullptr;
-	SwsContext *scaler = nullptr;
-	AVFrame *frame = nullptr;
-	AVPacket *packet = nullptr;
-
-	~VideoDecodeContext()
-	{
-		if (scaler)
-			sws_freeContext(scaler);
-		if (frame)
-			av_frame_free(&frame);
-		if (packet)
-			av_packet_free(&packet);
-		if (codec)
-			avcodec_free_context(&codec);
-		if (format)
-			avformat_close_input(&format);
-	}
-};
-
 /*
- * The size a video's frames are decoded to: its own, scaled down to `maxHeight`.
+ * Extensions a logo file may carry that mean "this is a video".
  *
- * Scaling in the decoder rather than at draw time is the whole reason a 1080p sting costs what a
- * 96-pixel logo costs. Sample aspect is applied here too, so anamorphic footage is not left to be
- * un-squeezed by a quad that knows nothing about it.
+ * Nothing here is decoded -- the list exists so that a video file picked as a logo is answered
+ * with a sentence rather than with an empty box. See `isVideoLogoPath`.
  */
-QSize videoFrameSize(const AVCodecContext *codec, const AVStream *stream, int maxHeight)
-{
-	double width = codec->width;
-	const double height = codec->height;
-	if (width <= 0.0 || height <= 0.0)
-		return QSize();
-
-	AVRational sar = codec->sample_aspect_ratio;
-	if (stream->sample_aspect_ratio.num > 0)
-		sar = stream->sample_aspect_ratio;
-	if (sar.num > 0 && sar.den > 0)
-		width = width * sar.num / sar.den;
-
-	QSize size(qRound(width), qRound(height));
-	if (size.height() > maxHeight)
-		size.scale(QSize(std::max(1, qRound(width)), maxHeight), Qt::KeepAspectRatio);
-
-	return QSize(std::max(1, size.width()), std::max(1, size.height()));
-}
-
-/* Converts one decoded frame into the QImage the rest of the plugin works in. */
-QImage scaleFrame(VideoDecodeContext &context, const AVFrame *frame, const QSize &size)
-{
-	context.scaler = sws_getCachedContext(context.scaler, frame->width, frame->height,
-					      static_cast<AVPixelFormat>(frame->format), size.width(), size.height(),
-					      AV_PIX_FMT_RGB32, SWS_BILINEAR, nullptr, nullptr, nullptr);
-	if (!context.scaler)
-		return QImage();
-
-	QImage image(size, QImage::Format_ARGB32);
-	if (image.isNull())
-		return QImage();
-
-	uint8_t *planes[4] = {image.bits(), nullptr, nullptr, nullptr};
-	int strides[4] = {static_cast<int>(image.bytesPerLine()), 0, 0, 0};
-
-	sws_scale(context.scaler, frame->data, frame->linesize, 0, frame->height, planes, strides);
-	return image;
-}
-
-/*
- * How long a frame is held, in milliseconds.
- *
- * Taken from the frame's own duration where the container carries one, and from the stream's
- * frame rate where it does not. Both can be absent or nonsense in a file that has been through
- * enough tools, so the fallback is the same default a frame with no delay gets.
- */
-int videoFrameDuration(const AVStream *stream, const AVFrame *frame)
-{
-	if (frame->duration > 0) {
-		const double seconds = frame->duration * av_q2d(stream->time_base);
-		if (seconds > 0.0)
-			return std::max(1, qRound(seconds * 1000.0));
-	}
-
-	const AVRational rate = stream->avg_frame_rate.num > 0 ? stream->avg_frame_rate : stream->r_frame_rate;
-	if (rate.num > 0 && rate.den > 0)
-		return std::max(1, qRound(1000.0 * rate.den / rate.num));
-
-	return kDefaultDelayMs;
-}
-
-LogoAnimationPtr decodeWithFfmpeg(const QString &path, int maxHeight)
-{
-	VideoDecodeContext context;
-
-	const QByteArray utf8 = path.toUtf8();
-	if (avformat_open_input(&context.format, utf8.constData(), nullptr, nullptr) < 0) {
-		obs_log(LOG_WARNING, "could not open video logo '%s'", utf8.constData());
-		return nullptr;
-	}
-
-	if (avformat_find_stream_info(context.format, nullptr) < 0) {
-		obs_log(LOG_WARNING, "no stream information in video logo '%s'", utf8.constData());
-		return nullptr;
-	}
-
-	const AVCodec *decoder = nullptr;
-	const int streamIndex = av_find_best_stream(context.format, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
-	if (streamIndex < 0 || !decoder) {
-		obs_log(LOG_WARNING, "no video stream in logo '%s'", utf8.constData());
-		return nullptr;
-	}
-
-	AVStream *stream = context.format->streams[streamIndex];
-
-	context.codec = avcodec_alloc_context3(decoder);
-	if (!context.codec || avcodec_parameters_to_context(context.codec, stream->codecpar) < 0)
-		return nullptr;
-
-	/*
-	 * Decoding runs on the render thread, which is already off the compositor's path, but a
-	 * 30-second file is thousands of frames and a single-threaded decode of it is a visible
-	 * stall in the designer. The decoder picks its own thread count.
-	 */
-	context.codec->thread_count = 0;
-
-	if (avcodec_open2(context.codec, decoder, nullptr) < 0) {
-		obs_log(LOG_WARNING, "could not open a decoder for video logo '%s'", utf8.constData());
-		return nullptr;
-	}
-
-	context.frame = av_frame_alloc();
-	context.packet = av_packet_alloc();
-	if (!context.frame || !context.packet)
-		return nullptr;
-
-	const QSize size = videoFrameSize(context.codec, stream, maxHeight);
-	if (!size.isValid())
-		return nullptr;
-
-	auto animation = std::make_shared<LogoAnimation>();
-	animation->size = size;
-	qint64 bytes = 0;
-	bool capped = false;
-
-	/*
-	 * Frames are taken in decode order and kept in that order, which is presentation order for
-	 * every container that reorders -- av_read_frame hands packets over in stream order and the
-	 * decoder emits frames in presentation order. Nothing here seeks, so there is no B-frame
-	 * ordering left to undo.
-	 */
-	const auto drain = [&] {
-		while (!capped) {
-			const int result = avcodec_receive_frame(context.codec, context.frame);
-			if (result < 0)
-				return;
-
-			const QImage image = scaleFrame(context, context.frame, size);
-			/* Read while the frame still holds it: unref resets every field on it. */
-			const int durationMs = videoFrameDuration(stream, context.frame);
-			av_frame_unref(context.frame);
-
-			if (image.isNull())
-				return;
-
-			animation->frames.append(LogoFrame{image, durationMs});
-			animation->totalMs += durationMs;
-			bytes += frameBytes(image);
-
-			if (atCap(*animation, bytes)) {
-				capped = true;
-				animation->truncated = true;
-				return;
-			}
-		}
-	};
-
-	while (!capped && av_read_frame(context.format, context.packet) >= 0) {
-		if (context.packet->stream_index == streamIndex) {
-			if (avcodec_send_packet(context.codec, context.packet) >= 0)
-				drain();
-		}
-		av_packet_unref(context.packet);
-	}
-
-	if (!capped) {
-		/* Flush what the decoder is still holding, or a short file loses its tail. */
-		avcodec_send_packet(context.codec, nullptr);
-		drain();
-	}
-
-	if (!animation->isValid()) {
-		obs_log(LOG_WARNING, "video logo '%s' decoded to nothing playable", utf8.constData());
-		return nullptr;
-	}
-
-	if (animation->truncated)
-		obs_log(LOG_WARNING, "video logo '%s' is longer than the %d-second limit; playing the first part",
-			utf8.constData(), kMaxLogoDurationMs / 1000);
-
-	return animation;
-}
-
-#endif /* CLOSING_TIME_HAVE_FFMPEG */
-
-} // namespace
-
-bool animatedLogosSupportVideo()
-{
-#ifdef CLOSING_TIME_HAVE_FFMPEG
-	return true;
-#else
-	return false;
-#endif
-}
-
 const QStringList &videoLogoExtensions()
 {
 	static const QStringList extensions = {
@@ -375,6 +153,8 @@ const QStringList &videoLogoExtensions()
 	};
 	return extensions;
 }
+
+} // namespace
 
 bool isVideoLogoPath(const QString &path)
 {
@@ -386,30 +166,10 @@ QString imageLogoPatterns()
 	return QStringLiteral("*.png *.apng *.jpg *.jpeg *.gif *.webp *.bmp *.svg");
 }
 
-QString videoLogoPatterns()
-{
-	if (!animatedLogosSupportVideo())
-		return QString();
-
-	QStringList patterns;
-	for (const QString &extension : videoLogoExtensions())
-		patterns.append(QStringLiteral("*.") + extension);
-
-	return patterns.join(QLatin1Char(' '));
-}
-
 bool logoPathLooksAnimated(const QString &path)
 {
 	if (path.isEmpty())
 		return false;
-
-	/*
-	 * A video is known by its name rather than by its contents, so the file has to be there for
-	 * the answer to mean anything -- otherwise a mistyped path would offer playback settings for
-	 * artwork that does not exist. Images answer through QImageReader, which fails on its own.
-	 */
-	if (isVideoLogoPath(path))
-		return animatedLogosSupportVideo() && QFileInfo::exists(path);
 
 	QImageReader reader(path);
 	if (!reader.supportsAnimation())
@@ -465,23 +225,13 @@ LogoAnimationPtr AnimatedLogoCache::get(const QString &path, int maxHeight)
 	if (it != cache.constEnd() && it->fileSize == fileSize && it->modifiedMs == modifiedMs)
 		return it->animation;
 
-	LogoAnimationPtr animation;
-
-	if (isVideoLogoPath(path)) {
-#ifdef CLOSING_TIME_HAVE_FFMPEG
-		animation = decodeWithFfmpeg(path, height);
-#else
-		/*
-		 * Logged rather than silently ignored: the file was picked deliberately, and a build
-		 * without FFmpeg drawing a placeholder box with no explanation is the kind of thing
-		 * that gets reported as the logo being broken.
-		 */
-		obs_log(LOG_WARNING, "video logo '%s' needs a build with FFmpeg; drawing nothing",
-			path.toUtf8().constData());
-#endif
-	} else {
-		animation = decodeWithQt(path, height);
-	}
+	/*
+	 * A video file gets here like anything else and comes back as no animation: QImageReader
+	 * does not read one, and this plugin does not carry a decoder that does. The designer says
+	 * so in words -- see `isVideoLogoPath` and Designer.VideoLogoUnsupported -- because a
+	 * placeholder box with no explanation is the kind of thing that gets reported as broken.
+	 */
+	const LogoAnimationPtr animation = decodeWithQt(path, height);
 
 	cache.insert(key, CacheEntry{animation, fileSize, modifiedMs});
 	return animation;

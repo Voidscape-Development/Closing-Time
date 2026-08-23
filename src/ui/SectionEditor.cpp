@@ -72,27 +72,22 @@ QString imageFilter()
 {
 	/*
 	 * The patterns come from the render layer, because what can be opened is decided by what can
-	 * be decoded: the video half is empty in a build without FFmpeg, and there is no sense
-	 * offering a file the decoder would only refuse.
+	 * be decoded, and there is no sense offering a file the decoder would only refuse.
 	 */
-	QString filter = moduleText("Designer.LogoFilter") + QStringLiteral(" (%1)").arg(imageLogoPatterns());
-
-	const QString video = videoLogoPatterns();
-	if (!video.isEmpty())
-		filter += QStringLiteral(";;%1 (%2)").arg(moduleText("Designer.VideoFilter"), video);
+	const QString filter = moduleText("Designer.LogoFilter") + QStringLiteral(" (%1)").arg(imageLogoPatterns());
 
 	return filter + QStringLiteral(";;%1 (*)").arg(moduleText("Designer.AllFilesFilter"));
 }
 
 /*
- * Says so when the chosen file is a video this build cannot decode.
+ * Says so when the chosen file is a video, which a logo may not be.
  *
  * The alternative is a placeholder box in the roll and a line in the OBS log, which is a long way
  * from the file dialog the user was standing in when they made the choice.
  */
-void warnIfUnplayableVideo(QWidget *parent, const QString &path)
+void warnIfVideoChosen(QWidget *parent, const QString &path)
 {
-	if (path.isEmpty() || !isVideoLogoPath(path) || animatedLogosSupportVideo())
+	if (path.isEmpty() || !isVideoLogoPath(path))
 		return;
 
 	QMessageBox::warning(parent, moduleText("Designer.ChooseLogo"), moduleText("Designer.VideoLogoUnsupported"));
@@ -1918,7 +1913,7 @@ void SectionEditor::browseForSectionLogo()
 	if (path.isEmpty())
 		return;
 
-	warnIfUnplayableVideo(this, path);
+	warnIfVideoChosen(this, path);
 	logoPath->setText(path);
 }
 
@@ -1946,7 +1941,7 @@ void SectionEditor::browseForEntryLogo()
 	if (path.isEmpty())
 		return;
 
-	warnIfUnplayableVideo(this, path);
+	warnIfVideoChosen(this, path);
 
 	entryTable->setItem(row, 0, new QTableWidgetItem(path));
 	if (!entryTable->item(row, 1))
