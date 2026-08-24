@@ -16,6 +16,7 @@ target_sources(
     harness/main.cpp
     suites/AnimatedLogos.cpp
     suites/BridgedRows.cpp
+    suites/Dividers.cpp
     suites/Fonts.cpp
     suites/Layout.cpp
     suites/LogoRows.cpp

@@ -34,10 +34,26 @@ class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
+class QTabWidget;
 class QToolButton;
 class QVBoxLayout;
 
 namespace closingtime {
+
+/*
+ * Which of a divider's three piece stacks an editor is acting on.
+ *
+ * They are the same kind of list -- an end and a middle both hold `DividerPiece`s -- so one table
+ * implementation serves all three and this is what says which one a call means. The order is the
+ * order they are drawn in, which is also the order the tabs read in.
+ */
+enum class PieceSlot { LeftEnd, Centre, RightEnd };
+
+constexpr int kPieceSlotCount = 3;
+
+/* The stack a slot names, on a section. */
+const QVector<DividerPiece> &dividerPieces(const Section &section, PieceSlot slot);
+QVector<DividerPiece> &dividerPieces(Section &section, PieceSlot slot);
 
 /*
  * Everything one TextStyle carries: font, colour and alignment, plus how the glyphs are
@@ -209,16 +225,18 @@ private:
 	 * about, and rebuilding from a reordered vector cannot leave a row's widgets behind while
 	 * its text moves.
 	 */
-	void writeCentreToTable(const Section &source);
-	void readCentreFromTable(Section *target) const;
-	void addCentrePiece();
-	void removeSelectedCentrePieces();
-	void moveSelectedCentrePiece(int delta);
-	void browseForCentreFile();
+	void writePiecesToTable(PieceSlot slot, const Section &source);
+	void readPiecesFromTable(PieceSlot slot, Section *target) const;
+	void addPiece(PieceSlot slot);
+	void removeSelectedPieces(PieceSlot slot);
+	void movePiece(PieceSlot slot, int delta);
+	void browseForPieceFile(PieceSlot slot);
 	/* Shows the fields that apply to the piece in `row` and hides the rest. */
-	void applyCentreRowVisibility(int row);
-	/* True when any piece of the centre stack draws its artwork from a file. */
-	bool centreUsesFile() const;
+	void applyPieceRowVisibility(PieceSlot slot, int row);
+	/* True when any piece of any of the three stacks draws its artwork from a file. */
+	bool dividerUsesFile() const;
+
+	QTableWidget *pieceTable(PieceSlot slot) const { return pieceTables[static_cast<int>(slot)]; }
 
 	void addEntry();
 	void removeSelectedEntries();
@@ -280,11 +298,7 @@ private:
 	/* Bridged rows only: draw a second line under each side of every row. */
 	QCheckBox *rowSubtitles = nullptr;
 
-	QComboBox *dividerCap = nullptr;
-	QLineEdit *dividerCapSvgPath = nullptr;
 	QCheckBox *dividerMirrorEnds = nullptr;
-	QComboBox *dividerEndCap = nullptr;
-	QLineEdit *dividerEndCapSvgPath = nullptr;
 	QComboBox *dividerArm = nullptr;
 	QLineEdit *dividerArmSvgPath = nullptr;
 	QSpinBox *dividerThickness = nullptr;
@@ -295,9 +309,15 @@ private:
 	QSpinBox *dividerRuleInset = nullptr;
 	QCheckBox *dividerTint = nullptr;
 
-	QGroupBox *centreGroup = nullptr;
-	QTableWidget *centreTable = nullptr;
-	QToolButton *centreFileButton = nullptr;
+	/*
+	 * The divider's three piece stacks, in PieceSlot order. One table each rather than one table
+	 * and a selector, because they are the same kind of list and the tabs are what say so -- and
+	 * because the right-hand end's tab can simply be taken away while the ends are mirrored.
+	 */
+	QGroupBox *dividerPiecesGroup = nullptr;
+	QTabWidget *pieceTabs = nullptr;
+	QTableWidget *pieceTables[kPieceSlotCount] = {};
+	QToolButton *pieceFileButtons[kPieceSlotCount] = {};
 
 	QSpinBox *columns = nullptr;
 	QSpinBox *columnGap = nullptr;

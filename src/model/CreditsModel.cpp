@@ -719,10 +719,6 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_string(data, "bridge_row_align", hAlignId(bridgeRowAlign));
 	obs_data_set_bool(data, "bridge_span_empty", bridgeSpanEmpty);
 	obs_data_set_bool(data, "row_subtitles", rowSubtitles);
-	obs_data_set_string(data, "divider_cap", dividerShapeId(dividerCap));
-	obs_data_set_string(data, "divider_cap_svg", dividerCapSvg.toUtf8().constData());
-	obs_data_set_string(data, "divider_end_cap", dividerShapeId(dividerEndCap));
-	obs_data_set_string(data, "divider_end_cap_svg", dividerEndCapSvg.toUtf8().constData());
 	obs_data_set_bool(data, "divider_mirror_ends", dividerMirrorEnds);
 	obs_data_set_string(data, "divider_arm", dividerShapeId(dividerArm));
 	obs_data_set_string(data, "divider_arm_svg", dividerArmSvg.toUtf8().constData());
@@ -786,12 +782,23 @@ void Section::save(obs_data_t *data) const
 		},
 		&entries);
 
-	saveArray(
-		data, "divider_centre", dividerCentre.size(),
-		[](obs_data_t *item, int index, const void *context) {
-			static_cast<const QVector<DividerPiece> *>(context)->at(index).save(item);
-		},
-		&dividerCentre);
+	const auto savePieces = [data](const char *key, const QVector<DividerPiece> &pieces) {
+		saveArray(
+			data, key, pieces.size(),
+			[](obs_data_t *item, int index, const void *context) {
+				static_cast<const QVector<DividerPiece> *>(context)->at(index).save(item);
+			},
+			&pieces);
+	};
+
+	savePieces("divider_centre", dividerCentre);
+	/*
+	 * Under keys of their own rather than the "divider_cap"/"divider_end_cap" a single shape was
+	 * written to: those still have to be readable as what they were, and a key that is a string
+	 * in one document and an array in the next is a trap for every reader of either.
+	 */
+	savePieces("divider_cap_pieces", dividerCap);
+	savePieces("divider_end_cap_pieces", dividerEndCap);
 }
 
 void Section::load(obs_data_t *data)
@@ -854,10 +861,6 @@ void Section::load(obs_data_t *data)
 	 * exception: an arm of None is a divider with no rule in it at all, which is never what a
 	 * missing key means, so that one falls back to the plain rule.
 	 */
-	dividerCap = dividerShapeFromId(obs_data_get_string(data, "divider_cap"), DividerShape::None);
-	dividerCapSvg = QString::fromUtf8(obs_data_get_string(data, "divider_cap_svg"));
-	dividerEndCap = dividerShapeFromId(obs_data_get_string(data, "divider_end_cap"), DividerShape::None);
-	dividerEndCapSvg = QString::fromUtf8(obs_data_get_string(data, "divider_end_cap_svg"));
 	dividerMirrorEnds = obs_data_has_user_value(data, "divider_mirror_ends")
 				    ? obs_data_get_bool(data, "divider_mirror_ends")
 				    : true;
@@ -1002,18 +1005,51 @@ void Section::load(obs_data_t *data)
 		}
 	}
 
-	dividerCentre.clear();
-	OBSDataArrayAutoRelease centreArray = obs_data_get_array(data, "divider_centre");
-	if (centreArray) {
-		const size_t count = obs_data_array_count(centreArray);
-		dividerCentre.reserve(static_cast<int>(count));
+	const auto loadPieces = [data](const char *key, QVector<DividerPiece> *into) {
+		into->clear();
+
+		OBSDataArrayAutoRelease array = obs_data_get_array(data, key);
+		if (!array)
+			return false;
+
+		const size_t count = obs_data_array_count(array);
+		into->reserve(static_cast<int>(count));
 		for (size_t i = 0; i < count; ++i) {
-			OBSDataAutoRelease item = obs_data_array_item(centreArray, i);
+			OBSDataAutoRelease item = obs_data_array_item(array, i);
 			DividerPiece piece;
 			piece.load(item);
-			dividerCentre.append(piece);
+			into->append(piece);
 		}
-	}
+		return true;
+	};
+
+	loadPieces("divider_centre", &dividerCentre);
+
+	/*
+	 * An end written as a single shape -- every document from before an end was a stack -- is
+	 * read back as the one-piece stack it is. None is the fallback there for the reason it is
+	 * everywhere else in a divider, and a `None` end is simply an end with nothing on it, so it
+	 * migrates to an empty list rather than to a piece that draws nothing.
+	 */
+	const auto loadEnd = [&](const char *key, const char *legacyShape, const char *legacyFile,
+				 QVector<DividerPiece> *into) {
+		if (loadPieces(key, into))
+			return;
+
+		const DividerShape shape =
+			dividerShapeFromId(obs_data_get_string(data, legacyShape), DividerShape::None);
+		if (dividerShapeIsEmpty(shape))
+			return;
+
+		DividerPiece piece;
+		piece.kind = DividerPiece::Kind::Ornament;
+		piece.shape = shape;
+		piece.svgPath = QString::fromUtf8(obs_data_get_string(data, legacyFile));
+		into->append(piece);
+	};
+
+	loadEnd("divider_cap_pieces", "divider_cap", "divider_cap_svg", &dividerCap);
+	loadEnd("divider_end_cap_pieces", "divider_end_cap", "divider_end_cap_svg", &dividerEndCap);
 }
 
 Section Section::makeDefault(SectionType type)
@@ -1156,7 +1192,7 @@ Section Section::makeDefault(SectionType type)
 		 * single ornament, because the first thing anyone does with a new divider is take a
 		 * piece out or put one in, and starting from three shows that the centre is a list.
 		 */
-		section.dividerCap = DividerShape::Arrow;
+		section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Arrow, {}, 1.0, {}, {}}};
 		section.dividerArm = DividerShape::Rule;
 		section.dividerThickness = 5.0;
 		section.dividerCentre.append(
@@ -1511,12 +1547,16 @@ QVector<FontUse> Document::usedFonts() const
 		 * than assumed: reporting a font for a roll whose every divider is pure artwork
 		 * would send the user hunting for a substitution that never happened.
 		 */
+		const auto holdsWord = [](const QVector<DividerPiece> &pieces) {
+			return std::any_of(pieces.cbegin(), pieces.cend(), [](const DividerPiece &piece) {
+				return piece.kind == DividerPiece::Kind::Text && !piece.text.isEmpty();
+			});
+		};
+
+		/* Any of the three stacks can hold a word, so all three are asked. */
 		const bool dividerText = section.type == SectionType::SectionDivider &&
-					 std::any_of(section.dividerCentre.cbegin(), section.dividerCentre.cend(),
-						     [](const DividerPiece &piece) {
-							     return piece.kind == DividerPiece::Kind::Text &&
-								    !piece.text.isEmpty();
-						     });
+					 (holdsWord(section.dividerCentre) || holdsWord(section.dividerCap) ||
+					  holdsWord(section.dividerEndCap));
 
 		if (!sectionUsesText(section.type) && !dividerText)
 			continue;

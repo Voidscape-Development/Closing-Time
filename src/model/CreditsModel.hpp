@@ -655,15 +655,26 @@ struct Section {
 	 * a divider whose text is white while its rule carries the title's gold sweep is precisely
 	 * what the override is for.
 	 */
-	DividerShape dividerCap = DividerShape::None;
-	/* Custom caps only: absolute path to the artwork drawn at the left-hand end. */
-	QString dividerCapSvg;
+	/*
+	 * The left-hand end, outermost piece first.
+	 *
+	 * A list of the same `DividerPiece` the centre holds rather than a single shape, because an
+	 * end is the same kind of thing a middle is: something drawn once at its own size, and just
+	 * as often a compound -- a diamond outside an arrowhead, a year set against the rule. Making
+	 * them the same list means a shape offered in one place is offered in the other, a piece can
+	 * be resized where it sits, and a word or a mark can cap a rule exactly as it can break one.
+	 *
+	 * Empty is an end with nothing on it, which is the ordinary case for a plain rule.
+	 */
+	QVector<DividerPiece> dividerCap;
 	/*
 	 * The right-hand end, used only when `dividerMirrorEnds` is off. Kept whether or not it is
 	 * in use, so mirroring can be switched off and back on without losing what was set.
+	 *
+	 * Written in the same order as the left-hand one -- outermost piece first -- and drawn
+	 * flipped, so an end reads the same way whichever list it came from.
 	 */
-	DividerShape dividerEndCap = DividerShape::None;
-	QString dividerEndCapSvg;
+	QVector<DividerPiece> dividerEndCap;
 	/*
 	 * Draw the right-hand end as the left one flipped. On by default, and true of every
 	 * ornamental rule that is not an arrow pointing somewhere: it is what stops the two ends of

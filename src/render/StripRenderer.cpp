@@ -1179,13 +1179,123 @@ struct DividerLayout {
 	qreal height = 0.0;
 };
 
-/* One centre piece, measured but not yet placed. */
+/* One piece of a divider -- an end or a centrepiece -- measured but not yet placed. */
 struct MeasuredPiece {
 	const DividerPiece *piece;
 	QSizeF size;
 	/* Logo pieces only, resolved once here so the paint pass does not look it up again. */
 	LogoArt art;
 };
+
+/* A measured stack of them: what one end or the middle of a divider comes to. */
+struct MeasuredStack {
+	QVector<MeasuredPiece> pieces;
+	qreal width = 0.0;
+	qreal height = 0.0;
+
+	bool isEmpty() const { return pieces.isEmpty(); }
+};
+
+/*
+ * Measures a run of divider pieces laid side by side, `pieceGap` apart.
+ *
+ * One helper for all three stacks rather than one for the middle and a separate path for the two
+ * ends, because an end *is* a stack: that is the whole of what makes a shape offered in one place
+ * offered in the other, and a word or a mark able to cap a rule as well as break one.
+ */
+MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const TextStyle &style,
+				  const LogoSource &logos, DividerArtCache *dividers, qreal thickness,
+				  qreal pieceGap, qreal available)
+{
+	MeasuredStack stack;
+	stack.pieces.reserve(pieces.size());
+
+	for (const DividerPiece &piece : pieces) {
+		MeasuredPiece measured{&piece, QSizeF(), LogoArt()};
+
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament:
+			measured.size = dividerShapeSize(piece.shape, piece.svgPath, dividers, thickness, piece.scale);
+			break;
+
+		case DividerPiece::Kind::Text: {
+			if (piece.text.isEmpty())
+				break;
+			/*
+			 * Measured at its natural width and then laid out into exactly that, so the
+			 * word occupies the room it needs and never wraps inside a divider. A divider
+			 * piece has no column to wrap into -- the arms are what the space around it
+			 * is for.
+			 */
+			const qreal textWidth = naturalTextWidth(piece.text, style);
+			const qreal textHeight = layoutText(nullptr, piece.text, style, 0, 0, textWidth);
+			measured.size = QSizeF(textWidth, textHeight);
+			break;
+		}
+
+		case DividerPiece::Kind::Logo: {
+			measured.art = logos.resolve(piece.logo);
+			measured.size = QSizeF(logoDrawSize(measured.art.poster, piece.logo, qRound(available)));
+			break;
+		}
+		}
+
+		/*
+		 * A piece that measures to nothing -- an empty word, a logo that would not decode, a
+		 * shape whose file is missing -- is dropped along with the gap that would have sat
+		 * beside it, rather than left as a hole in the rule.
+		 */
+		if (measured.size.width() > 0.0 && measured.size.height() > 0.0)
+			stack.pieces.append(measured);
+	}
+
+	for (int i = 0; i < stack.pieces.size(); ++i) {
+		stack.width += stack.pieces.at(i).size.width();
+		if (i > 0)
+			stack.width += pieceGap;
+		stack.height = std::max(stack.height, stack.pieces.at(i).size.height());
+	}
+
+	return stack;
+}
+
+/*
+ * Places a measured stack, left to right from `left`, centred on `midY`.
+ *
+ * `mirrored` is what an end at the right-hand side of the divider is drawn with: the pieces run in
+ * reverse, so the figure is a mirror image of the same list, and each piece's *artwork* is flipped
+ * along x -- the caps in the shape library are authored pointing outward along -x, so an arrowhead
+ * at the right-hand end has to be. A word and a picture are deliberately left unflipped: mirrored
+ * type is not a design, it is a mistake, and neither is authored pointing anywhere.
+ */
+void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal left, qreal midY, qreal pieceGap,
+		       bool mirrored)
+{
+	qreal cursor = left;
+
+	for (int i = 0; i < stack.pieces.size(); ++i) {
+		const MeasuredPiece &measured = stack.pieces.at(mirrored ? stack.pieces.size() - 1 - i : i);
+		const DividerPiece &piece = *measured.piece;
+		const QRectF box(cursor, midY - measured.size.height() / 2.0, measured.size.width(),
+				 measured.size.height());
+
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament:
+			layout->art.append(DividerArtPlacement{box, piece.shape, piece.svgPath, mirrored});
+			break;
+
+		case DividerPiece::Kind::Text:
+			layout->texts.append(DividerLayout::TextPiece{piece.text, box});
+			break;
+
+		case DividerPiece::Kind::Logo:
+			layout->logos.append(DividerLayout::LogoPiece{measured.art, &piece.logo, box.toRect()});
+			break;
+		}
+
+		cursor += measured.size.width() + pieceGap;
+	}
+}
 
 /*
  * Composes a divider across `width`, starting at `x`, with its content beginning at `top`.
@@ -1204,75 +1314,26 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	if (!dividers || thickness <= 0.0 || width <= 0.0)
 		return layout;
 
-	/* --- Measure the centre stack ---------------------------------------------------- */
+	/* --- Measure the three stacks ---------------------------------------------------- */
 
-	QVector<MeasuredPiece> centre;
-	centre.reserve(section.dividerCentre.size());
+	const qreal pieceGap = section.dividerPieceGap;
+	const auto measure = [&](const QVector<DividerPiece> &pieces) {
+		return measureDividerStack(pieces, style, logos, dividers, thickness, pieceGap, width);
+	};
 
-	for (const DividerPiece &piece : section.dividerCentre) {
-		MeasuredPiece measured{&piece, QSizeF(), LogoArt()};
-
-		switch (piece.kind) {
-		case DividerPiece::Kind::Ornament:
-			measured.size = dividerShapeSize(piece.shape, piece.svgPath, dividers, thickness, piece.scale);
-			break;
-
-		case DividerPiece::Kind::Text: {
-			if (piece.text.isEmpty())
-				break;
-			/*
-			 * Measured at its natural width and then laid out into exactly that, so the
-			 * word occupies the room it needs and never wraps inside a divider. A centre
-			 * piece has no column to wrap into -- the arms are what the space either
-			 * side of it is for.
-			 */
-			const qreal textWidth = naturalTextWidth(piece.text, style);
-			const qreal textHeight = layoutText(nullptr, piece.text, style, 0, 0, textWidth);
-			measured.size = QSizeF(textWidth, textHeight);
-			break;
-		}
-
-		case DividerPiece::Kind::Logo: {
-			measured.art = logos.resolve(piece.logo);
-			measured.size = QSizeF(logoDrawSize(measured.art.poster, piece.logo, qRound(width)));
-			break;
-		}
-		}
-
-		/*
-		 * A piece that measures to nothing -- an empty word, a logo that would not decode, a
-		 * shape whose file is missing -- is dropped along with the gap that would have sat
-		 * beside it, rather than left as a hole in the middle of the rule.
-		 */
-		if (measured.size.width() > 0.0 && measured.size.height() > 0.0)
-			centre.append(measured);
-	}
-
-	qreal centreWidth = 0.0;
-	qreal centreHeight = 0.0;
-	for (int i = 0; i < centre.size(); ++i) {
-		centreWidth += centre.at(i).size.width();
-		if (i > 0)
-			centreWidth += section.dividerPieceGap;
-		centreHeight = std::max(centreHeight, centre.at(i).size.height());
-	}
-
-	/* --- Measure the ends ------------------------------------------------------------ */
-
+	const MeasuredStack centre = measure(section.dividerCentre);
+	const MeasuredStack leftEnd = measure(section.dividerCap);
 	/*
-	 * Both caps are authored pointing outward along -x, so the right-hand one is the same
-	 * artwork drawn mirrored whether it is the left cap repeated or a second shape of its own.
+	 * Mirroring says the two ends are the same list, not that the right-hand one is drawn
+	 * unflipped: an end is always drawn as a mirror image of the way it is written, whichever
+	 * list it came from, so the divider cannot come out pointing the same way at both ends.
 	 */
-	const DividerShape rightShape = section.dividerMirrorEnds ? section.dividerCap : section.dividerEndCap;
-	const QString &rightFile = section.dividerMirrorEnds ? section.dividerCapSvg : section.dividerEndCapSvg;
-
-	const QSizeF leftCap = dividerShapeSize(section.dividerCap, section.dividerCapSvg, dividers, thickness);
-	const QSizeF rightCap = dividerShapeSize(rightShape, rightFile, dividers, thickness);
+	const MeasuredStack rightEnd = section.dividerMirrorEnds ? leftEnd : measure(section.dividerEndCap);
 
 	const int rules = std::clamp(section.dividerRules, 1, 16);
 	const qreal stackHeight = rules * thickness + (rules - 1) * section.dividerRuleGap;
 
-	layout.height = std::max({stackHeight, leftCap.height(), rightCap.height(), centreHeight});
+	layout.height = std::max({stackHeight, leftEnd.height, rightEnd.height, centre.height});
 	if (layout.height <= 0.0)
 		return layout;
 
@@ -1281,24 +1342,16 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	/* --- Place the ends -------------------------------------------------------------- */
 
 	/*
-	 * The caps sit at the divider's full extent and on its midline, and are drawn once however
+	 * The ends sit at the divider's full extent and on its midline, and are drawn once however
 	 * many rules run between them: three lines meeting one arrowhead is the figure the deco
 	 * rules draw, where three arrowheads stacked on top of each other is not.
 	 */
-	const auto placeCap = [&](DividerShape shape, const QString &file, const QSizeF &size, qreal left,
-				  bool mirrored) {
-		if (size.isEmpty())
-			return;
-		layout.art.append(DividerArtPlacement{
-			QRectF(left, midY - size.height() / 2.0, size.width(), size.height()), shape, file, mirrored});
-	};
+	placeDividerStack(&layout, leftEnd, x, midY, pieceGap, false);
+	placeDividerStack(&layout, rightEnd, x + width - rightEnd.width, midY, pieceGap, true);
 
-	placeCap(section.dividerCap, section.dividerCapSvg, leftCap, x, false);
-	placeCap(rightShape, rightFile, rightCap, x + width - rightCap.width(), true);
-
-	/* Nothing to keep clear of at an end with no cap on it. */
-	const qreal armLeft = x + leftCap.width() + (leftCap.width() > 0.0 ? section.dividerGap : 0.0);
-	const qreal armRight = x + width - rightCap.width() - (rightCap.width() > 0.0 ? section.dividerGap : 0.0);
+	/* Nothing to keep clear of at an end with nothing on it. */
+	const qreal armLeft = x + leftEnd.width + (leftEnd.width > 0.0 ? section.dividerGap : 0.0);
+	const qreal armRight = x + width - rightEnd.width - (rightEnd.width > 0.0 ? section.dividerGap : 0.0);
 
 	/* --- Place the centre ------------------------------------------------------------ */
 
@@ -1306,34 +1359,9 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	 * Centred on the section's own box rather than between the two arms, so a divider whose
 	 * ends differ still has its ornament on the middle of the line the eye follows.
 	 */
-	const qreal centreLeft = x + (width - centreWidth) / 2.0;
+	const qreal centreLeft = x + (width - centre.width) / 2.0;
 
-	qreal cursor = centreLeft;
-	for (const MeasuredPiece &measured : centre) {
-		const DividerPiece &piece = *measured.piece;
-		const qreal pieceTop = midY - measured.size.height() / 2.0;
-
-		switch (piece.kind) {
-		case DividerPiece::Kind::Ornament:
-			layout.art.append(DividerArtPlacement{QRectF(cursor, pieceTop, measured.size.width(),
-								     measured.size.height()),
-							      piece.shape, piece.svgPath, false});
-			break;
-
-		case DividerPiece::Kind::Text:
-			layout.texts.append(DividerLayout::TextPiece{
-				piece.text, QRectF(cursor, pieceTop, measured.size.width(), measured.size.height())});
-			break;
-
-		case DividerPiece::Kind::Logo:
-			layout.logos.append(DividerLayout::LogoPiece{
-				measured.art, &piece.logo,
-				QRectF(cursor, pieceTop, measured.size.width(), measured.size.height()).toRect()});
-			break;
-		}
-
-		cursor += measured.size.width() + section.dividerPieceGap;
-	}
+	placeDividerStack(&layout, centre, centreLeft, midY, pieceGap, false);
 
 	/* --- Place the arms -------------------------------------------------------------- */
 
@@ -1384,7 +1412,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 			placeArm(left, right, false);
 		} else {
 			placeArm(left, centreLeft - section.dividerGap, false);
-			placeArm(centreLeft + centreWidth + section.dividerGap, right, true);
+			placeArm(centreLeft + centre.width + section.dividerGap, right, true);
 		}
 	}
 

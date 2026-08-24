@@ -58,9 +58,11 @@ Section distinctive(SectionType type)
 	section.bridgeSpanEmpty = true;
 	section.bridgeMinGap = 33.5;
 	section.rowSubtitles = true;
-	section.dividerCap = DividerShape::Diamond;
+	section.dividerCap = {
+		DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 2.25, {}, {}},
+		DividerPiece{DividerPiece::Kind::Text, DividerShape::None, {}, 1.0, QStringLiteral("MMXXVI"), {}}};
 	section.dividerMirrorEnds = false;
-	section.dividerEndCap = DividerShape::Dot;
+	section.dividerEndCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}}};
 	section.dividerArm = DividerShape::Rule;
 	section.dividerThickness = 6.5;
 	section.dividerGap = 15.5;
@@ -123,9 +125,19 @@ void compare(const Section &loaded, const Section &original)
 	check(loaded.bridgeSpanEmpty == original.bridgeSpanEmpty, "bridgeSpanEmpty");
 	checkNear(loaded.bridgeMinGap, original.bridgeMinGap, 0.001, "bridgeMinGap");
 	check(loaded.rowSubtitles == original.rowSubtitles, "rowSubtitles");
-	check(loaded.dividerCap == original.dividerCap, "dividerCap");
+	checkEq(loaded.dividerCap.size(), original.dividerCap.size(), "dividerCap size");
+	for (int i = 0; i < std::min(loaded.dividerCap.size(), original.dividerCap.size()); ++i) {
+		const DividerPiece &piece = loaded.dividerCap.at(i);
+		const DividerPiece &was = original.dividerCap.at(i);
+		check(piece.kind == was.kind, QStringLiteral("dividerCap %1 kind").arg(i));
+		check(piece.shape == was.shape, QStringLiteral("dividerCap %1 shape").arg(i));
+		checkNear(piece.scale, was.scale, 0.001, QStringLiteral("dividerCap %1 scale").arg(i));
+		checkEq(piece.text, was.text, QStringLiteral("dividerCap %1 text").arg(i));
+	}
 	check(loaded.dividerMirrorEnds == original.dividerMirrorEnds, "dividerMirrorEnds");
-	check(loaded.dividerEndCap == original.dividerEndCap, "dividerEndCap");
+	checkEq(loaded.dividerEndCap.size(), original.dividerEndCap.size(), "dividerEndCap size");
+	if (!loaded.dividerEndCap.isEmpty() && !original.dividerEndCap.isEmpty())
+		check(loaded.dividerEndCap.first().shape == original.dividerEndCap.first().shape, "dividerEndCap shape");
 	check(loaded.dividerArm == original.dividerArm, "dividerArm");
 	checkNear(loaded.dividerThickness, original.dividerThickness, 0.001, "dividerThickness");
 	checkNear(loaded.dividerGap, original.dividerGap, 0.001, "dividerGap");
@@ -235,11 +247,37 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	checkNear(legacy.bridgeThickness, 4.0, 0.001, "bridgeThickness falls back to something drawable");
 	check(legacy.bridgeTint, "bridgeTint falls back to on");
 	checkNear(legacy.bridgeSplit, 0.5, 0.001, "bridgeSplit falls back to an even split");
-	check(legacy.dividerCap == DividerShape::None, "an absent divider cap is None");
+	check(legacy.dividerCap.isEmpty(), "an absent divider cap is an end with nothing on it");
 	check(legacy.dividerArm == DividerShape::Rule, "an absent divider arm is the plain rule, not None");
 	check(legacy.dividerMirrorEnds, "divider ends are mirrored by default");
 	checkEq(legacy.dividerRules, 1, "a divider has at least one rule");
 	checkNear(legacy.sectionWidth, 1.0, 0.001, "sectionWidth falls back to the full canvas");
+
+	/*
+	 * An end written as a single shape, which is every document from before an end was a stack.
+	 * It has to come back as the one-piece stack that draws the same divider.
+	 */
+	OBSDataAutoRelease oldEnds = obs_data_create();
+	obs_data_set_string(oldEnds, "type", "section_divider");
+	obs_data_set_string(oldEnds, "divider_cap", "arrow");
+	obs_data_set_bool(oldEnds, "divider_mirror_ends", false);
+	obs_data_set_string(oldEnds, "divider_end_cap", "custom");
+	obs_data_set_string(oldEnds, "divider_end_cap_svg", "/art/end.svg");
+
+	Section migrated;
+	migrated.load(oldEnds);
+
+	checkEq(migrated.dividerCap.size(), 1, "a single cap shape migrates to one piece");
+	if (!migrated.dividerCap.isEmpty()) {
+		check(migrated.dividerCap.first().kind == DividerPiece::Kind::Ornament, "and it is an ornament");
+		check(migrated.dividerCap.first().shape == DividerShape::Arrow, "carrying the shape it named");
+		checkNear(migrated.dividerCap.first().scale, 1.0, 0.001, "at its own size");
+	}
+	checkEq(migrated.dividerEndCap.size(), 1, "so does the far end");
+	if (!migrated.dividerEndCap.isEmpty()) {
+		check(migrated.dividerEndCap.first().shape == DividerShape::Custom, "keeping its custom shape");
+		checkEq(migrated.dividerEndCap.first().svgPath, QStringLiteral("/art/end.svg"), "and its file");
+	}
 
 	/*
 	 * Every one of these is a value a user can legitimately store, so the loader has to tell a

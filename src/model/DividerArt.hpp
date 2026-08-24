@@ -34,7 +34,9 @@ namespace closingtime {
  *
  * Which slots a shape may be picked for is `roles`, not its name: a diamond is a perfectly good
  * end cap and a perfectly good centrepiece, and saying so once is better than a second Diamond
- * in a second table that has to be kept looking like the first.
+ * in a second table that has to be kept looking like the first. Every shape that is drawn once at
+ * its own size now carries the one role that says so, so anything offered at an end is offered in
+ * the middle and the other way about.
  *
  * Persisted by string id (dividerShapeId), never by ordinal, so the enum may be reordered.
  */
@@ -77,11 +79,17 @@ enum class DividerShape {
 /*
  * Which slots a shape is offered for. A shape may serve more than one -- see the note on
  * `roles` above.
+ *
+ * There are two slots rather than three because an end and a middle are the same slot: both are a
+ * stack of pieces, so a shape that suits one suits the other, and keeping them apart only meant
+ * two lists that had to be argued about shape by shape. An arm is the exception and stays its own
+ * role -- it is the rule itself, tiled along a span, which is a different job from being drawn
+ * once at its own size.
  */
 enum DividerRole : unsigned {
-	DividerRoleCap = 1u << 0,
+	/* An end cap or a centrepiece: anything drawn once, at its own size, in a stack. */
+	DividerRolePiece = 1u << 0,
 	DividerRoleArm = 1u << 1,
-	DividerRoleOrnament = 1u << 2,
 };
 
 /*
