@@ -153,6 +153,33 @@ enum class BridgeSizing { Split, Natural };
 const char *bridgeSizingId(BridgeSizing sizing);
 BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback = BridgeSizing::Split);
 
+struct Section;
+
+/*
+ * The fill a section's bridge is really laid out with.
+ *
+ * An empty bridge has nothing to cover a gap with, so all three modes would come out looking the
+ * same on screen while quietly measuring the text columns three different ways -- a "fill" setting
+ * for something that draws nothing is exactly the kind of control that makes this editor hard to
+ * read. So an empty bridge is always laid out as Fixed, reserving `bridgeMinGap` between the two
+ * columns, and the designer hides the row rather than offering a choice that only moves text.
+ *
+ * Everything that measures or places a bridged row goes through this rather than reading
+ * `bridgeFill` directly, the same guarantee `effectiveStyle` gives the text.
+ */
+BridgeFill effectiveBridgeFill(const Section &section);
+
+/*
+ * True when this section really stacks a subtitle under something, which is not a question the
+ * type alone can answer any more: a bridged row does it only when `rowSubtitles` is on.
+ *
+ * `sectionUsesSubtitles` stays a property of the type, since that is what the layout switch and
+ * the field visibility are written against; this is what anything asking about a particular
+ * section -- the editor's `subtitleGap` and `subtitleFirst` rows, which shape any stack -- should
+ * ask instead.
+ */
+bool sectionStacksSubtitles(const Section &section);
+
 /*
  * What the glyphs themselves are painted with.
  *
@@ -398,7 +425,9 @@ struct LogoRef {
 /*
  * One entry inside a list-shaped section. Which fields matter depends on the owning
  * section's type:
- *   Bridged                -> text (left) and secondaryText (right), joined by the bridge string
+ *   Bridged                -> text (left) and secondaryText (right), joined by the bridge string,
+ *                             each with an optional subtitle stacked under it (subtitle and
+ *                             secondarySubtitle) when the section asks for them
  *   TextList               -> text
  *   MultiTextList          -> text, placed into columns in the section's fill order
  *   TitleSubtitleList      -> text (title) and secondaryText (subtitle), stacked one over the other
@@ -409,6 +438,18 @@ struct LogoRef {
 struct Entry {
 	QString text;
 	QString secondaryText;
+	/*
+	 * Bridged rows only: a second line under each side of the row, drawn when the section's
+	 * `rowSubtitles` is on and there is something here to draw. A role under a name on the left,
+	 * a company under a name on the right.
+	 *
+	 * They are fields of the entry rather than a reuse of `text`/`secondaryText` because a
+	 * bridged row already spends both of those on the two sides of the row -- and keeping them
+	 * whatever the section's type means a list switched to another shape and back keeps them,
+	 * exactly as every other field on the model does.
+	 */
+	QString subtitle;
+	QString secondarySubtitle;
 	LogoRef logo;
 
 	void save(obs_data_t *data) const;
@@ -540,6 +581,16 @@ struct Section {
 	 */
 	double bridgeOffset = 0.0;
 	/*
+	 * Empty bridges only: the space the bridge takes up when there is nothing in it, in pixels.
+	 *
+	 * Every other type has a natural width of its own -- a string's advance, a tile's aspect --
+	 * and that width is what a Fixed bridge reserves between the two columns. An empty bridge
+	 * has none, so without this a Natural-sized row would set its two texts hard against each
+	 * other. It is a minimum rather than an exact gap for the same reason every other bridge's
+	 * natural width is: whatever the columns leave over past it still belongs to the bridge.
+	 */
+	double bridgeMinGap = 24.0;
+	/*
 	 * Art bridges only: space left at each end of the art, in pixels, so a leader does not
 	 * run into the words it joins. A text bridge carries its own spacing in the string the
 	 * user typed, which is why this is confined to art -- applying it there too would move
@@ -573,6 +624,21 @@ struct Section {
 	 * column is reserved whether or not there is anything in it.
 	 */
 	bool bridgeSpanEmpty = false;
+
+	/*
+	 * Bridged sections only: draw a second line under each side of every row, from the entry's
+	 * `subtitle` and `secondarySubtitle`.
+	 *
+	 * A switch rather than a section type of its own, because a bridged row with subtitles is the
+	 * same content laid out the same way with one more line under each side -- and because the
+	 * subtitles are optional per row: a side with nothing in it draws nothing and takes no height,
+	 * so a list where only some of the rows carry a role under the name needs no second section.
+	 *
+	 * Switching it off leaves the text where it is, like every other non-destructive choice here.
+	 * The stack itself is shaped by `subtitleGap` and `subtitleFirst`, which mean here exactly
+	 * what they mean for a title/subtitle list: the pair's own spacing, and which line is on top.
+	 */
+	bool rowSubtitles = false;
 
 	/*
 	 * Section Divider sections only.
@@ -683,6 +749,21 @@ struct Section {
 	bool useBridgeStyle = false;
 
 	/*
+	 * The two subtitles of a bridged row, when `rowSubtitles` is on.
+	 *
+	 * One style each rather than one shared between them, because the two sides of a bridged row
+	 * are already styled apart -- that is what `secondaryStyle` is for -- and a subtitle that
+	 * could not follow the line it belongs under would be the one part of the row unable to.
+	 *
+	 * Unlike `secondaryStyle` these carry no switch of their own. There is nothing sensible for
+	 * an off position to mean: a subtitle set in exactly the style of the line above it is not a
+	 * subtitle, it is a second line of the same text, so `makeDefault` hands out a smaller size
+	 * and the styles are simply used whenever the subtitles are drawn at all.
+	 */
+	TextStyle rowSubtitleStyle;
+	TextStyle rowSecondarySubtitleStyle;
+
+	/*
 	 * Names of the document style presets this section follows, or empty to use the
 	 * section's own `style`/`secondaryStyle`/`bridgeStyle`. A name that no longer resolves falls
 	 * back to the section's own style as well, so deleting a preset degrades rather than breaks.
@@ -695,6 +776,8 @@ struct Section {
 	QString stylePresetName;
 	QString secondaryStylePresetName;
 	QString bridgeStylePresetName;
+	QString rowSubtitleStylePresetName;
+	QString rowSecondarySubtitleStylePresetName;
 
 	/* Vertical padding above and below the section's content, in pixels. */
 	int paddingTop = 16;
@@ -789,6 +872,14 @@ struct Document {
 	 */
 	const TextStyle &effectiveStyle(const Section &section) const;
 	const TextStyle &effectiveSecondaryStyle(const Section &section) const;
+
+	/*
+	 * The styles the two subtitles of a bridged row are drawn with, once their preset bindings
+	 * are resolved. Like every other effective-style accessor, a name that no longer resolves
+	 * falls back to the section's own copy rather than failing.
+	 */
+	const TextStyle &effectiveRowSubtitleStyle(const Section &section) const;
+	const TextStyle &effectiveRowSecondarySubtitleStyle(const Section &section) const;
 
 	/*
 	 * The style a section's bridge is drawn with, once its own preset binding is resolved.

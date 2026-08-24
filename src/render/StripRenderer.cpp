@@ -425,6 +425,16 @@ qreal naturalTextWidth(const QString &text, const TextStyle &style)
 }
 
 /*
+ * The width a title/subtitle pair wants before any wrapping is imposed on it: whichever of its
+ * two lines is wider, since the two are laid out into the same column.
+ */
+qreal naturalPairWidth(const QString &title, const QString &subtitle, const TextStyle &titleStyle,
+		       const TextStyle &subtitleStyle)
+{
+	return std::max(naturalTextWidth(title, titleStyle), naturalTextWidth(subtitle, subtitleStyle));
+}
+
+/*
  * Distance from the top of a run of this text down to the baseline of its first line, when laid
  * out into `width` pixels.
  *
@@ -774,6 +784,30 @@ LogoRow placeLogoRow(const Section &section, qreal contentX, qreal contentWidth,
 	return row;
 }
 
+/*
+ * One side of a bridged row: the line, whatever is stacked under it, and the style of each.
+ *
+ * A side is a pair rather than a string because `rowSubtitles` lets either of them carry a second
+ * line, and every question the row asks of a side -- how wide does it want to be, where is its top
+ * line's baseline, is there anything in it at all -- has to be asked of both lines or of neither.
+ * Threading four more parameters through the placement instead would leave each of those questions
+ * free to answer for only half of the side, which is exactly the bug this shape cannot have.
+ *
+ * Pointers rather than copies because everything here is already owned by the entry or the section
+ * being laid out, and a style is the larger half of what would otherwise be copied once per row.
+ */
+struct BridgedSide {
+	const QString *text;
+	const QString *subtitle;
+	const TextStyle *style;
+	const TextStyle *subtitleStyle;
+
+	bool isEmpty() const { return text->isEmpty() && subtitle->isEmpty(); }
+
+	/* The width the side wants: whichever of its two lines is wider, since they share a column. */
+	qreal naturalWidth() const { return naturalPairWidth(*text, *subtitle, *style, *subtitleStyle); }
+};
+
 /* Where the three parts of one bridged row sit horizontally. */
 struct BridgedRow {
 	qreal leftX = 0.0;
@@ -793,11 +827,14 @@ struct BridgedRow {
  * for a Fixed bridge with Natural sizing, since every other combination has already
  * consumed the full width.
  */
-BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, const TextStyle &rightStyle,
-			   const Entry &entry, qreal contentX, qreal contentWidth, qreal naturalBridge)
+BridgedRow placeBridgedRow(const Section &section, const BridgedSide &left, const BridgedSide &right, qreal contentX,
+			   qreal contentWidth, qreal naturalBridge)
 {
 	qreal leftWidth = 0.0;
 	qreal rightWidth = 0.0;
+
+	/* An empty bridge is laid out as a Fixed one whatever the setting says; see the model. */
+	const BridgeFill fill = effectiveBridgeFill(section);
 
 	if (section.bridgeSizing == BridgeSizing::Split) {
 		/*
@@ -806,14 +843,13 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 		 * have always drawn it. With a filling bridge there is nothing to reserve, and
 		 * the ratio becomes a plain tab stop for the leader to start at.
 		 */
-		const qreal reserved = section.bridgeFill == BridgeFill::Fixed ? naturalBridge : 0.0;
+		const qreal reserved = fill == BridgeFill::Fixed ? naturalBridge : 0.0;
 		leftWidth = section.bridgeSplit * std::max(0.0, contentWidth - reserved);
 
-		if (section.bridgeFill == BridgeFill::Fixed) {
+		if (fill == BridgeFill::Fixed) {
 			rightWidth = std::max(0.0, contentWidth - leftWidth - naturalBridge);
 		} else {
-			rightWidth = std::min(naturalTextWidth(entry.secondaryText, rightStyle),
-					      std::max(0.0, contentWidth - leftWidth));
+			rightWidth = std::min(right.naturalWidth(), std::max(0.0, contentWidth - leftWidth));
 
 			/*
 			 * With a filling bridge the split is a tab stop rather than a cap: there is
@@ -822,12 +858,12 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 			 * its column with the gap beside it left empty. Rows that do fit still start
 			 * their bridge at the same x, which is the whole point of the setting.
 			 */
-			leftWidth = std::clamp(naturalTextWidth(entry.text, leftStyle), leftWidth,
+			leftWidth = std::clamp(left.naturalWidth(), leftWidth,
 					       std::max(leftWidth, contentWidth - rightWidth));
 		}
 	} else {
-		leftWidth = naturalTextWidth(entry.text, leftStyle);
-		rightWidth = naturalTextWidth(entry.secondaryText, rightStyle);
+		leftWidth = left.naturalWidth();
+		rightWidth = right.naturalWidth();
 
 		/*
 		 * Overlong rows shrink both sides in proportion rather than letting whichever
@@ -847,10 +883,10 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 	 * is also what leaves Natural sizing with a Fixed bridge as the only way to get a row
 	 * narrower than the section -- which is exactly where the row placement control shows.
 	 */
-	if (section.bridgeFill != BridgeFill::Fixed) {
-		if (section.bridgeSpanEmpty && entry.text.isEmpty())
+	if (fill != BridgeFill::Fixed) {
+		if (section.bridgeSpanEmpty && left.isEmpty())
 			leftWidth = 0.0;
-		if (section.bridgeSpanEmpty && entry.secondaryText.isEmpty())
+		if (section.bridgeSpanEmpty && right.isEmpty())
 			rightWidth = 0.0;
 	}
 
@@ -859,7 +895,7 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 	BridgedRow row;
 	row.leftWidth = leftWidth;
 	row.rightWidth = rightWidth;
-	row.bridgeWidth = section.bridgeFill == BridgeFill::Fixed ? std::min(naturalBridge, slack) : slack;
+	row.bridgeWidth = fill == BridgeFill::Fixed ? std::min(naturalBridge, slack) : slack;
 
 	const qreal rowWidth = leftWidth + row.bridgeWidth + rightWidth;
 	row.leftX = contentX + alignOffset(section.bridgeRowAlign, contentWidth, rowWidth);
@@ -951,6 +987,18 @@ PreparedBridge prepareTextBridge(const Section &section, const TextStyle &style,
 
 PreparedBridge prepareBridge(const Section &section, const TextStyle &style, BridgeArtCache *bridges, qreal width)
 {
+	if (bridgeTypeIsEmpty(section.bridgeType)) {
+		/*
+		 * Nothing to draw, and deliberately nothing to measure either: an empty bridge
+		 * reports no ascent and no height, so the row is exactly as tall as its own texts
+		 * and its baseline is theirs. The space it occupies is still real -- the columns
+		 * were placed around `bridgeMinGap` before this was ever called.
+		 */
+		PreparedBridge prepared;
+		prepared.font = makeFont(style);
+		return prepared;
+	}
+
 	if (!bridgeTypeUsesArt(section.bridgeType))
 		return prepareTextBridge(section, style, width);
 
@@ -964,6 +1012,14 @@ PreparedBridge prepareBridge(const Section &section, const TextStyle &style, Bri
 /* The width one copy of the bridge wants, which is what a Fixed bridge reserves from a row. */
 qreal naturalBridgeWidth(const Section &section, const TextStyle &style, BridgeArtCache *bridges)
 {
+	/*
+	 * An empty bridge is nothing but its own width, which is the whole reason `bridgeMinGap`
+	 * exists: it is what keeps the two texts of a naturally sized row off each other when
+	 * there is no leader between them to do it.
+	 */
+	if (bridgeTypeIsEmpty(section.bridgeType))
+		return std::max(0.0, section.bridgeMinGap);
+
 	if (!bridgeTypeUsesArt(section.bridgeType))
 		return naturalTextWidth(section.bridge, style);
 
@@ -1087,16 +1143,6 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 	}
 
 	return qCeil(cursor - y);
-}
-
-/*
- * The width a title/subtitle pair wants before any wrapping is imposed on it: whichever of its
- * two lines is wider, since the two are laid out into the same column.
- */
-qreal naturalPairWidth(const QString &title, const QString &subtitle, const TextStyle &titleStyle,
-		       const TextStyle &subtitleStyle)
-{
-	return std::max(naturalTextWidth(title, titleStyle), naturalTextWidth(subtitle, subtitleStyle));
 }
 
 /* Collects nothing, for the measure pass a caller makes before it knows where to place a pair. */
@@ -1555,6 +1601,16 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	case SectionType::Bridged: {
 		const TextStyle &rightStyle = document.effectiveSecondaryStyle(section);
 		/*
+		 * The two subtitles, and the empty string that stands in for them when the section
+		 * does not draw any. Standing one in rather than testing the flag at each use is what
+		 * makes a row without subtitles go through the very same code as one with them: an
+		 * empty line takes no height and no gap, so the pair collapses to exactly the single
+		 * line a bridged row has always been, measured and placed identically.
+		 */
+		const TextStyle &leftSubtitleStyle = document.effectiveRowSubtitleStyle(section);
+		const TextStyle &rightSubtitleStyle = document.effectiveRowSecondarySubtitleStyle(section);
+		const QString noSubtitle;
+		/*
 		 * The bridge's own ink over the row's own font. Everything below measures from the
 		 * fields the merge leaves alone -- the string is set in the row's face at the row's
 		 * size -- so a leader given a colour of its own reserves exactly the width it did.
@@ -1563,8 +1619,14 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const qreal naturalBridge = naturalBridgeWidth(section, bridgeStyle, bridges);
 
 		for (const Entry &entry : section.entries) {
-			const BridgedRow row = placeBridgedRow(section, style, rightStyle, entry, contentX,
-							       contentWidth, naturalBridge);
+			const BridgedSide left{&entry.text, section.rowSubtitles ? &entry.subtitle : &noSubtitle,
+					       &style, &leftSubtitleStyle};
+			const BridgedSide right{&entry.secondaryText,
+						section.rowSubtitles ? &entry.secondarySubtitle : &noSubtitle,
+						&rightStyle, &rightSubtitleStyle};
+
+			const BridgedRow row =
+				placeBridgedRow(section, left, right, contentX, contentWidth, naturalBridge);
 			const PreparedBridge bridge = prepareBridge(section, bridgeStyle, bridges, row.bridgeWidth);
 
 			/*
@@ -1572,9 +1634,21 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * keeps a leader running through the middle of the text when the two
 			 * sides are set at different sizes. It is anchored on whichever part
 			 * reaches lowest, so nothing climbs above the row into the one before it.
+			 *
+			 * A side carrying a subtitle is anchored on the line that ends up on *top* of
+			 * its stack -- the same rule a bridged logo row follows, and for the same reason:
+			 * adding a subtitle under a row should leave the leader exactly where it was
+			 * rather than dragging it down to the middle of a two-line block.
 			 */
-			const qreal leftAscent = firstBaseline(entry.text, style, row.leftWidth);
-			const qreal rightAscent = firstBaseline(entry.secondaryText, rightStyle, row.rightWidth);
+			const StackedLine leftTopLine = topStackedLine(section, *left.text, *left.subtitle,
+								       *left.style, *left.subtitleStyle);
+			const StackedLine rightTopLine = topStackedLine(section, *right.text, *right.subtitle,
+									*right.style, *right.subtitleStyle);
+
+			const qreal leftAscent =
+				firstBaseline(*leftTopLine.text, *leftTopLine.style, row.leftWidth);
+			const qreal rightAscent =
+				firstBaseline(*rightTopLine.text, *rightTopLine.style, row.rightWidth);
 			const qreal bridgeAscent = bridge.ascent(section);
 			const qreal baseline = std::max({leftAscent, rightAscent, bridgeAscent});
 
@@ -1582,15 +1656,20 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const qreal rightTop = y + baseline - rightAscent;
 			const qreal bridgeTop = y + baseline - bridgeAscent;
 
-			const int leftHeight =
-				layoutText(painter, entry.text, style, row.leftX, leftTop, row.leftWidth);
-			const int rightHeight = layoutText(painter, entry.secondaryText, rightStyle, row.rightX,
-							   rightTop, row.rightWidth);
+			/*
+			 * Both sides go through the pair helper whether or not they carry a subtitle,
+			 * which is what records their text boxes as well as drawing them.
+			 */
+			const int leftHeight = layoutTitleSubtitle(painter, section, *left.style,
+								  *left.subtitleStyle, *left.text, *left.subtitle,
+								  row.leftX, leftTop, row.leftWidth, record);
+			const int rightHeight = layoutTitleSubtitle(painter, section, *right.style,
+								    *right.subtitleStyle, *right.text,
+								    *right.subtitle, row.rightX, rightTop,
+								    row.rightWidth, record);
 			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
 							     row.bridgeX, bridgeTop, row.bridgeWidth);
 
-			record(LayoutBox::Kind::Text, QRectF(row.leftX, leftTop, row.leftWidth, leftHeight));
-			record(LayoutBox::Kind::Text, QRectF(row.rightX, rightTop, row.rightWidth, rightHeight));
 			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
 
 			int rowHeight = 1;

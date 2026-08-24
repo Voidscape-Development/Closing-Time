@@ -171,7 +171,7 @@ CT_SUITE(stack_shared_with_lists, "A heading's pair and a list entry's pair bein
 	heading.secondaryText = QStringLiteral("Full Name");
 
 	Section list = unpadded(SectionType::TitleSubtitleList);
-	list.entries = {Entry{heading.text, heading.secondaryText, {}}};
+	list.entries = {Entry{heading.text, heading.secondaryText, {}, {}, {}}};
 	list.style = heading.style;
 	list.secondaryStyle = heading.secondaryStyle;
 	list.useSecondaryStyle = heading.useSecondaryStyle;

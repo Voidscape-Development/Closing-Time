@@ -181,6 +181,18 @@ bool sectionUsesSubtitles(SectionType type)
 	return sectionTypeInfo(type).subtitles;
 }
 
+bool sectionStacksSubtitles(const Section &section)
+{
+	/*
+	 * A bridged row is the one shape whose subtitles are a choice rather than a property of the
+	 * type, so it is the one that has to be asked about the section rather than about the type.
+	 */
+	if (section.type == SectionType::Bridged)
+		return section.rowSubtitles;
+
+	return sectionUsesSubtitles(section.type);
+}
+
 bool sectionUsesSecondaryText(SectionType type)
 {
 	return type == SectionType::Bridged || sectionUsesSubtitles(type);
@@ -336,6 +348,17 @@ BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback)
 	if (strcmp(id, "split") == 0)
 		return BridgeSizing::Split;
 	return fallback;
+}
+
+BridgeFill effectiveBridgeFill(const Section &section)
+{
+	/*
+	 * An empty bridge has nothing to cover a gap with, so the three fills would differ only in
+	 * how they measure the text columns -- invisibly, from a control whose name promises
+	 * something visible. Fixed is the one that behaves the way an empty gap reads: the minimum
+	 * is reserved between the two columns and the split divides what is left of them.
+	 */
+	return bridgeTypeIsEmpty(section.bridgeType) ? BridgeFill::Fixed : section.bridgeFill;
 }
 
 const char *textFillId(TextFill fill)
@@ -622,6 +645,8 @@ void Entry::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "text", text.toUtf8().constData());
 	obs_data_set_string(data, "secondary_text", secondaryText.toUtf8().constData());
+	obs_data_set_string(data, "subtitle", subtitle.toUtf8().constData());
+	obs_data_set_string(data, "secondary_subtitle", secondarySubtitle.toUtf8().constData());
 
 	OBSDataAutoRelease logoData = obs_data_create();
 	logo.save(logoData);
@@ -632,6 +657,10 @@ void Entry::load(obs_data_t *data)
 {
 	text = QString::fromUtf8(obs_data_get_string(data, "text"));
 	secondaryText = QString::fromUtf8(obs_data_get_string(data, "secondary_text"));
+	/* Absent in every entry written before bridged rows could carry them, and an absent
+	 * subtitle is an empty one: nothing is drawn and nothing has to be migrated. */
+	subtitle = QString::fromUtf8(obs_data_get_string(data, "subtitle"));
+	secondarySubtitle = QString::fromUtf8(obs_data_get_string(data, "secondary_subtitle"));
 
 	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");
 	if (logoData)
@@ -682,12 +711,14 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "bridge_thickness", bridgeThickness);
 	obs_data_set_double(data, "bridge_offset", bridgeOffset);
 	obs_data_set_double(data, "bridge_gap", bridgeGap);
+	obs_data_set_double(data, "bridge_min_gap", bridgeMinGap);
 	obs_data_set_bool(data, "bridge_tint", bridgeTint);
 	obs_data_set_string(data, "bridge_fill", bridgeFillId(bridgeFill));
 	obs_data_set_string(data, "bridge_sizing", bridgeSizingId(bridgeSizing));
 	obs_data_set_double(data, "bridge_split", bridgeSplit);
 	obs_data_set_string(data, "bridge_row_align", hAlignId(bridgeRowAlign));
 	obs_data_set_bool(data, "bridge_span_empty", bridgeSpanEmpty);
+	obs_data_set_bool(data, "row_subtitles", rowSubtitles);
 	obs_data_set_string(data, "divider_cap", dividerShapeId(dividerCap));
 	obs_data_set_string(data, "divider_cap_svg", dividerCapSvg.toUtf8().constData());
 	obs_data_set_string(data, "divider_end_cap", dividerShapeId(dividerEndCap));
@@ -720,6 +751,9 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_string(data, "style_preset", stylePresetName.toUtf8().constData());
 	obs_data_set_string(data, "secondary_style_preset", secondaryStylePresetName.toUtf8().constData());
 	obs_data_set_string(data, "bridge_style_preset", bridgeStylePresetName.toUtf8().constData());
+	obs_data_set_string(data, "row_subtitle_style_preset", rowSubtitleStylePresetName.toUtf8().constData());
+	obs_data_set_string(data, "row_secondary_subtitle_style_preset",
+			    rowSecondarySubtitleStylePresetName.toUtf8().constData());
 
 	OBSDataAutoRelease logoData = obs_data_create();
 	logo.save(logoData);
@@ -736,6 +770,14 @@ void Section::save(obs_data_t *data) const
 	OBSDataAutoRelease bridgeStyleData = obs_data_create();
 	bridgeStyle.save(bridgeStyleData);
 	obs_data_set_obj(data, "bridge_style", bridgeStyleData);
+
+	OBSDataAutoRelease rowSubtitleStyleData = obs_data_create();
+	rowSubtitleStyle.save(rowSubtitleStyleData);
+	obs_data_set_obj(data, "row_subtitle_style", rowSubtitleStyleData);
+
+	OBSDataAutoRelease rowSecondarySubtitleStyleData = obs_data_create();
+	rowSecondarySubtitleStyle.save(rowSecondarySubtitleStyleData);
+	obs_data_set_obj(data, "row_secondary_subtitle_style", rowSecondarySubtitleStyleData);
 
 	saveArray(
 		data, "entries", entries.size(),
@@ -776,6 +818,14 @@ void Section::load(obs_data_t *data)
 	 */
 	bridgeGap = obs_data_has_user_value(data, "bridge_gap") ? obs_data_get_double(data, "bridge_gap") : 8.0;
 	bridgeGap = std::max(0.0, bridgeGap);
+	/*
+	 * Nor is a zero minimum gap absurd -- two columns set hard against each other is a layout,
+	 * if an unusual one -- so this is read the same careful way, and a document written before
+	 * the empty bridge existed gets the default rather than a gap of nothing.
+	 */
+	bridgeMinGap = obs_data_has_user_value(data, "bridge_min_gap") ? obs_data_get_double(data, "bridge_min_gap")
+								      : 24.0;
+	bridgeMinGap = std::max(0.0, bridgeMinGap);
 	/* A thickness of zero would draw nothing at all, which no document ever means. */
 	bridgeThickness = obs_data_get_double(data, "bridge_thickness");
 	if (bridgeThickness <= 0.0)
@@ -786,6 +836,9 @@ void Section::load(obs_data_t *data)
 	bridgeSizing = bridgeSizingFromId(obs_data_get_string(data, "bridge_sizing"), BridgeSizing::Split);
 	bridgeRowAlign = hAlignFromId(obs_data_get_string(data, "bridge_row_align"), HAlign::Center);
 	bridgeSpanEmpty = obs_data_get_bool(data, "bridge_span_empty");
+	/* Off in every document written before a bridged row could carry subtitles, which is also
+	 * what an entry with nothing in either subtitle draws. */
+	rowSubtitles = obs_data_get_bool(data, "row_subtitles");
 
 	/*
 	 * 0.0 is a legitimate split -- everything to the right of the bridge -- so a missing
@@ -864,6 +917,9 @@ void Section::load(obs_data_t *data)
 	stylePresetName = QString::fromUtf8(obs_data_get_string(data, "style_preset"));
 	secondaryStylePresetName = QString::fromUtf8(obs_data_get_string(data, "secondary_style_preset"));
 	bridgeStylePresetName = QString::fromUtf8(obs_data_get_string(data, "bridge_style_preset"));
+	rowSubtitleStylePresetName = QString::fromUtf8(obs_data_get_string(data, "row_subtitle_style_preset"));
+	rowSecondarySubtitleStylePresetName =
+		QString::fromUtf8(obs_data_get_string(data, "row_secondary_subtitle_style_preset"));
 
 	if (columns < 1)
 		columns = 1;
@@ -906,6 +962,32 @@ void Section::load(obs_data_t *data)
 		bridgeStyle.load(bridgeStyleData);
 	else
 		bridgeStyle = style;
+
+	/*
+	 * A subtitle style absent from the document is seeded the way a new section's is: the line
+	 * it sits under, a size down. Falling back to the line's own style outright would draw a
+	 * subtitle indistinguishable from the text above it, which is the one thing a subtitle must
+	 * not be -- and a document that predates these has no opinion to preserve, since it carried
+	 * no subtitles for them to be wrong about.
+	 */
+	const auto seedSubtitleStyle = [](const TextStyle &from) {
+		TextStyle seeded = from;
+		seeded.pixelSize = std::max(1, static_cast<int>(std::lround(from.pixelSize * 0.7)));
+		seeded.bold = false;
+		return seeded;
+	};
+
+	OBSDataAutoRelease rowSubtitleStyleData = obs_data_get_obj(data, "row_subtitle_style");
+	if (rowSubtitleStyleData)
+		rowSubtitleStyle.load(rowSubtitleStyleData);
+	else
+		rowSubtitleStyle = seedSubtitleStyle(style);
+
+	OBSDataAutoRelease rowSecondarySubtitleStyleData = obs_data_get_obj(data, "row_secondary_subtitle_style");
+	if (rowSecondarySubtitleStyleData)
+		rowSecondarySubtitleStyle.load(rowSecondarySubtitleStyleData);
+	else
+		rowSecondarySubtitleStyle = seedSubtitleStyle(useSecondaryStyle ? secondaryStyle : style);
 
 	entries.clear();
 	OBSDataArrayAutoRelease array = obs_data_get_array(data, "entries");
@@ -1009,12 +1091,12 @@ Section Section::makeDefault(SectionType type)
 		section.secondaryStyle.align = HAlign::Left;
 		section.useSecondaryStyle = true;
 		section.marginX = 160;
-		section.entries.append(Entry{QStringLiteral("Role"), QStringLiteral("Name"), {}});
+		section.entries.append(Entry{QStringLiteral("Role"), QStringLiteral("Name"), {}, {}, {}});
 		break;
 
 	case SectionType::TextList:
 		section.style.pixelSize = 32;
-		section.entries.append(Entry{QStringLiteral("Name"), {}, {}});
+		section.entries.append(Entry{QStringLiteral("Name"), {}, {}, {}, {}});
 		break;
 
 	case SectionType::TitleSubtitleList:
@@ -1044,7 +1126,7 @@ Section Section::makeDefault(SectionType type)
 			section.marginX = 120;
 		}
 		for (int i = 0; i < count; ++i)
-			section.entries.append(Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}});
+			section.entries.append(Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}, {}, {}});
 		break;
 	}
 
@@ -1057,7 +1139,7 @@ Section Section::makeDefault(SectionType type)
 		section.columns = 3;
 		section.marginX = 120;
 		for (int i = 0; i < 3; ++i)
-			section.entries.append(Entry{QStringLiteral("Name"), {}, {}});
+			section.entries.append(Entry{QStringLiteral("Name"), {}, {}, {}, {}});
 		break;
 
 	case SectionType::MultiLogoList:
@@ -1116,6 +1198,26 @@ Section Section::makeDefault(SectionType type)
 		section.bridgeType = BridgeType::Dots;
 		section.bridgeFill = BridgeFill::Repeat;
 	}
+
+	/*
+	 * The two subtitles a bridged row can carry are seeded from the line each of them sits
+	 * under, a size down and without its weight, whatever the type -- switching a section to
+	 * Bridged and turning the subtitles on then draws something that reads as a subtitle
+	 * straight away, rather than a second line indistinguishable from the first.
+	 *
+	 * Done here for every type rather than in the Bridged arm because changing a section's type
+	 * is non-destructive: the fields a type does not read are kept, so they had better be worth
+	 * keeping by the time another type does read them.
+	 */
+	const auto subtitleOf = [](const TextStyle &line) {
+		TextStyle subtitle = line;
+		subtitle.pixelSize = std::max(1, static_cast<int>(std::lround(line.pixelSize * 0.7)));
+		subtitle.bold = false;
+		return subtitle;
+	};
+	section.rowSubtitleStyle = subtitleOf(section.style);
+	section.rowSecondarySubtitleStyle =
+		subtitleOf(section.useSecondaryStyle ? section.secondaryStyle : section.style);
 
 	return section;
 }
@@ -1195,6 +1297,18 @@ const TextStyle &Document::effectiveSecondaryStyle(const Section &section) const
 
 	const TextStyle *preset = findStylePreset(section.secondaryStylePresetName);
 	return preset ? *preset : section.secondaryStyle;
+}
+
+const TextStyle &Document::effectiveRowSubtitleStyle(const Section &section) const
+{
+	const TextStyle *preset = findStylePreset(section.rowSubtitleStylePresetName);
+	return preset ? *preset : section.rowSubtitleStyle;
+}
+
+const TextStyle &Document::effectiveRowSecondarySubtitleStyle(const Section &section) const
+{
+	const TextStyle *preset = findStylePreset(section.rowSecondarySubtitleStylePresetName);
+	return preset ? *preset : section.rowSecondarySubtitleStyle;
 }
 
 TextStyle Document::effectiveBridgeStyle(const Section &section) const
@@ -1289,6 +1403,10 @@ bool Document::applyLibraryRenames()
 				section.secondaryStylePresetName = renamed;
 			if (section.bridgeStylePresetName == from)
 				section.bridgeStylePresetName = renamed;
+			if (section.rowSubtitleStylePresetName == from)
+				section.rowSubtitleStylePresetName = renamed;
+			if (section.rowSecondarySubtitleStylePresetName == from)
+				section.rowSecondarySubtitleStylePresetName = renamed;
 		}
 
 		changed = true;
@@ -1348,6 +1466,10 @@ void Document::removeStylePreset(const QString &name)
 			section.secondaryStylePresetName.clear();
 		if (section.bridgeStylePresetName == name)
 			section.bridgeStylePresetName.clear();
+		if (section.rowSubtitleStylePresetName == name)
+			section.rowSubtitleStylePresetName.clear();
+		if (section.rowSecondarySubtitleStylePresetName == name)
+			section.rowSecondarySubtitleStylePresetName.clear();
 	}
 }
 
@@ -1401,6 +1523,16 @@ QVector<FontUse> Document::usedFonts() const
 
 		consider(effectiveStyle(section));
 		consider(effectiveSecondaryStyle(section));
+
+		/*
+		 * The subtitles of a bridged row are asked for the same reason a divider's text is:
+		 * they are drawn only when the section turns them on, and a family reported for a
+		 * roll that never draws it is a font hunt with nothing at the end of it.
+		 */
+		if (sectionStacksSubtitles(section) && section.type == SectionType::Bridged) {
+			consider(effectiveRowSubtitleStyle(section));
+			consider(effectiveRowSecondarySubtitleStyle(section));
+		}
 	}
 
 	std::sort(fonts.begin(), fonts.end(), [](const FontUse &left, const FontUse &right) {
@@ -1468,6 +1600,8 @@ bool Document::applyFontSubstitutions(const QStringList &families)
 	for (Section &section : sections) {
 		rewrite(section.style);
 		rewrite(section.secondaryStyle);
+		rewrite(section.rowSubtitleStyle);
+		rewrite(section.rowSecondarySubtitleStyle);
 		/*
 		 * `bridgeStyle` is deliberately left alone: a bridge keeps the row's own font and
 		 * takes only ink from it, so the family recorded there is never drawn with.

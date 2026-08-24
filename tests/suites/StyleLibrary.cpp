@@ -90,7 +90,7 @@ Document boundDocument(const QString &presetName, const TextStyle &style, bool l
 Document boundEverywhere(const QString &presetName, bool linked)
 {
 	Section bridged = unpadded(SectionType::Bridged);
-	bridged.entries = {Entry{QStringLiteral("Director"), QStringLiteral("Jane Doe"), LogoRef()}};
+	bridged.entries = {Entry{QStringLiteral("Director"), QStringLiteral("Jane Doe"), {}, {}, LogoRef()}};
 	bridged.stylePresetName = presetName;
 	bridged.secondaryStylePresetName = presetName;
 	bridged.bridgeStylePresetName = presetName;

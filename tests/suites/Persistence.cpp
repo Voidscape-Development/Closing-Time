@@ -56,6 +56,8 @@ Section distinctive(SectionType type)
 	section.bridgeSplit = 0.25;
 	section.bridgeRowAlign = HAlign::Left;
 	section.bridgeSpanEmpty = true;
+	section.bridgeMinGap = 33.5;
+	section.rowSubtitles = true;
 	section.dividerCap = DividerShape::Diamond;
 	section.dividerMirrorEnds = false;
 	section.dividerEndCap = DividerShape::Dot;
@@ -77,6 +79,10 @@ Section distinctive(SectionType type)
 	section.stylePresetName = QStringLiteral("preset a");
 	section.secondaryStylePresetName = QStringLiteral("preset b");
 	section.bridgeStylePresetName = QStringLiteral("preset c");
+	section.rowSubtitleStylePresetName = QStringLiteral("preset d");
+	section.rowSecondarySubtitleStylePresetName = QStringLiteral("preset e");
+	section.rowSubtitleStyle.pixelSize = 19;
+	section.rowSecondarySubtitleStyle.pixelSize = 21;
 	section.paddingTop = 21;
 	section.paddingBottom = 23;
 	section.marginX = 29;
@@ -84,7 +90,8 @@ Section distinctive(SectionType type)
 	section.sectionAlign = HAlign::Right;
 	section.spacerHeight = 313;
 	section.visible = false;
-	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), LogoRef{QStringLiteral("/e.png"), 61}}};
+	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), QStringLiteral("three"),
+				 QStringLiteral("four"), LogoRef{QStringLiteral("/e.png"), 61}}};
 
 	return section;
 }
@@ -114,6 +121,8 @@ void compare(const Section &loaded, const Section &original)
 	checkNear(loaded.bridgeSplit, original.bridgeSplit, 0.001, "bridgeSplit");
 	check(loaded.bridgeRowAlign == original.bridgeRowAlign, "bridgeRowAlign");
 	check(loaded.bridgeSpanEmpty == original.bridgeSpanEmpty, "bridgeSpanEmpty");
+	checkNear(loaded.bridgeMinGap, original.bridgeMinGap, 0.001, "bridgeMinGap");
+	check(loaded.rowSubtitles == original.rowSubtitles, "rowSubtitles");
 	check(loaded.dividerCap == original.dividerCap, "dividerCap");
 	check(loaded.dividerMirrorEnds == original.dividerMirrorEnds, "dividerMirrorEnds");
 	check(loaded.dividerEndCap == original.dividerEndCap, "dividerEndCap");
@@ -134,6 +143,12 @@ void compare(const Section &loaded, const Section &original)
 	checkEq(loaded.stylePresetName, original.stylePresetName, "stylePresetName");
 	checkEq(loaded.secondaryStylePresetName, original.secondaryStylePresetName, "secondaryStylePresetName");
 	checkEq(loaded.bridgeStylePresetName, original.bridgeStylePresetName, "bridgeStylePresetName");
+	checkEq(loaded.rowSubtitleStylePresetName, original.rowSubtitleStylePresetName, "rowSubtitleStylePresetName");
+	checkEq(loaded.rowSecondarySubtitleStylePresetName, original.rowSecondarySubtitleStylePresetName,
+		"rowSecondarySubtitleStylePresetName");
+	checkEq(loaded.rowSubtitleStyle.pixelSize, original.rowSubtitleStyle.pixelSize, "rowSubtitleStyle.pixelSize");
+	checkEq(loaded.rowSecondarySubtitleStyle.pixelSize, original.rowSecondarySubtitleStyle.pixelSize,
+		"rowSecondarySubtitleStyle.pixelSize");
 	checkEq(loaded.paddingTop, original.paddingTop, "paddingTop");
 	checkEq(loaded.paddingBottom, original.paddingBottom, "paddingBottom");
 	checkEq(loaded.marginX, original.marginX, "marginX");
@@ -147,6 +162,10 @@ void compare(const Section &loaded, const Section &original)
 		checkEq(loaded.entries.at(i).text, original.entries.at(i).text, QStringLiteral("entry %1 text").arg(i));
 		checkEq(loaded.entries.at(i).secondaryText, original.entries.at(i).secondaryText,
 			QStringLiteral("entry %1 secondaryText").arg(i));
+		checkEq(loaded.entries.at(i).subtitle, original.entries.at(i).subtitle,
+			QStringLiteral("entry %1 subtitle").arg(i));
+		checkEq(loaded.entries.at(i).secondarySubtitle, original.entries.at(i).secondarySubtitle,
+			QStringLiteral("entry %1 secondarySubtitle").arg(i));
 		checkEq(loaded.entries.at(i).logo.path, original.entries.at(i).logo.path,
 			QStringLiteral("entry %1 logo").arg(i));
 	}

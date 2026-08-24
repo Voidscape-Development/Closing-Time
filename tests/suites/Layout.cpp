@@ -139,7 +139,7 @@ CT_SUITE(layout_tiling, "A roll long enough to be cut into several tiles")
 	QVector<Section> sections;
 	for (int i = 0; i < 60; ++i) {
 		Section section = Section::makeDefault(SectionType::TextList);
-		section.entries = {Entry{QStringLiteral("Name %1").arg(i), {}, {}}};
+		section.entries = {Entry{QStringLiteral("Name %1").arg(i), {}, {}, {}, {}}};
 		sections.append(section);
 	}
 

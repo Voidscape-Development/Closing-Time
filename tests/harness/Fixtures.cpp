@@ -342,15 +342,17 @@ const QVector<Scene> &scenes()
 
 		{
 			Section bridged = Section::makeDefault(SectionType::Bridged);
-			bridged.entries = {Entry{QStringLiteral("Director"), QStringLiteral("Jane Doe"), {}},
+			bridged.entries = {Entry{QStringLiteral("Director"), QStringLiteral("Jane Doe"), {}, {}, {}},
 					   Entry{QStringLiteral("Director of Photography"),
 						 QStringLiteral("A Rather Longer Name"),
+						 {},
+						 {},
 						 {}},
-					   Entry{QStringLiteral("Editor"), QStringLiteral("R Singh"), {}}};
+					   Entry{QStringLiteral("Editor"), QStringLiteral("R Singh"), {}, {}, {}}};
 
 			Section pairs = Section::makeDefault(SectionType::TitleSubtitleList);
-			pairs.entries = {Entry{QStringLiteral("Producer"), QStringLiteral("Chris Nakamura"), {}},
-					 Entry{QStringLiteral("Line Producer"), QStringLiteral("Sam Oyelaran"), {}}};
+			pairs.entries = {Entry{QStringLiteral("Producer"), QStringLiteral("Chris Nakamura"), {}, {}, {}},
+					 Entry{QStringLiteral("Line Producer"), QStringLiteral("Sam Oyelaran"), {}, {}, {}}};
 
 			add(QStringLiteral("lists"), QStringLiteral("A bridged list over a title/subtitle list"),
 			    documentWith({bridged, pairs}));

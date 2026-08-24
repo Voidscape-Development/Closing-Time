@@ -194,7 +194,12 @@ private:
 	void refreshLogoPlayback();
 	/* The playback settings the controls currently describe. */
 	LogoPlayback currentLogoPlayback() const;
-	void rebuildEntryTable(SectionType type);
+	/*
+	 * `rowSubtitles` is passed rather than read off the checkbox because the table is rebuilt
+	 * from a section being loaded as well as from a type being picked, and in the first case the
+	 * widgets have not been written yet.
+	 */
+	void rebuildEntryTable(SectionType type, bool rowSubtitles);
 	void readEntriesFromTable(Section *target) const;
 	void writeEntriesToTable(const Section &source);
 
@@ -264,12 +269,16 @@ private:
 	QSpinBox *bridgeThickness = nullptr;
 	QSpinBox *bridgeOffset = nullptr;
 	QSpinBox *bridgeGap = nullptr;
+	/* Empty bridges only: how much room the gap keeps when nothing is drawn in it. */
+	QSpinBox *bridgeMinGap = nullptr;
 	QCheckBox *bridgeTint = nullptr;
 	QComboBox *bridgeFill = nullptr;
 	QComboBox *bridgeSizing = nullptr;
 	QSpinBox *bridgeSplit = nullptr;
 	QComboBox *bridgeRowAlign = nullptr;
 	QCheckBox *bridgeSpanEmpty = nullptr;
+	/* Bridged rows only: draw a second line under each side of every row. */
+	QCheckBox *rowSubtitles = nullptr;
 
 	QComboBox *dividerCap = nullptr;
 	QLineEdit *dividerCapSvgPath = nullptr;
@@ -310,6 +319,11 @@ private:
 	/* Shown for the two shapes that draw a bridge, and only ever edits that bridge's ink. */
 	QGroupBox *bridgeStyleGroup = nullptr;
 	StyleEditor *bridgeStyle = nullptr;
+	/* The two subtitles of a bridged row, shown only while that row draws them. */
+	QGroupBox *rowSubtitleStyleGroup = nullptr;
+	StyleEditor *rowSubtitleStyle = nullptr;
+	QGroupBox *rowSecondarySubtitleStyleGroup = nullptr;
+	StyleEditor *rowSecondarySubtitleStyle = nullptr;
 
 	QGroupBox *entriesGroup = nullptr;
 	QTableWidget *entryTable = nullptr;

@@ -63,6 +63,50 @@ constexpr int kEntryTableMinimumHeight = 260;
 /* Width of a logo list's height column, which never holds more than four digits and a suffix. */
 constexpr int kEntryHeightColumnWidth = 80;
 
+/*
+ * Where an entry row keeps the whole of the entry it was written from.
+ *
+ * The table shows only the columns the section's type has a use for, and reading a section back
+ * rebuilds its entries from those columns -- so any field without a column of its own would be
+ * dropped by the next read, which is the one thing changing a type or turning a setting off must
+ * never do. Stashing the entry on the row's first cell costs a QVariantMap per row and makes every
+ * unshown field survive a type change, a subtitle toggle and a row being moved alike: a move swaps
+ * whole items, so the stash travels with the row it belongs to.
+ */
+constexpr int kEntryStashRole = Qt::UserRole + 1;
+
+QVariant entryStash(const Entry &entry)
+{
+	QVariantMap stash;
+	stash.insert(QStringLiteral("text"), entry.text);
+	stash.insert(QStringLiteral("secondary"), entry.secondaryText);
+	stash.insert(QStringLiteral("subtitle"), entry.subtitle);
+	stash.insert(QStringLiteral("secondary_subtitle"), entry.secondarySubtitle);
+	stash.insert(QStringLiteral("logo"), entry.logo.path);
+	stash.insert(QStringLiteral("logo_height"), entry.logo.maxHeight);
+	return stash;
+}
+
+Entry entryFromStash(const QVariant &value)
+{
+	Entry entry;
+	if (!value.canConvert<QVariantMap>())
+		return entry;
+
+	const QVariantMap stash = value.toMap();
+	entry.text = stash.value(QStringLiteral("text")).toString();
+	entry.secondaryText = stash.value(QStringLiteral("secondary")).toString();
+	entry.subtitle = stash.value(QStringLiteral("subtitle")).toString();
+	entry.secondarySubtitle = stash.value(QStringLiteral("secondary_subtitle")).toString();
+	entry.logo.path = stash.value(QStringLiteral("logo")).toString();
+
+	const int height = stash.value(QStringLiteral("logo_height")).toInt();
+	if (height > 0)
+		entry.logo.maxHeight = height;
+
+	return entry;
+}
+
 /* Height the divider's centre table asks for before it starts scrolling, in pixels. A centre
  * stack is a handful of pieces where an entry list is a cast, so it asks for less. */
 constexpr int kCentreTableMinimumHeight = 150;
@@ -673,6 +717,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	bridgeGap->setToolTip(moduleText("Designer.BridgeGap.Tip"));
 	form->addRow(moduleText("Designer.BridgeGap"), bridgeGap);
 
+	bridgeMinGap = new QSpinBox(this);
+	bridgeMinGap->setRange(0, 2048);
+	bridgeMinGap->setSuffix(QStringLiteral(" px"));
+	bridgeMinGap->setToolTip(moduleText("Designer.BridgeMinGap.Tip"));
+	form->addRow(moduleText("Designer.BridgeMinGap"), bridgeMinGap);
+
 	bridgeTint = new QCheckBox(moduleText("Designer.BridgeTint"), this);
 	form->addRow(QString(), bridgeTint);
 
@@ -699,6 +749,10 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	bridgeSpanEmpty = new QCheckBox(moduleText("Designer.BridgeSpanEmpty"), this);
 	form->addRow(QString(), bridgeSpanEmpty);
+
+	rowSubtitles = new QCheckBox(moduleText("Designer.RowSubtitles"), this);
+	rowSubtitles->setToolTip(moduleText("Designer.RowSubtitles.Tip"));
+	form->addRow(QString(), rowSubtitles);
 
 	/*
 	 * The divider's three artwork slots. Each picker is filled from the shape library filtered
@@ -861,6 +915,25 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	bridgeStyleLayout->addWidget(bridgeStyle);
 	outer->addWidget(bridgeStyleGroup);
 
+	/*
+	 * The two subtitles of a bridged row. Two style groups rather than one, because the two
+	 * sides of the row are already styled apart and a subtitle that could not follow the line it
+	 * belongs under would be the one part of the row unable to. Neither is checkable: a subtitle
+	 * is drawn whenever the row's subtitles are on and there is something in it to draw, which
+	 * is what the entry's own cell already says.
+	 */
+	rowSubtitleStyleGroup = new QGroupBox(moduleText("Designer.RowSubtitleStyle"), this);
+	auto *rowSubtitleLayout = new QVBoxLayout(rowSubtitleStyleGroup);
+	rowSubtitleStyle = new StyleEditor(rowSubtitleStyleGroup);
+	rowSubtitleLayout->addWidget(rowSubtitleStyle);
+	outer->addWidget(rowSubtitleStyleGroup);
+
+	rowSecondarySubtitleStyleGroup = new QGroupBox(moduleText("Designer.RowSecondarySubtitleStyle"), this);
+	auto *rowSecondarySubtitleLayout = new QVBoxLayout(rowSecondarySubtitleStyleGroup);
+	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup);
+	rowSecondarySubtitleLayout->addWidget(rowSecondarySubtitleStyle);
+	outer->addWidget(rowSecondarySubtitleStyleGroup);
+
 	entriesGroup = new QGroupBox(moduleText("Designer.Entries"), this);
 	auto *entriesLayout = new QVBoxLayout(entriesGroup);
 
@@ -978,7 +1051,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 		const auto type = static_cast<SectionType>(typeBox->currentData().toInt());
 		applyTypeVisibility(type);
-		rebuildEntryTable(type);
+		rebuildEntryTable(type, rowSubtitles->isChecked());
 		emitChanged();
 	});
 
@@ -1001,6 +1074,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(bridgeThickness, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeOffset, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeGap, &QSpinBox::valueChanged, this, notify);
+	connect(bridgeMinGap, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
@@ -1055,13 +1129,16 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(primaryStyle, &StyleEditor::changed, this, notify);
 	connect(secondaryStyle, &StyleEditor::changed, this, notify);
 	connect(bridgeStyle, &StyleEditor::changed, this, notify);
+	connect(rowSubtitleStyle, &StyleEditor::changed, this, notify);
+	connect(rowSecondarySubtitleStyle, &StyleEditor::changed, this, notify);
 
 	/*
 	 * Preset edits are routed up to the designer, which owns the document the presets live
 	 * on. `presetOrigin` marks the editor mid-signal so the synchronous round trip back
 	 * through setPresets() leaves the fields being typed into alone.
 	 */
-	for (StyleEditor *editor : {primaryStyle, secondaryStyle, bridgeStyle}) {
+	for (StyleEditor *editor : {primaryStyle, secondaryStyle, bridgeStyle, rowSubtitleStyle,
+				    rowSecondarySubtitleStyle}) {
 		connect(editor, &StyleEditor::presetSaveRequested, this,
 			[this, editor](const QString &name, const TextStyle &style) {
 				presetOrigin = editor;
@@ -1075,6 +1152,22 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		});
 	}
 	connect(secondaryGroup, &QGroupBox::toggled, this, notify);
+	/*
+	 * The subtitle columns of the entry table come and go with this, so it rebuilds the table
+	 * rather than only re-rendering. Reading the section back first is what carries what is
+	 * already typed into the rebuild instead of taking the rebuild from stale entries.
+	 */
+	connect(rowSubtitles, &QCheckBox::toggled, this, [this] {
+		if (loading)
+			return;
+
+		const Section held = section();
+		const QSignalBlocker blocker(entryTable);
+		rebuildEntryTable(held.type, held.rowSubtitles);
+		writeEntriesToTable(held);
+		applyTypeVisibility(held.type);
+		emitChanged();
+	});
 	connect(bridgeStyleGroup, &QGroupBox::toggled, this, notify);
 	connect(entryTable, &QTableWidget::cellChanged, this, notify);
 	connect(logoBrowse, &QToolButton::clicked, this, &SectionEditor::browseForSectionLogo);
@@ -1118,12 +1211,14 @@ void SectionEditor::setSection(const Section &source)
 	bridgeThickness->setValue(qRound(source.bridgeThickness));
 	bridgeOffset->setValue(qRound(source.bridgeOffset));
 	bridgeGap->setValue(qRound(source.bridgeGap));
+	bridgeMinGap->setValue(qRound(source.bridgeMinGap));
 	bridgeTint->setChecked(source.bridgeTint);
 	selectByData(bridgeFill, static_cast<int>(source.bridgeFill));
 	selectByData(bridgeSizing, static_cast<int>(source.bridgeSizing));
 	bridgeSplit->setValue(qRound(source.bridgeSplit * 100.0));
 	selectByData(bridgeRowAlign, static_cast<int>(source.bridgeRowAlign));
 	bridgeSpanEmpty->setChecked(source.bridgeSpanEmpty);
+	rowSubtitles->setChecked(source.rowSubtitles);
 	selectByData(dividerCap, static_cast<int>(source.dividerCap));
 	dividerCapSvgPath->setText(source.dividerCapSvg);
 	dividerMirrorEnds->setChecked(source.dividerMirrorEnds);
@@ -1154,10 +1249,14 @@ void SectionEditor::setSection(const Section &source)
 	primaryStyle->setStyle(source.style);
 	secondaryStyle->setStyle(source.secondaryStyle);
 	bridgeStyle->setStyle(source.bridgeStyle);
+	rowSubtitleStyle->setStyle(source.rowSubtitleStyle);
+	rowSecondarySubtitleStyle->setStyle(source.rowSecondarySubtitleStyle);
 	/* After setStyle, so a bound preset's values win over the section's own copy. */
 	primaryStyle->setPresets(presets, source.stylePresetName);
 	secondaryStyle->setPresets(presets, source.secondaryStylePresetName);
 	bridgeStyle->setPresets(presets, source.bridgeStylePresetName);
+	rowSubtitleStyle->setPresets(presets, source.rowSubtitleStylePresetName);
+	rowSecondarySubtitleStyle->setPresets(presets, source.rowSecondarySubtitleStylePresetName);
 	secondaryGroup->setChecked(source.useSecondaryStyle);
 	bridgeStyleGroup->setChecked(source.useBridgeStyle);
 
@@ -1168,7 +1267,7 @@ void SectionEditor::setSection(const Section &source)
 	 */
 	writeCentreToTable(source);
 	applyTypeVisibility(source.type);
-	rebuildEntryTable(source.type);
+	rebuildEntryTable(source.type, source.rowSubtitles);
 	writeEntriesToTable(source);
 	/* After the tables, since what it asks about includes the artwork they hold. */
 	refreshLogoPlayback();
@@ -1206,12 +1305,14 @@ Section SectionEditor::section() const
 	result.bridgeThickness = bridgeThickness->value();
 	result.bridgeOffset = bridgeOffset->value();
 	result.bridgeGap = bridgeGap->value();
+	result.bridgeMinGap = bridgeMinGap->value();
 	result.bridgeTint = bridgeTint->isChecked();
 	result.bridgeFill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
 	result.bridgeSizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
 	result.bridgeSplit = bridgeSplit->value() / 100.0;
 	result.bridgeRowAlign = static_cast<HAlign>(bridgeRowAlign->currentData().toInt());
 	result.bridgeSpanEmpty = bridgeSpanEmpty->isChecked();
+	result.rowSubtitles = rowSubtitles->isChecked();
 	result.dividerCap = static_cast<DividerShape>(dividerCap->currentData().toInt());
 	result.dividerCapSvg = dividerCapSvgPath->text();
 	result.dividerMirrorEnds = dividerMirrorEnds->isChecked();
@@ -1241,11 +1342,15 @@ Section SectionEditor::section() const
 	result.style = primaryStyle->style();
 	result.secondaryStyle = secondaryStyle->style();
 	result.bridgeStyle = bridgeStyle->style();
+	result.rowSubtitleStyle = rowSubtitleStyle->style();
+	result.rowSecondarySubtitleStyle = rowSecondarySubtitleStyle->style();
 	result.useSecondaryStyle = secondaryGroup->isChecked();
 	result.useBridgeStyle = bridgeStyleGroup->isChecked();
 	result.stylePresetName = primaryStyle->presetName();
 	result.secondaryStylePresetName = secondaryStyle->presetName();
 	result.bridgeStylePresetName = bridgeStyle->presetName();
+	result.rowSubtitleStylePresetName = rowSubtitleStyle->presetName();
+	result.rowSecondarySubtitleStylePresetName = rowSecondarySubtitleStyle->presetName();
 
 	readEntriesFromTable(&result);
 	readCentreFromTable(&result);
@@ -1263,7 +1368,8 @@ void SectionEditor::setPresets(const QVector<StylePreset> &newPresets)
 {
 	presets = newPresets;
 
-	for (StyleEditor *editor : {primaryStyle, secondaryStyle, bridgeStyle})
+	for (StyleEditor *editor :
+	     {primaryStyle, secondaryStyle, bridgeStyle, rowSubtitleStyle, rowSecondarySubtitleStyle})
 		editor->setPresets(presets, editor->presetName(), editor != presetOrigin);
 }
 
@@ -1298,7 +1404,14 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(logoSide, logoBesideText);
 	form->setRowVisible(logoGap, logoBesideText);
 	const bool bridged = type == SectionType::Bridged;
-	const auto fill = static_cast<BridgeFill>(bridgeFill->currentData().toInt());
+	/*
+	 * The fill the row will really be laid out with, not the one the combo happens to hold: an
+	 * empty bridge is always Fixed, and the rows below that turn on the distinction have to
+	 * agree with the renderer about which mode is in force or they show settings that do nothing.
+	 */
+	const auto fill = bridgeTypeIsEmpty(static_cast<BridgeType>(bridgeType->currentData().toInt()))
+				  ? BridgeFill::Fixed
+				  : static_cast<BridgeFill>(bridgeFill->currentData().toInt());
 	const auto sizing = static_cast<BridgeSizing>(bridgeSizing->currentData().toInt());
 	const auto placement = static_cast<LogoPlacement>(logoPlacement->currentData().toInt());
 
@@ -1309,17 +1422,26 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const auto bridgeArt = static_cast<BridgeType>(bridgeType->currentData().toInt());
 	const bool drawnArt = usesBridge && bridgeTypeUsesArt(bridgeArt);
 	const bool artFromFile = usesBridge && bridgeTypeUsesFile(bridgeArt);
+	/*
+	 * An empty bridge has one setting of its own -- how much room it keeps -- and no use for the
+	 * rest. Its fill row goes with them: nothing is drawn, so the three modes would differ only
+	 * in how the text columns come out, which is not what a control called Fill promises. The
+	 * renderer lays it out as Fixed to match (see effectiveBridgeFill).
+	 */
+	const bool emptyBridge = usesBridge && bridgeTypeIsEmpty(bridgeArt);
 
 	form->setRowVisible(logoPlacement, logoBesideText);
 	form->setRowVisible(bridgeType, usesBridge);
-	form->setRowVisible(bridgeEdit, usesBridge && !drawnArt);
+	form->setRowVisible(bridgeEdit, usesBridge && !drawnArt && !emptyBridge);
 	form->setRowVisible(bridgeSvgPath->parentWidget(), artFromFile);
 	form->setRowVisible(bridgeThickness, drawnArt);
 	form->setRowVisible(bridgeOffset, drawnArt);
 	form->setRowVisible(bridgeGap, drawnArt);
+	/* Only a Bridged section reserves the gap between two columns; a logo row spans what is left. */
+	form->setRowVisible(bridgeMinGap, emptyBridge && bridged);
 	/* The built-in tiles are drawn white to be tinted; only a user's file has colours to keep. */
 	form->setRowVisible(bridgeTint, artFromFile);
-	form->setRowVisible(bridgeFill, usesBridge);
+	form->setRowVisible(bridgeFill, usesBridge && !emptyBridge);
 	/* Column sizing and row placement describe two texts, so they stay with that type. */
 	form->setRowVisible(bridgeSizing, bridged);
 	/* The split is the tab stop; with Natural sizing the text decides where things land. */
@@ -1331,6 +1453,16 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(bridgeRowAlign, bridged && sizing == BridgeSizing::Natural && fill == BridgeFill::Fixed);
 	/* A fixed bridge has nothing to run into the space an empty column would free. */
 	form->setRowVisible(bridgeSpanEmpty, bridged && fill != BridgeFill::Fixed);
+	form->setRowVisible(rowSubtitles, bridged);
+
+	/*
+	 * The two subtitle styles show only while the row actually draws subtitles. They are read
+	 * back whether or not they are on screen -- like every other hidden row here -- so turning
+	 * the subtitles off and on again returns the styles the user set rather than the defaults.
+	 */
+	const bool rowSubtitlesOn = bridged && rowSubtitles->isChecked();
+	rowSubtitleStyleGroup->setVisible(rowSubtitlesOn);
+	rowSecondarySubtitleStyleGroup->setVisible(rowSubtitlesOn);
 	/*
 	 * The divider's own rows. A slot's file picker follows the shape picked for it, and the
 	 * second end follows the mirror toggle: a divider whose two ends are the same shape has one
@@ -1373,9 +1505,16 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(columnGap, hasColumns);
 	form->setRowVisible(fillOrder, hasColumns);
 	form->setRowVisible(entryGap, hasEntries);
+	/*
+	 * The pair's own two settings apply wherever anything is really stacked, which for a bridged
+	 * row is a choice rather than a property of the type -- so this asks about the section
+	 * being edited and not only about its type. `secondaryGroup`'s title stays keyed on the
+	 * type: for a bridged row the second style is still the right-hand *text*, subtitles or not.
+	 */
 	const bool hasSubtitles = sectionUsesSubtitles(type);
-	form->setRowVisible(subtitleGap, hasSubtitles);
-	form->setRowVisible(subtitleOrder, hasSubtitles);
+	const bool stacksSubtitles = hasSubtitles || (bridged && rowSubtitles->isChecked());
+	form->setRowVisible(subtitleGap, stacksSubtitles);
+	form->setRowVisible(subtitleOrder, stacksSubtitles);
 	form->setRowVisible(spacerHeight, type == SectionType::Spacer);
 
 	/*
@@ -1419,7 +1558,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	outerLayout->setStretch(trailingStretchIndex, hasEntries || divider ? 0 : 1);
 }
 
-void SectionEditor::rebuildEntryTable(SectionType type)
+void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 {
 	const QSignalBlocker blocker(entryTable);
 
@@ -1428,6 +1567,20 @@ void SectionEditor::rebuildEntryTable(SectionType type)
 
 	switch (type) {
 	case SectionType::Bridged:
+		/*
+		 * Each side of the row gains a column of its own when the section draws subtitles,
+		 * with the pair kept side by side rather than the two subtitles gathered at the end:
+		 * a row is read across, and a subtitle belongs beside the line it sits under.
+		 */
+		if (rowSubtitles) {
+			entryTable->setColumnCount(4);
+			entryTable->setHorizontalHeaderLabels({moduleText("Designer.Column.Left"),
+							       moduleText("Designer.Column.LeftSubtitle"),
+							       moduleText("Designer.Column.Right"),
+							       moduleText("Designer.Column.RightSubtitle")});
+			break;
+		}
+
 		entryTable->setColumnCount(2);
 		entryTable->setHorizontalHeaderLabels(
 			{moduleText("Designer.Column.Left"), moduleText("Designer.Column.Right")});
@@ -1479,18 +1632,29 @@ void SectionEditor::writeEntriesToTable(const Section &source)
 {
 	const QSignalBlocker blocker(entryTable);
 	const bool logoMode = sectionUsesLogos(source.type) && sectionUsesEntries(source.type);
+	const bool subtitleColumns = source.type == SectionType::Bridged && source.rowSubtitles;
 
 	entryTable->setRowCount(source.entries.size());
 	for (int row = 0; row < source.entries.size(); ++row) {
 		const Entry &entry = source.entries.at(row);
 
+		auto *first = new QTableWidgetItem(logoMode ? entry.logo.path : entry.text);
+		/* The whole entry travels with the row; see kEntryStashRole. */
+		first->setData(kEntryStashRole, entryStash(entry));
+		entryTable->setItem(row, 0, first);
+
 		if (logoMode) {
-			entryTable->setItem(row, 0, new QTableWidgetItem(entry.logo.path));
 			entryTable->setItem(row, 1, new QTableWidgetItem(QString::number(entry.logo.maxHeight)));
 			continue;
 		}
 
-		entryTable->setItem(row, 0, new QTableWidgetItem(entry.text));
+		if (subtitleColumns) {
+			entryTable->setItem(row, 1, new QTableWidgetItem(entry.subtitle));
+			entryTable->setItem(row, 2, new QTableWidgetItem(entry.secondaryText));
+			entryTable->setItem(row, 3, new QTableWidgetItem(entry.secondarySubtitle));
+			continue;
+		}
+
 		if (sectionUsesSecondaryText(source.type))
 			entryTable->setItem(row, 1, new QTableWidgetItem(entry.secondaryText));
 	}
@@ -1499,6 +1663,7 @@ void SectionEditor::writeEntriesToTable(const Section &source)
 void SectionEditor::readEntriesFromTable(Section *target) const
 {
 	const bool logoMode = sectionUsesLogos(target->type) && sectionUsesEntries(target->type);
+	const bool subtitleColumns = target->type == SectionType::Bridged && target->rowSubtitles;
 
 	QVector<Entry> entries;
 	entries.reserve(entryTable->rowCount());
@@ -1509,11 +1674,25 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 			return item ? item->text() : QString();
 		};
 
-		Entry entry;
+		/*
+		 * Everything the row was last written from, then whatever its visible columns now
+		 * hold on top of it. That order is what makes reading a section non-destructive: a
+		 * field the table is not currently showing -- a subtitle whose toggle is off, the
+		 * text behind a type that shows logos -- comes back from the stash rather than
+		 * coming back empty.
+		 */
+		const QTableWidgetItem *first = entryTable->item(row, 0);
+		Entry entry = first ? entryFromStash(first->data(kEntryStashRole)) : Entry();
+
 		if (logoMode) {
 			entry.logo.path = cell(0);
 			const int height = cell(1).toInt();
 			entry.logo.maxHeight = height > 0 ? height : 96;
+		} else if (subtitleColumns) {
+			entry.text = cell(0);
+			entry.subtitle = cell(1);
+			entry.secondaryText = cell(2);
+			entry.secondarySubtitle = cell(3);
 		} else {
 			entry.text = cell(0);
 			if (sectionUsesSecondaryText(target->type))
@@ -1926,7 +2105,15 @@ void SectionEditor::browseForEntryLogo()
 	if (path.isEmpty())
 		return;
 
-	entryTable->setItem(row, 0, new QTableWidgetItem(path));
+	/*
+	 * Set on the item rather than replacing it, so the row keeps the entry stashed on its first
+	 * cell -- a new item would come with none and the row's unshown fields would go with it.
+	 */
+	if (QTableWidgetItem *item = entryTable->item(row, 0))
+		item->setText(path);
+	else
+		entryTable->setItem(row, 0, new QTableWidgetItem(path));
+
 	if (!entryTable->item(row, 1))
 		entryTable->setItem(row, 1, new QTableWidgetItem(QStringLiteral("96")));
 
@@ -1937,7 +2124,7 @@ void SectionEditor::importCsv()
 {
 	const auto type = static_cast<SectionType>(typeBox->currentData().toInt());
 
-	CsvImportDialog dialog(type, this);
+	CsvImportDialog dialog(type, rowSubtitles->isChecked(), this);
 	if (dialog.exec() != QDialog::Accepted)
 		return;
 
