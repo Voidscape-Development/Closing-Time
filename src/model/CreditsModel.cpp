@@ -1011,13 +1011,21 @@ void Section::save(obs_data_t *data) const
 	/*
 	 * A sticky block's children are sections, saved by the very same call that saved this one.
 	 * Only one level deep can ever be written, because only one level can ever be held.
+	 *
+	 * Written only when there are any: every other section in every document would otherwise
+	 * carry an empty array it has no use for, in settings that are rewritten on every save and
+	 * read back on every load.
 	 */
-	saveArray(
-		data, "children", static_cast<int>(children.size()),
-		[](obs_data_t *item, int index, const void *context) {
-			static_cast<const std::vector<Section> *>(context)->at(static_cast<size_t>(index)).save(item);
-		},
-		&children);
+	if (!children.empty()) {
+		saveArray(
+			data, "children", static_cast<int>(children.size()),
+			[](obs_data_t *item, int index, const void *context) {
+				static_cast<const std::vector<Section> *>(context)
+					->at(static_cast<size_t>(index))
+					.save(item);
+			},
+			&children);
+	}
 }
 
 void Section::load(obs_data_t *data)

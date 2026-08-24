@@ -66,6 +66,8 @@ QColor layoutBoxColour(LayoutBox::Kind kind)
 		return QColor(235, 225, 110);
 	case LayoutBox::Kind::Divider:
 		return QColor(180, 140, 255);
+	case LayoutBox::Kind::Sticky:
+		return QColor(255, 90, 90);
 	case LayoutBox::Kind::Text:
 	default:
 		return QColor(255, 120, 200);
@@ -406,7 +408,12 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 			colour.setAlpha(dim ? 60 : 230);
 
 			QPen boxPen(colour, 1);
-			if (kind == LayoutBox::Kind::Section)
+			/*
+			 * A sticky block's slot is dashed for the reason a section box is: it is a
+			 * bound rather than something drawn -- and doubly so here, since the block is
+			 * drawn somewhere else entirely the moment it pins.
+			 */
+			if (kind == LayoutBox::Kind::Section || kind == LayoutBox::Kind::Sticky)
 				boxPen.setStyle(Qt::DashLine);
 			else if (kind == LayoutBox::Kind::Content)
 				boxPen.setStyle(Qt::DotLine);
@@ -423,6 +430,7 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 	draw(LayoutBox::Kind::Logo);
 	draw(LayoutBox::Kind::Bridge);
 	draw(LayoutBox::Kind::Divider);
+	draw(LayoutBox::Kind::Sticky);
 
 	painter.restore();
 }

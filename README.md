@@ -10,7 +10,9 @@ fires once the roll clears the screen.
 ## What it does
 
 Add a **Credits Marquee** source to a scene, open **Credits Designer**, and build the roll
-out of sections:
+out of sections. The designer asks for a kind of section and then a couple of plain questions
+about it — a heading, with a subtitle, with a logo; a list of lines, pairs or images over so many
+columns — which between them cover every shape in the table below:
 
 | Section type | What it is |
 |---|---|
@@ -26,8 +28,9 @@ out of sections:
 | Multi-List of Text | Names across a configurable number of columns |
 | Title and Subtitle Multi-List | The same stacked pairs, across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
-| Section Divider | An ornamental rule between sections, composed from end caps, a rule and a centrepiece |
+| Section Divider | An ornamental rule between sections, composed from its two ends, the rule between them, and whatever sits in the middle |
 | Spacer | A blank run, for pacing |
+| Sticky Ending Block | Sections that hold still on the frame while the rest of the roll scrolls past behind them — a closing card that stays up, and can be the end of the roll |
 
 A **title and subtitle** list is the other way to set what a bridged row sets on one line: the
 position on top and the name under it, each with its own font, size, weight, colour and
@@ -46,13 +49,18 @@ beside the whole pair — centred against both lines together, not just the titl
 it, sit against the section edge, or bridge across to it, with the leader running along the
 baseline of whichever line ends up on top.
 
+Either side of a bridged row can carry a **subtitle** of its own — a note under the role on the
+left, a company under the name on the right — each in a style of its own, and drawn only where you
+put something. The leader stays on the top line of the row, so adding one leaves it where it was.
+
 In a bridged row the **bridge** joining the two texts is drawn from artwork rather than from
 characters, so a leader is a real shape at a thickness you set instead of whatever full stops
 your font happens to draw: pick dots, dashes, diamonds, a line or a double rule, or point it at
 an SVG of your own. It picks up the section's own colour, gradient, outline and shadow, so it
 belongs to the row rather than sitting on it, and it can be lifted off the baseline to run a
 rule through the middle of the text. Plain text is still one of the styles, for when a word —
-`and`, `with` — is what belongs in the gap.
+`and`, `with` — is what belongs in the gap, and so is nothing at all, for two columns held apart
+by a plain gap you set the width of.
 
 Bridged rows are fully placeable on top of that: the bridge can be drawn once, repeated, or
 spread to span whatever gap the two texts leave; the columns can be fixed (so the leader starts
@@ -61,19 +69,21 @@ row can hug either edge or sit centred; and a row with only one side filled in c
 leader out to the far edge, for a heading inside an otherwise bridged list.
 
 A **section divider** is the ornamental rule that separates one part of a roll from the next,
-and it is *composed* rather than picked from a list of finished pictures: an end cap, a rule
-running inward from it, and a centre — then the same again mirrored, so the two ends of a rule
-cannot drift apart while you work on it. Each of the three is drawn from a small library of
-vector shapes — arrowheads, spearpoints, teardrops, scrolled ends and deco steps for the ends;
-plain, double, tapered, dotted, dashed, diamond-chained and ticked rules; diamonds, nested
-diamonds, four- and five-point stars, hearts, scrolls, filigree curls and deco interlocks for
-the middle — and any of the three can instead be an SVG of your own. Two dozen shapes across
-three slots is a great many more dividers than there are shapes.
+and it is *composed* rather than picked from a list of finished pictures: an end, a rule
+running inward from it, and a middle — then the same again mirrored, so the two ends of a rule
+cannot drift apart while you work on it. The ends and the middle are the same kind of thing and
+draw on the same library of vector shapes — arrowheads, spearpoints, teardrops, scrolled ends,
+deco steps and chevrons; diamonds, nested diamonds, four- and five-point stars, dots, hearts,
+scrolls, filigree curls and deco interlocks — so an arrowhead can break a rule as readily as it
+caps one, and any of them can instead be an SVG of your own. The rule between them has a library
+of its own: plain, double, tapered, dotted, dashed, diamond-chained and ticked.
 
-The middle is a *list* rather than a single choice, because the figures that turn up there are
-compounds: a diamond with a dot either side of it, `PART II` between two curls, a monogram
-between a pair of scrolls. Pieces can be ornaments, a word set in the section's own font, or an
-image, in whatever order you put them; leave the list empty and you get an unbroken rule. Two
+Each end, and the middle, is a *list* rather than a single choice, because the figures that turn
+up there are compounds: a diamond with a dot either side of it, `PART II` between two curls, a
+monogram between a pair of scrolls, `MMXXVI` set against the end of the rule. Pieces can be
+ornaments, a word set in the section's own font, or an image, each at a size of its own and in
+whatever order you put them; leave a list empty and you get an end with nothing on it, or an
+unbroken rule. Two
 or three rules can run in parallel with a single ornament breaking all of them, and they can be
 tapered so the stack forms a wedge. One thickness sizes the whole thing — every shape knows its
 own proportion to the rule it belongs to, so an arrowhead stays an arrowhead when a divider is
@@ -126,6 +136,20 @@ first frame by default, or recomputed per frame for artwork that changes shape. 
 preview shows the first frame until you press **Play animations**, so the pane holds still while
 a roll is being written. Artwork is decoded whole and up front, which puts a ceiling on it: past
 30 seconds a logo plays only its first 30, and the designer says so.
+
+A **sticky ending block** is a run of sections that stops scrolling. It travels up the frame like
+any other part of the roll, and when it reaches the place you pinned it to, it stays there while
+the rest of the credits carries on past behind it. You pick which part of the block is pinned —
+its top edge, its middle, its bottom — and where down the frame that lands, so "centred in the
+frame" and "top edge a third of the way down" are both one setting rather than a number to work
+out. It can hold for a set time or until something else stops the roll, and when the hold ends it
+either stays put and ends the roll, carries on up and off the top, or does both at once. Turn on
+its panel and the credits running past underneath will not read through its lettering.
+
+It holds whole sections, so a closing card is a title, a divider and a logo the way anything else
+is; drag them under the block in the section list and they are inside it. Nothing above or below
+moves for it, and you can have as many as you like — the same mechanism gives you a chapter
+heading that holds while the section under it scrolls by.
 
 The source properties cover canvas size, background colour, scroll speed, lead-in and
 lead-out padding, start behaviour, looping, and the ending action.
