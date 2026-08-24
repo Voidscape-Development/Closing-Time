@@ -1562,9 +1562,16 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		 * after the block has detached from it. What it does *not* do is draw into the strip:
 		 * with a painter this leaves the slot empty, and the block itself is handed to the
 		 * compositor as a picture of its own.
+		 *
+		 * Its children are laid out without the animation cache, which is the documented way to
+		 * ask for every logo as a still: the strip's hole-and-overlay trick has nowhere to put a
+		 * second hole inside a picture that is itself drawn as one quad, and a logo left as a
+		 * hole with nothing over it would simply not be drawn at all.
 		 */
-		const int height = layoutStickyChildren(nullptr, section, document, logos, bridges, dividers, y,
-							boxes, animated);
+		const LogoSource stills{logos.stills, nullptr};
+
+		const int height = layoutStickyChildren(nullptr, section, document, stills, bridges, dividers, y,
+							boxes, nullptr);
 		record(LayoutBox::Kind::Sticky, QRectF(0, y, document.width, height));
 
 		if (sticky && height > 0) {
@@ -1622,8 +1629,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 						      section.stickyBackdropColor);
 			}
 
-			layoutStickyChildren(&blockPainter, section, document, logos, bridges, dividers, y, nullptr,
-					     nullptr);
+			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y,
+					     nullptr, nullptr);
 			blockPainter.end();
 
 			/* Straight alpha, for the same reason the tiles are. */

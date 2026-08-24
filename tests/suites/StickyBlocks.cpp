@@ -230,6 +230,30 @@ CT_SUITE(sticky_children, "What a block may hold")
 		check(loaded.children.front().type == SectionType::Title, "and everything else survives");
 }
 
+CT_SUITE(sticky_animated_logo, "Animated artwork inside a block")
+{
+	/*
+	 * A block is drawn as one quad, so there is nowhere inside it to leave a second hole for an
+	 * animation to be drawn into. Its children are therefore laid out without the animation
+	 * cache, which is the renderer's own way of asking for every logo as a still -- and the
+	 * check that matters is that something is drawn at all, since a logo left as a hole with
+	 * nothing over it is a block with a gap in it.
+	 */
+	Section block = unpadded(SectionType::StickyBlock);
+	block.children.clear();
+
+	Section logos = unpadded(SectionType::LogoList);
+	withAnimatedLogo(logos);
+	block.children.push_back(logos);
+
+	const Strip strip = renderAnimatedStrip(documentWith(block));
+	checkEq(strip.stickyBlocks.size(), 1, "the block is carried");
+	check(strip.animatedLogos.isEmpty(), "and its artwork is not reported as a hole in the strip");
+
+	if (!strip.stickyBlocks.isEmpty())
+		check(!inkOf(strip.stickyBlocks.first().image).isEmpty(), "the artwork is drawn into the block");
+}
+
 CT_SUITE(sticky_roll, "A block among the sections of a whole roll")
 {
 	/*

@@ -81,7 +81,7 @@ A `Document` is a canvas (`width`, `height`, `background`), playback settings
 `scrollPosition`), an `EndingActionConfig`, a list of `StylePreset`s, and an ordered list of
 `Section`s.
 
-`Section` is a single struct covering all nineteen types rather than a class hierarchy. The
+`Section` is a single struct covering all twenty types rather than a class hierarchy. The
 fields a given type actually uses are described by five predicates —
 `sectionUsesText/Logos/Entries/Columns/Subtitles` — which drive both the layout switch and the
 editor's field visibility, plus `sectionUsesSecondaryText`, derived from two of them rather than
@@ -116,8 +116,9 @@ side of the frame while still keeping a margin's worth of clear space off that s
 | `TitleSubtitleList` | entry list of stacked text pairs | e.g. a position over the name that holds it; see below |
 | `LogoList` | entry list of logos, one column | |
 | `MultiTextList`, `MultiLogoList`, `MultiTitleSubtitleList` | entry list over `columns` columns | `fillAcross` picks row-major vs column-major |
-| `SectionDivider` | no entries; a `dividerCentre` stack of its own | an ornamental rule composed from a cap, an arm and a centre; see below |
+| `SectionDivider` | no entries; three piece stacks of its own | an ornamental rule composed from two ends, an arm and a middle; see below |
 | `Spacer` | nothing | a blank run of `spacerHeight` px |
+| `StickyBlock` | `children`: whole sections of its own | pins to the canvas while the roll runs past behind it; see below |
 
 ### Logo rows
 
@@ -187,7 +188,14 @@ the bridge is made of and how the width is carved up between them.
 
 **`bridgeType`** is what the bridge is drawn from. `Text` is the original — a string set in the
 section's font — and every other type is **vector art**: a small SVG tile laid across the gap.
-See *Bridge artwork* below.
+See *Bridge artwork* below. `None` draws nothing at all: two columns of text with plain
+space between them is a layout people ask for, and expressing it as an empty bridge leaves every
+other setting on the row meaning exactly what it meant. It costs one number, `bridgeMinGap`,
+because an empty bridge has no natural width of its own to keep the two texts off each other with
+under `Natural` sizing — and it is always laid out as `Fixed`, through `effectiveBridgeFill`,
+since three ways of filling a gap with nothing differ only in how the text columns come out. The
+designer hides the fill row to match: a control named after something visible must not be doing
+something invisible.
 
 **`bridgeFill`** is what the bridge does with a gap wider than one copy of itself:
 
@@ -239,6 +247,16 @@ nothing to cover the freed space with, so collapsing the column there would only
 row — and would break the invariant above. Under `Natural` an empty side already measures
 zero, so the flag only really bites under `Split`, where the column is reserved whether or
 not anything is in it.
+
+**`rowSubtitles`** stacks a second line under each side of every row, from the entry's own
+`subtitle` and `secondarySubtitle`, in a style each: the two sides of a bridged row are already
+styled apart, and a subtitle that could not follow the line above it would be the one part of the
+row unable to. Both sides go through `layoutTitleSubtitle` whether or not they carry one, so a row
+without subtitles is measured and drawn by the very code that always drew it — an empty line
+takes no height and no gap, so the pair collapses to the single line a bridged row has always been.
+A column is sized from the wider of its two lines, and the leader hangs off whichever line ends up
+**on top**, the rule a bridged logo row already follows, so adding a subtitle under a name leaves
+the leader exactly where it was.
 
 Finally, the three parts share a **baseline** rather than a top edge, anchored on whichever
 reaches lowest so nothing climbs into the row above. That is what keeps a leader running
@@ -346,20 +364,33 @@ than there are rows in the library — and adding a shape adds it to every divid
 it rather than to one.
 
 `model/DividerArt.{hpp,cpp}` is a table on the same pattern as `BridgeArt`, with one field the
-bridge table has no use for: **`roles`**, a mask of which slots a shape may be picked for. A
-diamond is a perfectly good end cap *and* a perfectly good centrepiece, and saying so once beats
-a second Diamond in a second table that has to be kept looking like the first. The pickers are
-built by filtering the table on the slot they serve, so a shape is offered wherever it belongs
-without anything enumerating the combinations.
+bridge table has no use for: **`roles`**, a mask of which slots a shape may be picked for. There
+are two roles rather than three, because an end and a middle turned out to be the same slot: both
+are a stack of pieces, so a shape that suits one suits the other, and keeping them apart only meant
+two lists that had to be argued about shape by shape. An arm stays its own role — it is the rule
+itself, tiled along a span, which is a different job from being drawn once at its own size.
+
+**An end is a stack, exactly as the middle is.** `dividerCap` and `dividerEndCap` are
+`QVector<DividerPiece>` like `dividerCentre`, so a diamond outside an arrowhead, or `MMXXVI` set
+against the rule, is an end as readily as it is a centre. Nothing about it is a second
+implementation: one helper measures a run of pieces and one places it, and the three stacks differ
+only in where they are put and whether they are mirrored. A document that wrote an end as a single
+shape — which is every document there is — loads as the one-piece stack that draws the same
+divider, from keys of its own: a key that is a string in one document and an array in the next is a
+trap for every reader of either.
 
 Two things about the geometry are worth naming, because both are what let one number size a
 whole divider:
 
-**A cap is authored pointing outward along -x, and the right-hand end is that same tile
+**A cap is authored pointing outward along -x, and the right-hand end is that same stack
 mirrored.** Mirroring is a painter transform on the artwork rather than a second tile, so a cap
-cannot come out subtly different at the two ends of the same rule. `dividerMirrorEnds` is on by
+cannot come out subtly different at the two ends of the same rule; the stack's own order reverses
+with it, so a lopsided end comes out symmetric. A word and a picture are deliberately *not*
+flipped, because mirrored type is a mistake rather than a design. `dividerMirrorEnds` is on by
 default and true of every ornamental rule that is not an arrow pointing somewhere; switching it
-off reveals `dividerEndCap`, which is *kept* either way so the toggle is non-destructive. The
+off reveals `dividerEndCap`, which is *kept* either way so the toggle is non-destructive. Note that
+it says the two ends are the same *list*, not that the right-hand one is drawn unflipped: an end is
+always a mirror image of the way it is written, whichever list it came from. The
 same mirror applies to the right-hand **arm**, unconditionally: a taper running from a hairline
 up to full thickness, or a rule ticked at one edge of each tile, would otherwise point the same
 way on both sides and leave the divider lopsided. Mirroring a symmetric tile costs a transform
@@ -719,6 +750,64 @@ restarts them on a loop wrap or a restart hotkey. The frame showing at a given p
 `logoFrameAt`, shared by the source and the designer's preview so the two cannot disagree about
 what a speed multiplier or a play-once means.
 
+### Sticky ending blocks
+
+A roll scrolls past. What it could not do is hold: a closing card that stays on the frame while the
+last of the credits runs up behind it, and then ends the roll when it has been up long enough.
+
+`StickyBlock` is a section that holds other sections (`children`, one level deep — a block inside a
+block is a second kind of position with a second set of rules, and the loader drops any that turns
+up). It is laid into the roll like any other section and takes exactly the room its content would
+have taken inline, so nothing above or below it moves for the feature, and it travels up with the
+roll until its slot reaches the anchor. Then it detaches.
+
+**It is not painted into the strip.** The strip is one tall picture that scrolls, and a thing that
+stops scrolling while the rest of it carries on cannot be part of that picture — so the slot is
+left empty and the block is carried out on the `Strip` as a `StickyBlockPlacement`: a picture of its
+own, drawn over the tiles by whoever composites. The same bargain an animated logo strikes, and for
+the same reason. The empty slot goes on scrolling after the block has left it, which is what keeps
+the content either side of it where it was.
+
+**The pin is a pair of points.** `stickyAnchor` says which part of the block — its top edge, its
+middle, its bottom — and `stickyCanvasPosition` where down the canvas that part lands, with
+`stickyOffset` as a nudge in pixels. "The middle of the block, halfway down the frame" needs both
+halves, and a single number could only ever express one of them. The share is of the canvas height
+rather than a pixel offset, so a roll pins where it was meant to after a canvas resize.
+
+**What happens at the end of the hold is a setting**, because it answers two independent questions:
+does the block leave, and what counts as the end of the roll. `EndAtHold` stays put and ends the
+roll; `ResumeThenEnd` climbs off the top and lets the roll end as it always did; `ResumeEndAtHold`
+does both. `stickyHoldForever` holds until something else stops the roll, and the designer says as
+much beside the release rather than leaving a roll with no end to be discovered on air.
+
+`advance` keeps its own job. A block that still has something to do sets `stickyPending`, which is
+the whole of what the scroll loop knows about blocks: the strip clearing does not finish a roll
+while it is set, and the block finishes the roll itself through `finishRoll` when its hold is over.
+Where a block is *drawn* is decided separately, by `stickyBlockTop`, as the lower of its natural
+position and its pinned one — one expression rather than two branches, which is what makes a roll
+parked in manual scroll show every block where it belongs with none of the timing running.
+
+**The backdrop is painted into the block's own picture** rather than drawn as a quad behind it.
+libobs draws solids and textures from different effects, and starting a second one inside the pass
+that is drawing the strip is not something to do for a rectangle the rasteriser can fill for
+nothing at rebuild time. The picture is grown by a margin at each end for it, and for whatever the
+children paint outside their own boxes — unlike the strip, there is no neighbouring tile here to
+catch a shadow.
+
+A block spans the canvas: `sectionWidth`, `sectionAlign` and `marginX` are ignored for it, because
+what it holds is whole sections and each of them carries a box of its own. Two nested shares of the
+width would be two settings for one thing, and the inner one can already say everything the outer
+one could.
+
+In the designer a block's children are indented under it in the section list, and a drag decides
+its container by the row it lands under: drop something beneath a block or one of its rows and it
+joins the block, drop it anywhere else and it is top-level. That is one gesture for putting a
+section in and taking it back out, rather than a second one to learn. A list that is no longer flat
+means every operation on the selected row goes through a `SectionPath` rather than an index. The
+preview draws a block back into its slot rather than where it will pin: the pane is the roll end to
+end, and a card floating over an unrelated part of it with a hole left where it belongs would agree
+with nothing else on screen.
+
 **Scrolling.** The strip's top edge sits one canvas-height below the top of the frame at
 offset 0 and travels upward, so the roll enters from the bottom. Total travel is
 `canvasHeight + stripHeight`; `leadIn`/`leadOut` are baked into the strip itself as blank
@@ -879,7 +968,36 @@ the one way back out.
 
 The editor keeps one widget set and hides the rows that do not apply to the selected type
 (`QFormLayout::setRowVisible`, Qt 6.4+) rather than rebuilding, which keeps focus and scroll
-position stable while clicking down the section list. A trailing spacer takes whatever height
+position stable while clicking down the section list.
+
+**The picker asks three easy questions rather than one hard one.** Twenty types in one list is
+every shape the roll can hold and no way to find the one wanted, because they are not twenty
+different things: they are two headings, a list, a bridged row and three others, crossed with
+whether a subtitle is stacked under it, whether a logo sits beside it, what a list holds and how
+many columns it runs over. So the picker offers seven base types with those switches beside it, and
+`composeSectionType`/`decomposeSectionType` map between the two. Both live in the model, because
+taking a type apart is a property of the type table rather than of this window, and because a
+mapping that has to be exactly reversible is worth a test that needs no window on screen. Nothing
+about persistence changes: the document still carries all twenty ids.
+
+**The rows are gathered into named groups that fold away** — what the section says, how this kind
+of section is put together, where it sits — with the middle one titled after the type in it, since
+"Bridge settings" and "Divider settings" are never on screen at once. A `CollapsibleGroup` rather
+than a checkable `QGroupBox`: a checkbox on a group reads as switching the group *off*, which is
+what the checkable groups already in this editor mean. A group whose every row is hidden goes away
+with them, which is asked of the layout rather than of the widgets in it — a child of a window that
+has not been shown yet reads as hidden whether or not anything hid it.
+
+**The settings reached for rarely sit behind one switch.** Nothing is switched off by it: a
+held-back row still comes and goes with the type exactly as it did, and `setRowVisible` simply ands
+the two together. The section box is deliberately not among them — it is the setting that places a
+section, and hiding it would leave `marginX` looking like the only way to, which is the confusion
+the box was added to end.
+
+Because the entry table's columns follow the type, changing the type takes the entries out through
+the old columns and puts them back through the new ones (`relayoutEntryTable`). Rebuilding without
+that left an empty table for the next read to believe, which threw a cast list away on a change of
+type — the one thing changing a type is documented never to do. A trailing spacer takes whatever height
 is left over: a `QVBoxLayout` with nothing to give its slack to shares it out between the items
 it has, which spread a short type's handful of rows down the pane with gaps between them. The
 entry table is the one thing worth growing, so it takes the slack instead whenever the selected
@@ -1241,12 +1359,30 @@ same reason: reporting it would send the user after a font nothing uses.
    different settings per entry is honoured; the editor writes one set of settings to every
    logo in a section, because a loop switch on each of twelve sponsor cells is a column of
    checkboxes nobody wants to fill in.
-7. **A library rename is followed but never forced.** A document that already has a preset of
+7. **A sticky block is one level deep, and its logos do not animate.** A block cannot hold another
+   block. Its children are rasterised into the block's own picture, which is drawn as a single
+   quad, so an animated logo inside one shows its first frame — the strip's hole-and-overlay
+   trick has nowhere to put a second hole. Both are deliberate: pinning something to something
+   already pinned is a second set of rules, and a card that holds still is not where a moving
+   logo is missed.
+8. **A library rename is followed but never forced.** A document that already has a preset of
    its own under the new name keeps its link under the old one — merging two presets is not a
    rename — and migrates by itself if the clash is ever resolved. The manager says so when it
    happens.
 
 ### Addressed since the first cut
+
+- A Sticky Ending Block: a section holding sections of its own that pins itself to a place on the
+  canvas while the rest of the roll scrolls past behind it, holds, and then either stays put and
+  ends the roll or carries on up and off.
+- A bridge can be nothing at all — two columns of text held apart by a plain gap — and a bridged
+  row can carry a subtitle under each of its two sides, each in a style of its own.
+- A divider's ends are the same stack of pieces its middle has always been, from the same library
+  of shapes: an arrowhead can break a rule as well as cap one, and a word can cap one as well as
+  break one.
+- The section editor asks for a base type and a few switches rather than one of twenty types, and
+  its rows are gathered into groups that fold away, with the rarely-used ones behind a switch.
+- Deleting a section asks first.
 
 - Animated logos: GIF, APNG and animated WebP through Qt, drawn as their own quads over a hole
   the strip leaves for them, with per-logo loop, start-on-entry, speed and
@@ -1340,7 +1476,7 @@ that the leader hangs a fixed distance below the top line of the block, and that
 asserted now, with the two regimes checked separately underneath it.
 
 Renderer and parser changes before the harness existed were validated with the same approach in
-an ad-hoc form, covering the `obs_data` round trip for all nineteen section types, measure/render
+an ad-hoc form, covering the `obs_data` round trip for all twenty section types, measure/render
 agreement, tile contiguity and the tile-height cap, alpha format, hidden-section handling,
 and the CSV parser's quoting/line-ending/delimiter-detection cases.
 
