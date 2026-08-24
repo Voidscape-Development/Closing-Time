@@ -42,10 +42,18 @@ CT_SUITE(layout_every_type, "Measure/render agreement and containment, over ever
 
 	checkEq(boxesOutsideContent(document), 0, "nothing is placed outside the content area of its own section");
 
-	/* Every section reports its own box, so the designer's overlay can find it. */
-	checkEq(boxesOf(document, LayoutBox::Kind::Section).size(), document.sections.size(),
-		"every section reports a box");
-	checkEq(boxesOf(document, LayoutBox::Kind::Content).size(), document.sections.size(),
+	/*
+	 * Every section reports its own box, so the designer's overlay can find it -- the children of
+	 * a sticky block included, since those are sections too and are laid out by the same call.
+	 */
+	int sectionCount = 0;
+	visitSections(document.sections, [&sectionCount](const Section &section) {
+		if (section.visible)
+			++sectionCount;
+	});
+
+	checkEq(boxesOf(document, LayoutBox::Kind::Section).size(), sectionCount, "every section reports a box");
+	checkEq(boxesOf(document, LayoutBox::Kind::Content).size(), sectionCount,
 		"every section reports a content area");
 
 	saveArtifact(QStringLiteral("layout-every-type"), document);
@@ -91,7 +99,18 @@ CT_SUITE(layout_padding, "Padding and the section box, over every section type")
 		const Document narrowDocument = documentWith(narrow);
 		checkEq(boxesOutsideContent(narrowDocument), 0, "a narrowed section stays inside its own box");
 
+		/*
+		 * A sticky block is the one type the box does not narrow: it holds whole sections, each
+		 * with a box of its own, so it spans the canvas and lets them place themselves. Asserted
+		 * rather than skipped, because "this type ignores the setting" is exactly the kind of
+		 * thing that should fail here if it ever stops being true quietly.
+		 */
 		const QRectF box = boxOf(narrowDocument, LayoutBox::Kind::Section);
+		if (type == SectionType::StickyBlock) {
+			checkNear(box.width(), document.width, 1.0, "a sticky block spans the canvas");
+			continue;
+		}
+
 		checkNear(box.width(), document.width / 2.0, 1.0, "the section box is the share it was given");
 		checkNear(box.left(), 0.0, 1.0, "a left-aligned box sits against the left edge");
 	}

@@ -89,6 +89,7 @@ CT_SUITE(section_types, "The type table, its ids and its predicates")
 		{SectionType::MultiLogoList, "multi_logo_list"},
 		{SectionType::SectionDivider, "section_divider"},
 		{SectionType::Spacer, "spacer"},
+		{SectionType::StickyBlock, "sticky_block"},
 	};
 
 	checkEq(types.size(), contractual.size(), "every type is listed here, so a new one has to be added");

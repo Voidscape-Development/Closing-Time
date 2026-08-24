@@ -657,6 +657,27 @@ struct BoxCollector {
  * the measure pass for the same reason the boxes are -- that pass visits each section once,
  * whatever tiles the section straddles.
  */
+/*
+ * Collects the sticky blocks the layout placed, the way AnimatedCollector collects animated logos.
+ *
+ * Only a caller that can actually draw a block over the strip asks for these -- the source and the
+ * designer's preview. `measure()` passes nothing and rasterises nothing, so asking a roll how tall
+ * it is stays as cheap as it was.
+ */
+struct StickyCollector {
+	QVector<StickyBlockPlacement> *placements = nullptr;
+	int section = -1;
+
+	void add(StickyBlockPlacement placement)
+	{
+		if (!placements || placement.rect.isEmpty())
+			return;
+
+		placement.section = section;
+		placements->append(std::move(placement));
+	}
+};
+
 struct AnimatedCollector {
 	QVector<AnimatedLogoPlacement> *placements = nullptr;
 	int section = -1;
@@ -1419,6 +1440,29 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	return layout;
 }
 
+/* How far outside its own box one section can paint. Zero for a section that draws nothing. */
+double sectionBleed(const Document &document, const Section &section)
+{
+	/*
+	 * Logos cast the style's shadow as well, so a section that only places art counts
+	 * too -- and a divider counts whatever its centre holds, since its rule is inked by
+	 * the same style and can carry the same shadow with nothing but artwork in it.
+	 */
+	if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
+				  section.type == SectionType::SectionDivider))
+		return 0.0;
+
+	double bleed = std::max(document.effectiveStyle(section).effectBleed(),
+				document.effectiveSecondaryStyle(section).effectBleed());
+	/*
+	 * A bridge inked separately can carry a heavier shadow than either text beside it, and
+	 * it is counted for every section rather than only the bridged shapes: the override
+	 * costs nothing to resolve for a section that never draws a bridge, and the alternative
+	 * is this predicate and the layout switch's having to agree on which types those are.
+	 */
+	return std::max(bleed, document.effectiveBridgeStyle(section).effectBleed());
+}
+
 /*
  * Both passes of the layout run through this one function. With `painter` set it draws
  * into the current tile; with `painter` null it only reports the height. `top` is the
@@ -1430,7 +1474,34 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
  */
 int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
 		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes = nullptr,
-		  AnimatedCollector *animated = nullptr)
+		  AnimatedCollector *animated = nullptr, StickyCollector *sticky = nullptr);
+
+/*
+ * Lays a sticky block's children out, one under the next, and returns the height they come to.
+ *
+ * The children go through the very same layout call every other section does -- they *are* sections
+ * -- so a block holds whatever the roll holds and nothing here has to know what any of it is. What
+ * they do not get is the sticky collector: a block cannot hold a block, and the loader drops any
+ * that tries.
+ */
+int layoutStickyChildren(QPainter *painter, const Section &block, const Document &document, const LogoSource &logos,
+			 BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes,
+			 AnimatedCollector *animated)
+{
+	int y = top;
+	for (const Section &child : block.children) {
+		if (!child.visible)
+			continue;
+
+		y += layoutSection(painter, child, document, logos, bridges, dividers, y, boxes, animated);
+	}
+
+	return y - top;
+}
+
+int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
+		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes,
+		  AnimatedCollector *animated, StickyCollector *sticky)
 {
 	/* Reads as one call at every site whether or not anyone is collecting. */
 	const auto record = [boxes](LayoutBox::Kind kind, const QRectF &rect) {
@@ -1458,11 +1529,20 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	 * At the defaults -- the full width, centred -- the box is the canvas and this is exactly
 	 * the inset from both edges that it has always been.
 	 */
-	const qreal boxWidth = std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
-	const int boxX = qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
+	/*
+	 * A sticky block is the exception: it spans the canvas whatever these say, because what it
+	 * holds is whole sections and each of them carries a box of its own. Two nested shares of the
+	 * width would be two settings for one thing, and the inner one is the one that can already
+	 * say everything the outer one could.
+	 */
+	const bool spansCanvas = section.type == SectionType::StickyBlock;
 
-	const int contentX = boxX + section.marginX;
-	const int contentWidth = std::max(1, qRound(boxWidth) - section.marginX * 2);
+	const qreal boxWidth = spansCanvas ? document.width : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
+	const int boxX = spansCanvas ? 0 : qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
+
+	const int contentX = spansCanvas ? 0 : boxX + section.marginX;
+	const int contentWidth =
+		spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
 
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
 	const TextStyle &style = document.effectiveStyle(section);
@@ -1474,6 +1554,86 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	case SectionType::Spacer:
 		y += section.spacerHeight;
 		break;
+
+	case SectionType::StickyBlock: {
+		/*
+		 * The block takes up its slot in the roll exactly as its content would have inline, so
+		 * everything above and below it sits where it always did and the slot goes on scrolling
+		 * after the block has detached from it. What it does *not* do is draw into the strip:
+		 * with a painter this leaves the slot empty, and the block itself is handed to the
+		 * compositor as a picture of its own.
+		 */
+		const int height = layoutStickyChildren(nullptr, section, document, logos, bridges, dividers, y,
+							boxes, animated);
+		record(LayoutBox::Kind::Sticky, QRectF(0, y, document.width, height));
+
+		if (sticky && height > 0) {
+			/*
+			 * Rasterised at the strip's full width, because a child places itself across
+			 * the canvas exactly as a top-level section does -- its own `sectionWidth` and
+			 * placement are what narrow it, and they would mean something different if the
+			 * block handed them a narrower canvas to sit in.
+			 *
+			 * The picture is grown by the roll's bleed at top and bottom: a shadow cast by
+			 * the first or last child reaches outside the slot, and unlike the strip -- where
+			 * the neighbouring tile catches it -- there is nothing outside this picture to
+			 * catch it in.
+			 */
+			const int bleed = qCeil(sectionBleed(document, section));
+			int blockBleed = bleed;
+			for (const Section &child : section.children)
+				blockBleed = std::max(blockBleed, qCeil(sectionBleed(document, child)));
+
+			StickyBlockPlacement placement;
+			placement.rect = QRectF(0, y, document.width, height);
+			placement.anchor = section.stickyAnchor;
+			placement.canvasPosition = section.stickyCanvasPosition;
+			placement.offset = section.stickyOffset;
+			placement.hold = section.stickyHold;
+			placement.holdForever = section.stickyHoldForever;
+			placement.release = section.stickyRelease;
+			/*
+			 * The backdrop's padding reaches outside the slot as surely as a shadow does,
+			 * so the picture is grown by whichever of the two asks for more.
+			 */
+			const double backdropPadding =
+				section.stickyBackdrop ? std::max(0.0, section.stickyBackdropPadding) : 0.0;
+			const int margin = std::max(blockBleed, qCeil(backdropPadding));
+			placement.margin = margin;
+
+			QImage image(std::max(1, document.width), std::max(1, height + margin * 2),
+				     QImage::Format_ARGB32_Premultiplied);
+			image.fill(Qt::transparent);
+
+			QPainter blockPainter(&image);
+			blockPainter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing |
+						    QPainter::SmoothPixmapTransform);
+			/* The children are laid out in strip space; shift the picture under them. */
+			blockPainter.translate(0, -(y - margin));
+
+			/*
+			 * The panel goes down first, under everything the block holds: it is there to
+			 * keep the roll running past behind the block from reading through its
+			 * lettering, which is a job it can only do from underneath.
+			 */
+			if (section.stickyBackdrop && section.stickyBackdropColor.alpha() > 0) {
+				blockPainter.fillRect(QRectF(0, y - backdropPadding, document.width,
+							     height + backdropPadding * 2.0),
+						      section.stickyBackdropColor);
+			}
+
+			layoutStickyChildren(&blockPainter, section, document, logos, bridges, dividers, y, nullptr,
+					     nullptr);
+			blockPainter.end();
+
+			/* Straight alpha, for the same reason the tiles are. */
+			placement.image = image.convertToFormat(QImage::Format_ARGB32);
+			sticky->add(std::move(placement));
+		}
+
+		y += height;
+		break;
+	}
 
 	case SectionType::SectionDivider: {
 		const DividerLayout divider = layoutDivider(section, style, logos, dividers, contentX, y, contentWidth);
@@ -1855,39 +2015,28 @@ int effectBleed(const Document &document)
 {
 	double bleed = 0.0;
 
-	for (const Section &section : document.sections) {
-		/*
-		 * Logos cast the style's shadow as well, so a section that only places art counts
-		 * too -- and a divider counts whatever its centre holds, since its rule is inked by
-		 * the same style and can carry the same shadow with nothing but artwork in it.
-		 */
-		if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
-					  section.type == SectionType::SectionDivider))
-			continue;
-
-		bleed = std::max(bleed, document.effectiveStyle(section).effectBleed());
-		bleed = std::max(bleed, document.effectiveSecondaryStyle(section).effectBleed());
-		/*
-		 * A bridge inked separately can carry a heavier shadow than either text beside it, and
-		 * it is counted for every section rather than only the bridged shapes: the override
-		 * costs nothing to resolve for a section that never draws a bridge, and the alternative
-		 * is this predicate and the layout switch's having to agree on which types those are.
-		 */
-		bleed = std::max(bleed, document.effectiveBridgeStyle(section).effectBleed());
-	}
+	/*
+	 * A sticky block's own children are counted too. They are not drawn into the strip, so they
+	 * cannot bleed across a tile seam -- but the block is rasterised into a picture of its own,
+	 * and that picture has to be big enough to hold what they paint outside their boxes.
+	 */
+	visitSections(document.sections,
+		      [&](const Section &section) { bleed = std::max(bleed, sectionBleed(document, section)); });
 
 	return qCeil(bleed);
 }
 
 QVector<PlacedSection> placeSections(const Document &document, const LogoSource &logos, BridgeArtCache *bridges,
 				     DividerArtCache *dividers, int *totalHeight, LayoutBoxes *boxes = nullptr,
-				     QVector<AnimatedLogoPlacement> *animated = nullptr)
+				     QVector<AnimatedLogoPlacement> *animated = nullptr,
+				     QVector<StickyBlockPlacement> *sticky = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
 
 	BoxCollector collector{boxes, -1};
 	AnimatedCollector animatedCollector{animated, -1};
+	StickyCollector stickyCollector{sticky, -1};
 
 	int y = document.leadIn;
 	for (int index = 0; index < document.sections.size(); ++index) {
@@ -1897,8 +2046,10 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 
 		collector.section = index;
 		animatedCollector.section = index;
+		stickyCollector.section = index;
 		const int height = layoutSection(nullptr, section, document, logos, bridges, dividers, y,
-						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr);
+						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr,
+						 sticky ? &stickyCollector : nullptr);
 		placed.append(PlacedSection{&section, y, height});
 		y += height;
 
@@ -2046,13 +2197,14 @@ Strip StripRenderer::render(const Document &input, LayoutBoxes *boxes) const
 
 	int total = 0;
 	const LogoSource art{logos, animations};
-	const QVector<PlacedSection> placed =
-		placeSections(document, art, &bridges, &dividers, &total, boxes, &strip.animatedLogos);
+	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total, boxes,
+							   &strip.animatedLogos, &strip.stickyBlocks);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
 	if (strip.height <= 0 || placed.isEmpty()) {
 		/* Nothing is drawn over a strip that is not drawn. */
 		strip.animatedLogos.clear();
+		strip.stickyBlocks.clear();
 		return strip;
 	}
 

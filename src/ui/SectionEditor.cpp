@@ -874,6 +874,75 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	subtitleOrder->setToolTip(moduleText("Designer.SubtitleOrder.Tip"));
 	form->addRow(moduleText("Designer.SubtitleOrder"), subtitleOrder);
 
+	/*
+	 * The sticky block's own rows. The pin is a pair of points -- one on the block, one down the
+	 * canvas -- because "the middle of the block, halfway down the frame" needs both halves and a
+	 * single number can only ever say one of them.
+	 */
+	stickyAnchor = new QComboBox(this);
+	stickyAnchor->addItem(moduleText("Designer.StickyAnchor.Top"), static_cast<int>(StickyAnchor::Top));
+	stickyAnchor->addItem(moduleText("Designer.StickyAnchor.Center"), static_cast<int>(StickyAnchor::Center));
+	stickyAnchor->addItem(moduleText("Designer.StickyAnchor.Bottom"), static_cast<int>(StickyAnchor::Bottom));
+	stickyAnchor->setToolTip(moduleText("Designer.StickyAnchor.Tip"));
+	form->addRow(moduleText("Designer.StickyAnchor"), stickyAnchor);
+
+	stickyCanvasPosition = new QSpinBox(this);
+	stickyCanvasPosition->setRange(0, 100);
+	stickyCanvasPosition->setSuffix(QStringLiteral(" %"));
+	stickyCanvasPosition->setToolTip(moduleText("Designer.StickyCanvasPosition.Tip"));
+	form->addRow(moduleText("Designer.StickyCanvasPosition"), stickyCanvasPosition);
+
+	stickyOffset = new QSpinBox(this);
+	stickyOffset->setRange(-4096, 4096);
+	stickyOffset->setSuffix(QStringLiteral(" px"));
+	stickyOffset->setToolTip(moduleText("Designer.StickyOffset.Tip"));
+	form->addRow(moduleText("Designer.StickyOffset"), stickyOffset);
+
+	stickyHold = new QDoubleSpinBox(this);
+	stickyHold->setRange(0.0, 3600.0);
+	stickyHold->setDecimals(1);
+	stickyHold->setSingleStep(0.5);
+	stickyHold->setSuffix(moduleText("Designer.Seconds"));
+	stickyHold->setToolTip(moduleText("Designer.StickyHold.Tip"));
+	form->addRow(moduleText("Designer.StickyHold"), stickyHold);
+
+	stickyHoldForever = new QCheckBox(moduleText("Designer.StickyHoldForever"), this);
+	stickyHoldForever->setToolTip(moduleText("Designer.StickyHoldForever.Tip"));
+	form->addRow(QString(), stickyHoldForever);
+
+	stickyRelease = new QComboBox(this);
+	stickyRelease->addItem(moduleText("Designer.StickyRelease.EndAtHold"),
+			       static_cast<int>(StickyRelease::EndAtHold));
+	stickyRelease->addItem(moduleText("Designer.StickyRelease.ResumeThenEnd"),
+			       static_cast<int>(StickyRelease::ResumeThenEnd));
+	stickyRelease->addItem(moduleText("Designer.StickyRelease.ResumeEndAtHold"),
+			       static_cast<int>(StickyRelease::ResumeEndAtHold));
+	stickyRelease->setToolTip(moduleText("Designer.StickyRelease.Tip"));
+	form->addRow(moduleText("Designer.StickyRelease"), stickyRelease);
+
+	/*
+	 * Said on the form rather than in a tooltip, because a block that holds for ever and is set
+	 * to end the roll at its hold is a roll with no end -- which is a perfectly reasonable thing
+	 * to build on purpose and a baffling thing to meet by accident.
+	 */
+	stickyForeverWarning = new QLabel(moduleText("Designer.StickyHoldForever.Warning"), this);
+	stickyForeverWarning->setWordWrap(true);
+	form->addRow(QString(), stickyForeverWarning);
+
+	stickyBackdrop = new QCheckBox(moduleText("Designer.StickyBackdrop"), this);
+	stickyBackdrop->setToolTip(moduleText("Designer.StickyBackdrop.Tip"));
+	form->addRow(QString(), stickyBackdrop);
+
+	stickyBackdropColour = new ColourButton(this);
+	stickyBackdropColour->setDialogTitle(moduleText("Designer.StickyBackdropColor"));
+	form->addRow(moduleText("Designer.StickyBackdropColor"), stickyBackdropColour);
+
+	stickyBackdropPadding = new QSpinBox(this);
+	stickyBackdropPadding->setRange(0, 2048);
+	stickyBackdropPadding->setSuffix(QStringLiteral(" px"));
+	stickyBackdropPadding->setToolTip(moduleText("Designer.StickyBackdropPadding.Tip"));
+	form->addRow(moduleText("Designer.StickyBackdropPadding"), stickyBackdropPadding);
+
 	spacerHeight = new QSpinBox(this);
 	spacerHeight->setRange(0, 20000);
 	spacerHeight->setSuffix(QStringLiteral(" px"));
@@ -1116,6 +1185,22 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(bridgeOffset, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeGap, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeMinGap, &QSpinBox::valueChanged, this, notify);
+	connect(stickyAnchor, &QComboBox::currentIndexChanged, this, notify);
+	connect(stickyCanvasPosition, &QSpinBox::valueChanged, this, notify);
+	connect(stickyOffset, &QSpinBox::valueChanged, this, notify);
+	connect(stickyHold, &QDoubleSpinBox::valueChanged, this, notify);
+	connect(stickyRelease, &QComboBox::currentIndexChanged, this, notify);
+	connect(stickyBackdropColour, &ColourButton::colourChanged, this, notify);
+	connect(stickyBackdropPadding, &QSpinBox::valueChanged, this, notify);
+	/* Both of these decide what else on the form applies, so they re-run the visibility pass. */
+	for (QCheckBox *box : {stickyHoldForever, stickyBackdrop}) {
+		connect(box, &QCheckBox::toggled, this, [this] {
+			if (loading)
+				return;
+			applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+			emitChanged();
+		});
+	}
 	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
@@ -1274,7 +1359,16 @@ void SectionEditor::setSection(const Section &source)
 	entryGap->setValue(source.entryGap);
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
-	spacerHeight->setValue(source.spacerHeight);
+	spacerHeight->setValue(source.spacerHeight);	selectByData(stickyAnchor, static_cast<int>(source.stickyAnchor));
+	stickyCanvasPosition->setValue(qRound(source.stickyCanvasPosition * 100.0));
+	stickyOffset->setValue(qRound(source.stickyOffset));
+	stickyHold->setValue(source.stickyHold);
+	stickyHoldForever->setChecked(source.stickyHoldForever);
+	selectByData(stickyRelease, static_cast<int>(source.stickyRelease));
+	stickyBackdrop->setChecked(source.stickyBackdrop);
+	stickyBackdropColour->setColour(source.stickyBackdropColor);
+	stickyBackdropPadding->setValue(qRound(source.stickyBackdropPadding));
+
 	paddingTop->setValue(source.paddingTop);
 	paddingBottom->setValue(source.paddingBottom);
 	marginX->setValue(source.marginX);
@@ -1366,6 +1460,15 @@ Section SectionEditor::section() const
 	result.subtitleGap = subtitleGap->value();
 	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
+	result.stickyAnchor = static_cast<StickyAnchor>(stickyAnchor->currentData().toInt());
+	result.stickyCanvasPosition = stickyCanvasPosition->value() / 100.0;
+	result.stickyOffset = stickyOffset->value();
+	result.stickyHold = stickyHold->value();
+	result.stickyHoldForever = stickyHoldForever->isChecked();
+	result.stickyRelease = static_cast<StickyRelease>(stickyRelease->currentData().toInt());
+	result.stickyBackdrop = stickyBackdrop->isChecked();
+	result.stickyBackdropColor = stickyBackdropColour->colour();
+	result.stickyBackdropPadding = stickyBackdropPadding->value();
 	result.paddingTop = paddingTop->value();
 	result.paddingBottom = paddingBottom->value();
 	result.marginX = marginX->value();
@@ -1551,6 +1654,27 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	form->setRowVisible(subtitleGap, stacksSubtitles);
 	form->setRowVisible(subtitleOrder, stacksSubtitles);
 	form->setRowVisible(spacerHeight, type == SectionType::Spacer);
+
+	/*
+	 * The sticky block's rows. The hold is hidden outright while the block holds for ever, since
+	 * a number of seconds that nothing counts down is a control that lies; the warning underneath
+	 * appears only for the pairing that really has no end to it.
+	 */
+	const bool sticky = type == SectionType::StickyBlock;
+	const auto release = static_cast<StickyRelease>(stickyRelease->currentData().toInt());
+	const bool backdrop = sticky && stickyBackdrop->isChecked();
+
+	form->setRowVisible(stickyAnchor, sticky);
+	form->setRowVisible(stickyCanvasPosition, sticky);
+	form->setRowVisible(stickyOffset, sticky);
+	form->setRowVisible(stickyHold, sticky && !stickyHoldForever->isChecked());
+	form->setRowVisible(stickyHoldForever, sticky);
+	form->setRowVisible(stickyRelease, sticky);
+	form->setRowVisible(stickyForeverWarning,
+			    sticky && stickyHoldForever->isChecked() && stickyReleaseEndsAtHold(release));
+	form->setRowVisible(stickyBackdrop, sticky);
+	form->setRowVisible(stickyBackdropColour, backdrop);
+	form->setRowVisible(stickyBackdropPadding, backdrop);
 
 	/*
 	 * A divider has a style even though it carries no section text: the artwork is inked from

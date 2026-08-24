@@ -82,6 +82,40 @@ struct AnimatedLogoRuntime {
 };
 
 /*
+ * One sticky block, mid-roll.
+ *
+ * The strip left a slot where this block goes (see StickyBlockPlacement) and this is what fills
+ * it: one texture, drawn as its own quad after the tiles, at a position this decides rather than
+ * at the one the slot has scrolled to. That is the whole feature -- the block detaches from the
+ * roll it arrived on and the roll carries on past behind it.
+ *
+ * Graphics-thread state, like the tile textures beside it.
+ */
+struct StickyBlockRuntime {
+	StickyBlockPlacement placement;
+	gs_texture_t *texture = nullptr;
+
+	enum class State {
+		/* Still travelling with the roll, on its way to the anchor. */
+		Waiting,
+		/* Detached and holding at the anchor. */
+		Pinned,
+		/* Let go and climbing off the top of the frame under its own steam. */
+		Released,
+	};
+
+	State state = State::Waiting;
+	/* Seconds left of the hold. Meaningless until the block has pinned. */
+	double holdRemaining = 0.0;
+	/* How far it has travelled since it was released, in pixels. */
+	double releasedTravel = 0.0;
+	/* Set once its hold has had whatever say it has in ending the roll. */
+	bool spent = false;
+	/* The roll pass this belongs to; a new one starts it over. */
+	uint64_t epoch = 0;
+};
+
+/*
  * Threading:
  *
  *   - `document` is written only by update(), which libobs defers to the graphics thread
@@ -127,7 +161,14 @@ struct CreditsSourceData {
 	std::vector<gs_texture_t *> tileTextures;
 	std::vector<int> tileTops;
 	std::vector<AnimatedLogoRuntime> animatedLogos;
+	std::vector<StickyBlockRuntime> stickyBlocks;
 	int stripHeight = 0;
+	/*
+	 * True while a sticky block still has something to do before the roll can be called
+	 * finished -- a hold that has not run out, or a released block still on screen. Written on
+	 * the graphics thread each tick, before `advance` reads it, and both run only there.
+	 */
+	bool stickyPending = false;
 
 	std::mutex stateMutex;
 	Phase phase = Phase::Idle;
@@ -302,10 +343,17 @@ void releaseTextures(CreditsSourceData *data)
 			gs_texture_destroy(runtime.shadowTexture);
 	}
 
+	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
+		if (runtime.texture)
+			gs_texture_destroy(runtime.texture);
+	}
+
 	data->tileTextures.clear();
 	data->tileTops.clear();
 	data->animatedLogos.clear();
+	data->stickyBlocks.clear();
 	data->stripHeight = 0;
+	data->stickyPending = false;
 }
 
 /* Graphics thread only; requires an active graphics context. */
@@ -390,6 +438,19 @@ void uploadPendingStrip(CreditsSourceData *data)
 		 * in the last minute of a ten-minute roll have no business holding VRAM from the start.
 		 */
 		data->animatedLogos.push_back(std::move(runtime));
+	}
+
+	data->stickyBlocks.reserve(strip.stickyBlocks.size());
+	for (StickyBlockPlacement &placement : strip.stickyBlocks) {
+		StickyBlockRuntime runtime;
+		runtime.holdRemaining = std::max(0.0, placement.hold);
+		runtime.placement = std::move(placement);
+		/*
+		 * The texture is left unallocated until the block is first drawn, for the reason the
+		 * animated logos' are: a roll may carry a block the viewer does not reach for minutes,
+		 * and a canvas-sized picture is not a small thing to hold VRAM for in the meantime.
+		 */
+		data->stickyBlocks.push_back(std::move(runtime));
 	}
 
 	for (const StripTile &tile : strip.tiles) {
@@ -548,6 +609,17 @@ void advance(CreditsSourceData *data, double seconds)
 			}
 
 			data->offset = travel;
+
+			/*
+			 * The strip has cleared the frame, but a sticky block may not have: one still
+			 * holding at its anchor, or climbing off after being let go, is content that is
+			 * on screen, and a roll is not over while something of it still is. The block
+			 * is what ends the roll in that case -- see advanceStickyBlocks -- so the phase
+			 * is left as it is and the roll simply stops moving.
+			 */
+			if (data->stickyPending)
+				break;
+
 			data->phase = Phase::Finished;
 			finished = true;
 
@@ -581,6 +653,155 @@ void advance(CreditsSourceData *data, double seconds)
 
 	if (fireAction)
 		document.endingAction.execute(data->source);
+}
+
+/*
+ * Ends the roll from outside `advance` -- which today means a sticky block whose hold has run out
+ * and whose release says that is the end of it.
+ *
+ * Everything the natural end does, in the same order: the phase, the ending action's countdown,
+ * the signal, and the action itself when there is no delay to wait through. Doing it here rather
+ * than teaching `advance` about blocks keeps the scroll loop about scrolling.
+ *
+ * Graphics thread only, and does nothing for a roll that has already finished or is looping.
+ */
+void finishRoll(CreditsSourceData *data)
+{
+	const Document &document = data->document;
+	if (document.loop)
+		return;
+
+	bool fireAction = false;
+	{
+		std::lock_guard<std::mutex> lock(data->stateMutex);
+		if (data->phase == Phase::Finished || data->phase == Phase::Idle)
+			return;
+
+		data->phase = Phase::Finished;
+
+		if (document.endingAction.type != EndingActionType::None) {
+			data->actionPending = true;
+			data->actionRemaining = document.endingAction.delay;
+
+			if (document.endingAction.delay <= 0.0) {
+				data->actionPending = false;
+				fireAction = true;
+			}
+		}
+	}
+
+	/* Outside the lock, so a handler can call straight back in. */
+	emitCreditsFinished(data->source);
+
+	if (fireAction)
+		document.endingAction.execute(data->source);
+}
+
+/*
+ * Advances every sticky block by one tick, and reports whether any of them is still to have its
+ * say about the roll being over.
+ *
+ * A block travels with the roll until its slot reaches the anchor, then detaches and holds there
+ * while the rest of the roll scrolls on behind it. What happens when the hold runs out is the
+ * block's own setting: it stays where it is and ends the roll, it carries on up and off the top,
+ * or it does both.
+ *
+ * Where the block is *drawn* is not decided here -- see stickyBlockTop, which reads the state this
+ * leaves behind. That split is what lets a roll parked in manual scroll show its blocks pinned
+ * without any of the timing below running at all.
+ *
+ * Graphics thread only.
+ */
+void advanceStickyBlocks(CreditsSourceData *data, double seconds, bool rolling)
+{
+	const Document &document = data->document;
+	const int canvasHeight = std::max(1, document.height);
+
+	double offset = 0.0;
+	uint64_t epoch = 0;
+	{
+		std::lock_guard<std::mutex> lock(data->stateMutex);
+		offset = data->offset;
+		epoch = data->rollEpoch;
+	}
+
+	/* The roll has gone as far as it goes; nothing below can still be on its way to an anchor. */
+	const bool travelled = offset >= rollTravel(data) - 0.5;
+	const double stripTop = canvasHeight - offset;
+
+	bool pending = false;
+	bool endNow = false;
+
+	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
+		const StickyBlockPlacement &placement = runtime.placement;
+
+		/* A new pass of the roll is a new pass for its blocks: back to the top of the loop. */
+		if (runtime.epoch != epoch) {
+			runtime.epoch = epoch;
+			runtime.state = StickyBlockRuntime::State::Waiting;
+			runtime.holdRemaining = std::max(0.0, placement.hold);
+			runtime.releasedTravel = 0.0;
+			runtime.spent = false;
+		}
+
+		const double pinnedTop = placement.pinnedTop(canvasHeight);
+
+		switch (runtime.state) {
+		case StickyBlockRuntime::State::Waiting: {
+			/*
+			 * Pinned once the slot has carried it up to the anchor -- or once the roll has
+			 * finished travelling, which catches a pin the roll would never otherwise reach
+			 * (a negative offset on a short roll) rather than leaving the roll waiting on a
+			 * block that can never arrive.
+			 */
+			const double naturalTop = stripTop + placement.rect.top();
+			if (rolling && (naturalTop <= pinnedTop || travelled))
+				runtime.state = StickyBlockRuntime::State::Pinned;
+			break;
+		}
+
+		case StickyBlockRuntime::State::Pinned:
+			if (!rolling || placement.holdForever)
+				break;
+
+			runtime.holdRemaining -= seconds;
+			if (runtime.holdRemaining > 0.0)
+				break;
+
+			runtime.holdRemaining = 0.0;
+			if (stickyReleaseEndsAtHold(placement.release) && !runtime.spent)
+				endNow = true;
+
+			runtime.spent = true;
+			if (stickyReleaseResumes(placement.release))
+				runtime.state = StickyBlockRuntime::State::Released;
+			break;
+
+		case StickyBlockRuntime::State::Released:
+			if (rolling)
+				runtime.releasedTravel += document.scrollSpeed * seconds;
+			break;
+		}
+
+		/*
+		 * What still has to happen before the roll is over. A block that ends the roll itself
+		 * holds it open until it has; one that only leaves holds it open until it has left.
+		 */
+		if (!runtime.spent && stickyReleaseEndsAtHold(placement.release)) {
+			pending = true;
+		} else if (placement.release == StickyRelease::ResumeThenEnd) {
+			const double top = runtime.state == StickyBlockRuntime::State::Released
+						   ? pinnedTop - runtime.releasedTravel
+						   : std::max(pinnedTop, stripTop + placement.rect.top());
+			if (top + placement.rect.height() > 0.0)
+				pending = true;
+		}
+	}
+
+	data->stickyPending = pending;
+
+	if (endNow)
+		finishRoll(data);
 }
 
 /* ------------------------------------------------------------------------- callbacks */
@@ -894,6 +1115,11 @@ void videoTick(void *raw, float seconds)
 		rolling = data->phase == Phase::Rolling && !data->paused;
 	}
 
+	/*
+	 * Before the animated logos and after the scroll, because a block's own timing is measured
+	 * against the offset this tick just left behind.
+	 */
+	advanceStickyBlocks(data, delta, rolling);
 	advanceAnimatedLogos(data, delta, rolling);
 }
 
@@ -1010,6 +1236,55 @@ void drawAnimatedLogos(CreditsSourceData *data, gs_eparam_t *imageParam, double 
 	}
 }
 
+/*
+ * Where a sticky block's top edge sits in canvas space this frame.
+ *
+ * Waiting and pinned are one expression rather than two branches: a block travels with the roll
+ * until the roll has carried it up to the anchor and stays there afterwards, which is exactly the
+ * lower of the two positions. Written that way so a roll parked in manual scroll -- where none of
+ * the timing in advanceStickyBlocks runs -- still shows every block where it belongs.
+ */
+double stickyBlockTop(const StickyBlockRuntime &runtime, double stripTop, int canvasHeight)
+{
+	const double pinnedTop = runtime.placement.pinnedTop(canvasHeight);
+
+	if (runtime.state == StickyBlockRuntime::State::Released)
+		return pinnedTop - runtime.releasedTravel;
+
+	return std::max(pinnedTop, stripTop + runtime.placement.rect.top());
+}
+
+/*
+ * Draws the sticky blocks over the strip.
+ *
+ * After the tiles and after the animated logos, because a pinned block is the thing the roll is
+ * running behind: it is on top of everything else by construction, which is what makes a closing
+ * card readable while the last of the credits goes past underneath it.
+ */
+void drawStickyBlocks(CreditsSourceData *data, gs_eparam_t *imageParam, double stripTop, int canvasHeight)
+{
+	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
+		const StickyBlockPlacement &placement = runtime.placement;
+
+		const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
+		if (top >= canvasHeight || top + placement.rect.height() <= 0.0)
+			continue;
+
+		if (!runtime.texture)
+			runtime.texture = createTexture(placement.image);
+		if (!runtime.texture)
+			continue;
+
+		gs_effect_set_texture(imageParam, runtime.texture);
+		/*
+		 * The picture reaches past the slot by its margin at each end -- the backdrop's padding
+		 * and whatever the children paint outside their own boxes.
+		 */
+		drawClipped(0.0, top - placement.margin, static_cast<double>(gs_texture_get_width(runtime.texture)),
+			    static_cast<double>(gs_texture_get_height(runtime.texture)), canvasHeight);
+	}
+}
+
 void videoRender(void *raw, gs_effect_t *)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
@@ -1056,6 +1331,7 @@ void videoRender(void *raw, gs_effect_t *)
 		}
 
 		drawAnimatedLogos(data, imageParam, stripTop, canvasHeight);
+		drawStickyBlocks(data, imageParam, stripTop, canvasHeight);
 	}
 
 	gs_blend_state_pop();

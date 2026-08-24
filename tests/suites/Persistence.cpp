@@ -91,6 +91,16 @@ Section distinctive(SectionType type)
 	section.sectionWidth = 0.75;
 	section.sectionAlign = HAlign::Right;
 	section.spacerHeight = 313;
+	section.stickyAnchor = StickyAnchor::Bottom;
+	section.stickyCanvasPosition = 0.2;
+	section.stickyOffset = -18.0;
+	section.stickyHold = 12.5;
+	section.stickyHoldForever = true;
+	section.stickyRelease = StickyRelease::ResumeEndAtHold;
+	section.stickyBackdrop = true;
+	section.stickyBackdropColor = QColor(12, 34, 56, 210);
+	section.stickyBackdropPadding = 37.0;
+	section.children.push_back(Section::makeDefault(SectionType::Header));
 	section.visible = false;
 	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), QStringLiteral("three"),
 				 QStringLiteral("four"), LogoRef{QStringLiteral("/e.png"), 61}}};
@@ -167,6 +177,20 @@ void compare(const Section &loaded, const Section &original)
 	checkNear(loaded.sectionWidth, original.sectionWidth, 0.001, "sectionWidth");
 	check(loaded.sectionAlign == original.sectionAlign, "sectionAlign");
 	checkEq(loaded.spacerHeight, original.spacerHeight, "spacerHeight");
+	check(loaded.stickyAnchor == original.stickyAnchor, "stickyAnchor");
+	checkNear(loaded.stickyCanvasPosition, original.stickyCanvasPosition, 0.001, "stickyCanvasPosition");
+	checkNear(loaded.stickyOffset, original.stickyOffset, 0.001, "stickyOffset");
+	checkNear(loaded.stickyHold, original.stickyHold, 0.001, "stickyHold");
+	check(loaded.stickyHoldForever == original.stickyHoldForever, "stickyHoldForever");
+	check(loaded.stickyRelease == original.stickyRelease, "stickyRelease");
+	check(loaded.stickyBackdrop == original.stickyBackdrop, "stickyBackdrop");
+	check(loaded.stickyBackdropColor == original.stickyBackdropColor, "stickyBackdropColor");
+	checkNear(loaded.stickyBackdropPadding, original.stickyBackdropPadding, 0.001, "stickyBackdropPadding");
+	checkEq(static_cast<int>(loaded.children.size()), static_cast<int>(original.children.size()), "child count");
+	if (!loaded.children.empty() && !original.children.empty()) {
+		check(loaded.children.front().type == original.children.front().type, "a child keeps its type");
+		checkEq(loaded.children.front().text, original.children.front().text, "and its content");
+	}
 	check(loaded.visible == original.visible, "visible");
 
 	checkEq(loaded.entries.size(), original.entries.size(), "entry count");
@@ -250,6 +274,11 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	check(legacy.dividerCap.isEmpty(), "an absent divider cap is an end with nothing on it");
 	check(legacy.dividerArm == DividerShape::Rule, "an absent divider arm is the plain rule, not None");
 	check(legacy.dividerMirrorEnds, "divider ends are mirrored by default");
+	check(legacy.children.empty(), "a section from before sticky blocks holds nothing");
+	check(legacy.stickyAnchor == StickyAnchor::Center, "a sticky block pins by its middle unless told otherwise");
+	checkNear(legacy.stickyCanvasPosition, 0.5, 0.001, "halfway down the frame");
+	checkNear(legacy.stickyHold, 5.0, 0.001, "and holds for a measured time rather than none");
+	check(legacy.stickyRelease == StickyRelease::EndAtHold, "with the hold being the end of the roll");
 	checkEq(legacy.dividerRules, 1, "a divider has at least one rule");
 	checkNear(legacy.sectionWidth, 1.0, 0.001, "sectionWidth falls back to the full canvas");
 

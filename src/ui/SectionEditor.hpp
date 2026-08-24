@@ -29,6 +29,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
 class QGroupBox;
+class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
@@ -332,6 +333,18 @@ private:
 	QSpinBox *sectionWidth = nullptr;
 	QComboBox *sectionAlign = nullptr;
 	QSpinBox *spacerHeight = nullptr;
+
+	/* Sticky Ending Block sections only. */
+	QComboBox *stickyAnchor = nullptr;
+	QSpinBox *stickyCanvasPosition = nullptr;
+	QSpinBox *stickyOffset = nullptr;
+	QDoubleSpinBox *stickyHold = nullptr;
+	QCheckBox *stickyHoldForever = nullptr;
+	QComboBox *stickyRelease = nullptr;
+	QLabel *stickyForeverWarning = nullptr;
+	QCheckBox *stickyBackdrop = nullptr;
+	ColourButton *stickyBackdropColour = nullptr;
+	QSpinBox *stickyBackdropPadding = nullptr;
 
 	StyleEditor *primaryStyle = nullptr;
 	QGroupBox *secondaryGroup = nullptr;

@@ -26,6 +26,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+#include <vector>
+
 #include "model/BridgeArt.hpp"
 #include "model/DividerArt.hpp"
 #include "model/EndingAction.hpp"
@@ -58,6 +61,11 @@ enum class SectionType {
 	MultiLogoList,
 	SectionDivider,
 	Spacer,
+	/*
+	 * A run of sections that pins itself to a place on the canvas instead of scrolling past it.
+	 * It holds other sections rather than content of its own; see `Section::children`.
+	 */
+	StickyBlock,
 };
 
 const char *sectionTypeId(SectionType type);
@@ -90,6 +98,47 @@ bool sectionUsesSubtitles(SectionType type);
  * and that the secondary style is worth offering at all.
  */
 bool sectionUsesSecondaryText(SectionType type);
+
+/*
+ * Which part of a sticky block is pinned, and to what.
+ *
+ * The pin is a pair of points: one on the block and one down the canvas. Saying "the middle of the
+ * block, halfway down the frame" needs both halves, and a single number could only ever express
+ * one of them -- which is why a block's top edge landing at a fixed distance from the top of the
+ * frame and a block *centred* in the frame are two settings rather than one with a fudge in it.
+ */
+enum class StickyAnchor { Top, Center, Bottom };
+
+const char *stickyAnchorId(StickyAnchor anchor);
+StickyAnchor stickyAnchorFromId(const char *id, StickyAnchor fallback = StickyAnchor::Center);
+
+/* Where on the block the pin sits: 0 at its top edge, 1 at its bottom. */
+double stickyAnchorFraction(StickyAnchor anchor);
+
+/*
+ * What a sticky block does when its hold runs out.
+ *
+ *   EndAtHold      - the hold expiring *is* the end of the roll: the ending action fires and the
+ *                    block stays where it is. The closing card that stays on screen.
+ *   ResumeThenEnd  - the block carries on up and off the top, and the roll ends the way it always
+ *                    has, once everything has left the frame.
+ *   ResumeEndAtHold- the block carries on up and off, but the ending action fires at the moment
+ *                    the hold ends rather than waiting for it to clear the frame.
+ *
+ * Three rather than one because they answer two independent questions -- does the block leave, and
+ * what counts as the end of the roll -- and every combination of the two is something somebody
+ * builds a roll around.
+ */
+enum class StickyRelease { EndAtHold, ResumeThenEnd, ResumeEndAtHold };
+
+const char *stickyReleaseId(StickyRelease release);
+StickyRelease stickyReleaseFromId(const char *id, StickyRelease fallback = StickyRelease::EndAtHold);
+
+/* True when the block scrolls on after its hold rather than staying where it was pinned. */
+bool stickyReleaseResumes(StickyRelease release);
+
+/* True when the hold running out is what finishes the roll, rather than the strip clearing. */
+bool stickyReleaseEndsAtHold(StickyRelease release);
 
 enum class HAlign { Left, Center, Right };
 
@@ -179,6 +228,18 @@ BridgeFill effectiveBridgeFill(const Section &section);
  * ask instead.
  */
 bool sectionStacksSubtitles(const Section &section);
+
+/*
+ * Every section in `sections`, the children of any sticky block among them included, in the order
+ * they are drawn.
+ *
+ * The document's list is no longer flat, and everything that walks it to ask a section something --
+ * which fonts does this roll use, which preset does this section bind to -- has to reach a child or
+ * quietly stop working for anything inside a block. One walk in one place is what keeps a new
+ * question from being asked of half the roll.
+ */
+void visitSections(const QVector<Section> &sections, const std::function<void(const Section &)> &visit);
+void visitSections(QVector<Section> &sections, const std::function<void(Section &)> &visit);
 
 /*
  * What the glyphs themselves are painted with.
@@ -811,6 +872,59 @@ struct Section {
 	HAlign sectionAlign = HAlign::Center;
 	/* Spacer sections only: how tall the blank run is, in pixels. */
 	int spacerHeight = 120;
+
+	/*
+	 * Sticky Ending Block sections only.
+	 *
+	 * The block is laid into the roll like any other section and scrolls up with it. When its
+	 * slot reaches the anchor it detaches and stays there while the rest of the roll goes on
+	 * past behind it -- which is why the renderer leaves a hole where it would have been and
+	 * hands the block out as a picture of its own, the same bargain an animated logo strikes.
+	 *
+	 * `children` is what it holds. Any section type may go inside except another sticky block:
+	 * pinning something to something already pinned is a second kind of position with a second
+	 * set of rules, and one level is what the feature is for. The loader drops any that turn up,
+	 * so a hand-written document cannot smuggle one in either.
+	 *
+	 * Held as std::vector rather than QVector because this is a member of the very type it holds:
+	 * the standard says a vector may be declared over an incomplete type, and Qt's containers
+	 * make no such promise.
+	 */
+	std::vector<Section> children;
+
+	/* Which point of the block is pinned, and where down the canvas that point lands. */
+	StickyAnchor stickyAnchor = StickyAnchor::Center;
+	/*
+	 * How far down the canvas the anchor sits, 0.0 at the top edge and 1.0 at the bottom. A
+	 * share of the height rather than a pixel offset, so a roll designed at 1080 still pins
+	 * where it was meant to when the canvas is resized under it.
+	 */
+	double stickyCanvasPosition = 0.5;
+	/* A nudge on the pinned position, in pixels. Positive moves the block down. */
+	double stickyOffset = 0.0;
+
+	/* How long the block holds once it has pinned, in seconds. */
+	double stickyHold = 5.0;
+	/*
+	 * Hold until something else stops the roll -- a hotkey, a scene change -- rather than for a
+	 * measured time. A block that never lets go can never end the roll either, so the designer
+	 * says as much next to the release setting rather than leaving it to be discovered on air.
+	 */
+	bool stickyHoldForever = false;
+
+	StickyRelease stickyRelease = StickyRelease::EndAtHold;
+
+	/*
+	 * A panel drawn behind the block while it is pinned, so the roll running past underneath
+	 * does not read through its lettering.
+	 *
+	 * Off by default: a closing card set over the last of the credits is a perfectly good look,
+	 * and a backdrop that appeared without being asked for would be the plugin making that
+	 * decision. `stickyBackdropPadding` grows it past the block's own bounds on every side.
+	 */
+	bool stickyBackdrop = false;
+	QColor stickyBackdropColor = QColor(0, 0, 0, 180);
+	double stickyBackdropPadding = 24.0;
 
 	bool visible = true;
 

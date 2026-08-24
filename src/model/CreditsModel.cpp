@@ -82,6 +82,12 @@ const SectionTypeInfo kSectionTypes[] = {
 	 */
 	{SectionType::SectionDivider, "section_divider", "Section Divider", false, false, false, false, false},
 	{SectionType::Spacer, "spacer", "Spacer", false, false, false, false, false},
+	/*
+	 * Every flag is false for the same reason a divider's are: a sticky block has no content of
+	 * its own at all. What it holds is whole sections, each of which answers these questions for
+	 * itself, so a block claiming to carry text or a list would be claiming its children's.
+	 */
+	{SectionType::StickyBlock, "sticky_block", "Sticky Ending Block", false, false, false, false, false},
 };
 
 /* Listed in the order the divider's centre-piece picker presents them. */
@@ -181,6 +187,24 @@ bool sectionUsesSubtitles(SectionType type)
 	return sectionTypeInfo(type).subtitles;
 }
 
+void visitSections(const QVector<Section> &sections, const std::function<void(const Section &)> &visit)
+{
+	for (const Section &section : sections) {
+		visit(section);
+		for (const Section &child : section.children)
+			visit(child);
+	}
+}
+
+void visitSections(QVector<Section> &sections, const std::function<void(Section &)> &visit)
+{
+	for (Section &section : sections) {
+		visit(section);
+		for (Section &child : section.children)
+			visit(child);
+	}
+}
+
 bool sectionStacksSubtitles(const Section &section)
 {
 	/*
@@ -238,6 +262,81 @@ const QVector<DividerPiece::Kind> &allDividerPieceKinds()
 		return result;
 	}();
 	return kinds;
+}
+
+const char *stickyAnchorId(StickyAnchor anchor)
+{
+	switch (anchor) {
+	case StickyAnchor::Top:
+		return "top";
+	case StickyAnchor::Bottom:
+		return "bottom";
+	case StickyAnchor::Center:
+	default:
+		return "center";
+	}
+}
+
+StickyAnchor stickyAnchorFromId(const char *id, StickyAnchor fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "top") == 0)
+		return StickyAnchor::Top;
+	if (strcmp(id, "bottom") == 0)
+		return StickyAnchor::Bottom;
+	if (strcmp(id, "center") == 0)
+		return StickyAnchor::Center;
+	return fallback;
+}
+
+double stickyAnchorFraction(StickyAnchor anchor)
+{
+	switch (anchor) {
+	case StickyAnchor::Top:
+		return 0.0;
+	case StickyAnchor::Bottom:
+		return 1.0;
+	case StickyAnchor::Center:
+	default:
+		return 0.5;
+	}
+}
+
+const char *stickyReleaseId(StickyRelease release)
+{
+	switch (release) {
+	case StickyRelease::ResumeThenEnd:
+		return "resume_then_end";
+	case StickyRelease::ResumeEndAtHold:
+		return "resume_end_at_hold";
+	case StickyRelease::EndAtHold:
+	default:
+		return "end_at_hold";
+	}
+}
+
+StickyRelease stickyReleaseFromId(const char *id, StickyRelease fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "resume_then_end") == 0)
+		return StickyRelease::ResumeThenEnd;
+	if (strcmp(id, "resume_end_at_hold") == 0)
+		return StickyRelease::ResumeEndAtHold;
+	if (strcmp(id, "end_at_hold") == 0)
+		return StickyRelease::EndAtHold;
+	return fallback;
+}
+
+bool stickyReleaseResumes(StickyRelease release)
+{
+	return release != StickyRelease::EndAtHold;
+}
+
+bool stickyReleaseEndsAtHold(StickyRelease release)
+{
+	return release != StickyRelease::ResumeThenEnd;
 }
 
 const char *hAlignId(HAlign align)
@@ -741,6 +840,15 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "section_width", sectionWidth);
 	obs_data_set_string(data, "section_align", hAlignId(sectionAlign));
 	obs_data_set_int(data, "spacer_height", spacerHeight);
+	obs_data_set_string(data, "sticky_anchor", stickyAnchorId(stickyAnchor));
+	obs_data_set_double(data, "sticky_canvas_position", stickyCanvasPosition);
+	obs_data_set_double(data, "sticky_offset", stickyOffset);
+	obs_data_set_double(data, "sticky_hold", stickyHold);
+	obs_data_set_bool(data, "sticky_hold_forever", stickyHoldForever);
+	obs_data_set_string(data, "sticky_release", stickyReleaseId(stickyRelease));
+	obs_data_set_bool(data, "sticky_backdrop", stickyBackdrop);
+	obs_data_set_int(data, "sticky_backdrop_color", static_cast<long long>(stickyBackdropColor.rgba()));
+	obs_data_set_double(data, "sticky_backdrop_padding", stickyBackdropPadding);
 	obs_data_set_bool(data, "visible", visible);
 	obs_data_set_bool(data, "use_secondary_style", useSecondaryStyle);
 	obs_data_set_bool(data, "use_bridge_style", useBridgeStyle);
@@ -799,6 +907,17 @@ void Section::save(obs_data_t *data) const
 	 */
 	savePieces("divider_cap_pieces", dividerCap);
 	savePieces("divider_end_cap_pieces", dividerEndCap);
+
+	/*
+	 * A sticky block's children are sections, saved by the very same call that saved this one.
+	 * Only one level deep can ever be written, because only one level can ever be held.
+	 */
+	saveArray(
+		data, "children", static_cast<int>(children.size()),
+		[](obs_data_t *item, int index, const void *context) {
+			static_cast<const std::vector<Section> *>(context)->at(static_cast<size_t>(index)).save(item);
+		},
+		&children);
 }
 
 void Section::load(obs_data_t *data)
@@ -913,6 +1032,29 @@ void Section::load(obs_data_t *data)
 	sectionWidth = std::clamp(sectionWidth, 0.0, 1.0);
 	sectionAlign = hAlignFromId(obs_data_get_string(data, "section_align"), HAlign::Center);
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
+	stickyAnchor = stickyAnchorFromId(obs_data_get_string(data, "sticky_anchor"), StickyAnchor::Center);
+	/*
+	 * 0.0 is the top of the canvas and a perfectly ordinary place to pin something, so a missing
+	 * key has to be told apart from a stored zero here as everywhere else.
+	 */
+	stickyCanvasPosition = obs_data_has_user_value(data, "sticky_canvas_position")
+				       ? obs_data_get_double(data, "sticky_canvas_position")
+				       : 0.5;
+	stickyCanvasPosition = std::clamp(stickyCanvasPosition, 0.0, 1.0);
+	stickyOffset = obs_data_get_double(data, "sticky_offset");
+	stickyHold = obs_data_has_user_value(data, "sticky_hold") ? obs_data_get_double(data, "sticky_hold") : 5.0;
+	stickyHold = std::max(0.0, stickyHold);
+	stickyHoldForever = obs_data_get_bool(data, "sticky_hold_forever");
+	stickyRelease = stickyReleaseFromId(obs_data_get_string(data, "sticky_release"), StickyRelease::EndAtHold);
+	stickyBackdrop = obs_data_get_bool(data, "sticky_backdrop");
+	if (obs_data_has_user_value(data, "sticky_backdrop_color")) {
+		stickyBackdropColor = QColor::fromRgba(
+			static_cast<QRgb>(obs_data_get_int(data, "sticky_backdrop_color")));
+	}
+	stickyBackdropPadding = obs_data_has_user_value(data, "sticky_backdrop_padding")
+					? obs_data_get_double(data, "sticky_backdrop_padding")
+					: 24.0;
+	stickyBackdropPadding = std::max(0.0, stickyBackdropPadding);
 	visible = obs_data_get_bool(data, "visible");
 	useSecondaryStyle = obs_data_get_bool(data, "use_secondary_style");
 	/* Absent in every document written before the bridge had ink of its own, all of which took the row's. */
@@ -1050,6 +1192,29 @@ void Section::load(obs_data_t *data)
 
 	loadEnd("divider_cap_pieces", "divider_cap", "divider_cap_svg", &dividerCap);
 	loadEnd("divider_end_cap_pieces", "divider_end_cap", "divider_end_cap_svg", &dividerEndCap);
+
+	children.clear();
+	OBSDataArrayAutoRelease childArray = obs_data_get_array(data, "children");
+	if (childArray) {
+		const size_t count = obs_data_array_count(childArray);
+		children.reserve(count);
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(childArray, i);
+
+			Section child;
+			child.load(item);
+			/*
+			 * A sticky block inside a sticky block is not something the designer can
+			 * make, and is dropped rather than loaded: everything downstream -- the
+			 * layout, the playback, the pinned quad -- is written for one level, and a
+			 * hand-written document is not a reason to find out what two would do.
+			 */
+			if (child.type == SectionType::StickyBlock)
+				continue;
+
+			children.push_back(child);
+		}
+	}
 }
 
 Section Section::makeDefault(SectionType type)
@@ -1215,6 +1380,19 @@ Section Section::makeDefault(SectionType type)
 		section.paddingTop = 0;
 		section.paddingBottom = 0;
 		break;
+
+	case SectionType::StickyBlock:
+		/*
+		 * A closing card to start from, because an empty block is invisible in the preview and
+		 * gives the reader nothing to drag other sections next to. Held in the middle of the
+		 * frame for five seconds and then treated as the end of the roll, which is the thing
+		 * the type is named after; everything else about it is one control away.
+		 */
+		section.children.push_back(makeDefault(SectionType::Title));
+		section.children.front().text = QStringLiteral("The End");
+		section.paddingTop = 0;
+		section.paddingBottom = 0;
+		break;
 	}
 
 	/*
@@ -1300,6 +1478,15 @@ QString Section::displayLabel() const
 
 	case SectionType::Spacer:
 		return QStringLiteral("%1 (%2 px)").arg(QString::fromUtf8(sectionTypeName(type))).arg(spacerHeight);
+
+	case SectionType::StickyBlock:
+		/*
+		 * Named by what it holds rather than by how long it holds for: the list is a list of
+		 * content, and the children are indented under it saying the same thing in more detail.
+		 */
+		return QStringLiteral("%1 (%2)")
+			.arg(QString::fromUtf8(sectionTypeName(type)))
+			.arg(static_cast<int>(children.size()));
 
 	default:
 		break;
@@ -1432,7 +1619,7 @@ bool Document::applyLibraryRenames()
 		preset.name = renamed;
 
 		/* Every binding that named it, or the roll would follow the rename into nothing. */
-		for (Section &section : sections) {
+		visitSections(sections, [&](Section &section) {
 			if (section.stylePresetName == from)
 				section.stylePresetName = renamed;
 			if (section.secondaryStylePresetName == from)
@@ -1443,7 +1630,7 @@ bool Document::applyLibraryRenames()
 				section.rowSubtitleStylePresetName = renamed;
 			if (section.rowSecondarySubtitleStylePresetName == from)
 				section.rowSecondarySubtitleStylePresetName = renamed;
-		}
+		});
 
 		changed = true;
 	}
@@ -1495,7 +1682,7 @@ void Document::removeStylePreset(const QString &name)
 	 * section's own style either way, but clearing them means a later preset that happens
 	 * to reuse the name does not silently recapture sections the user had unbound.
 	 */
-	for (Section &section : sections) {
+	visitSections(sections, [&name](Section &section) {
 		if (section.stylePresetName == name)
 			section.stylePresetName.clear();
 		if (section.secondaryStylePresetName == name)
@@ -1506,7 +1693,7 @@ void Document::removeStylePreset(const QString &name)
 			section.rowSubtitleStylePresetName.clear();
 		if (section.rowSecondarySubtitleStylePresetName == name)
 			section.rowSecondarySubtitleStylePresetName.clear();
-	}
+	});
 }
 
 QStringList Document::usedFontFamilies() const
@@ -1538,9 +1725,9 @@ QVector<FontUse> Document::usedFonts() const
 		fonts.append(FontUse{style.family, {style.styleName}});
 	};
 
-	for (const Section &section : sections) {
+	visitSections(sections, [&](const Section &section) {
 		if (!section.visible)
-			continue;
+			return;
 
 		/*
 		 * A divider draws text only when its centre stack holds some, so it is asked rather
@@ -1559,7 +1746,7 @@ QVector<FontUse> Document::usedFonts() const
 					  holdsWord(section.dividerEndCap));
 
 		if (!sectionUsesText(section.type) && !dividerText)
-			continue;
+			return;
 
 		consider(effectiveStyle(section));
 		consider(effectiveSecondaryStyle(section));
@@ -1573,7 +1760,7 @@ QVector<FontUse> Document::usedFonts() const
 			consider(effectiveRowSubtitleStyle(section));
 			consider(effectiveRowSecondarySubtitleStyle(section));
 		}
-	}
+	});
 
 	std::sort(fonts.begin(), fonts.end(), [](const FontUse &left, const FontUse &right) {
 		return left.family.compare(right.family, Qt::CaseInsensitive) < 0;
@@ -1637,7 +1824,7 @@ bool Document::applyFontSubstitutions(const QStringList &families)
 	for (StylePreset &preset : stylePresets)
 		rewrite(preset.style);
 
-	for (Section &section : sections) {
+	visitSections(sections, [&rewrite](Section &section) {
 		rewrite(section.style);
 		rewrite(section.secondaryStyle);
 		rewrite(section.rowSubtitleStyle);
@@ -1646,7 +1833,7 @@ bool Document::applyFontSubstitutions(const QStringList &families)
 		 * `bridgeStyle` is deliberately left alone: a bridge keeps the row's own font and
 		 * takes only ink from it, so the family recorded there is never drawn with.
 		 */
-	}
+	});
 
 	return changed;
 }

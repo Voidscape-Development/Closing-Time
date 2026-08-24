@@ -136,6 +136,11 @@ private:
 
 	void duplicateSection();
 	void removeSection();
+	/*
+	 * Asks before a section goes, unless this window has been told not to. True when the delete
+	 * should go ahead.
+	 */
+	bool confirmRemoveSection(const Section &section);
 	void moveSection(int delta);
 	void moveSectionTo(int from, int to);
 
@@ -190,7 +195,7 @@ private:
 	 */
 	void applyPreview(const Document &rendered, const Strip &strip, const LayoutBoxes &boxes);
 
-	/* Commits the editor's current state into `document` at `currentIndex`. */
+	/* Commits the editor's current state into `document` at `currentPath`. */
 	void commitCurrentSection();
 
 	/*
@@ -254,7 +259,46 @@ private:
 	OBSWeakSource weakSource;
 
 	Document document;
-	int currentIndex = -1;
+
+	/*
+	 * Where a section lives, now that the list is not flat: a sticky block holds sections of its
+	 * own and shows them indented under it.
+	 *
+	 * A path rather than an index because the row a user has selected may be a child, and every
+	 * operation on it -- edit, duplicate, delete, move -- has to act on the container it really
+	 * belongs to rather than on the top-level list it merely appears in.
+	 */
+	struct SectionPath {
+		/* Index of the sticky block holding it, or -1 when the section is top-level. */
+		int parent = -1;
+		int index = -1;
+
+		bool isValid() const { return index >= 0; }
+	};
+
+	/* The section a path names, or null when the path does not resolve. */
+	Section *sectionAt(const SectionPath &path);
+	const Section *sectionAt(const SectionPath &path) const;
+
+	/* The path each row of the list stands for, in visual order. */
+	QVector<SectionPath> pathsInOrder() const;
+
+	/* The row a path is drawn on, or -1 when it is not on screen. */
+	int rowOf(const SectionPath &path) const;
+
+	/* Inserts `section` into the container `path` names, at `path.index`. Returns where it went. */
+	SectionPath insertSection(const SectionPath &path, const Section &section);
+
+	/* Takes the section out of its container. */
+	void removeSectionAt(const SectionPath &path);
+
+	/* Which section the preview should highlight for a path: a child highlights its own block. */
+	int highlightFor(const SectionPath &path) const;
+
+	int currentRow = -1;
+	SectionPath currentPath;
+	/* Rebuilt by refreshSectionList, so a row can be turned back into a path. */
+	QVector<SectionPath> rowPaths;
 
 	/*
 	 * Private to this dialog: the source keeps its own cache. Shared ownership because a
@@ -323,6 +367,12 @@ private:
 	 * with the window: the question is about a train of edits, not about a document.
 	 */
 	QHash<QString, bool> linkedEditChoices;
+	/*
+	 * Whether deleting a section still asks first. Per window, like the answers above: undo
+	 * already covers a delete, so this is a courtesy rather than the safety net, and a window
+	 * opened afresh asks again rather than leaving a setting switched off somewhere unfindable.
+	 */
+	bool askBeforeRemovingSection = true;
 };
 
 } // namespace closingtime

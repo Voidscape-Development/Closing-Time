@@ -21,6 +21,7 @@ target_sources(
     suites/Layout.cpp
     suites/LogoRows.cpp
     suites/Persistence.cpp
+    suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp
     suites/SectionTypes.cpp
     suites/SubtitleHeadings.cpp
