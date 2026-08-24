@@ -345,7 +345,7 @@ CT_SUITE(fonts_used_families, "Which families a roll is actually set in")
 	 * there is never drawn with -- reporting it would send the user after a font nothing uses.
 	 */
 	Section bridged = unpadded(SectionType::Bridged);
-	bridged.entries = {Entry{QStringLiteral("Director"), QStringLiteral("Jane Doe"), LogoRef()}};
+	bridged.entries = {Entry{QStringLiteral("Director"), QStringLiteral("Jane Doe"), {}, {}, LogoRef()}};
 	bridged.style.family = QStringLiteral("Row Face");
 	bridged.secondaryStyle.family = QStringLiteral("Row Face");
 	bridged.bridgeStyle.family = QStringLiteral("Bridge Face");

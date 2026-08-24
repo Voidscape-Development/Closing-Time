@@ -18,9 +18,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <QHash>
+#include <QSet>
 #include <QWidget>
 
 #include "model/CreditsModel.hpp"
+#include "ui/CollapsibleGroup.hpp"
 #include "ui/FontPickerDialog.hpp"
 #include "ui/StyleControls.hpp"
 
@@ -29,15 +32,32 @@ class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
 class QGroupBox;
+class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
+class QTabWidget;
 class QToolButton;
 class QVBoxLayout;
 
 namespace closingtime {
+
+/*
+ * Which of a divider's three piece stacks an editor is acting on.
+ *
+ * They are the same kind of list -- an end and a middle both hold `DividerPiece`s -- so one table
+ * implementation serves all three and this is what says which one a call means. The order is the
+ * order they are drawn in, which is also the order the tabs read in.
+ */
+enum class PieceSlot { LeftEnd, Centre, RightEnd };
+
+constexpr int kPieceSlotCount = 3;
+
+/* The stack a slot names, on a section. */
+const QVector<DividerPiece> &dividerPieces(const Section &section, PieceSlot slot);
+QVector<DividerPiece> &dividerPieces(Section &section, PieceSlot slot);
 
 /*
  * Everything one TextStyle carries: font, colour and alignment, plus how the glyphs are
@@ -185,6 +205,41 @@ signals:
 
 private:
 	void applyTypeVisibility(SectionType type);
+
+	/*
+	 * Adds a row to whichever group is being built, and remembers which form owns it.
+	 *
+	 * The editor is one column of settings split across several collapsible groups, so a row's
+	 * visibility can no longer be set on "the form" -- there are several of them. Recording the
+	 * owner as the row is added is what keeps `setRowVisible` a single call at the fifty-odd
+	 * places that make one, rather than each of them having to know which group its row is in.
+	 */
+	void addRow(const QString &label, QWidget *field);
+	void setRowVisible(QWidget *field, bool visible);
+
+	/*
+	 * Marks a row as one of the settings held back until the reader asks for everything.
+	 *
+	 * What makes this editor daunting is not any one control, it is meeting forty at once -- so
+	 * the ones reached for rarely, or that only make sense once the obvious ones have been tried,
+	 * sit behind a switch. Nothing is *removed* by it: a marked row still comes and goes with the
+	 * type exactly as it did, and is simply not shown while the switch is off.
+	 */
+	void markAdvanced(QWidget *field);
+
+	/*
+	 * The section type the picker and its switches add up to, and the reverse: which base type
+	 * and switches stand for a given section type.
+	 *
+	 * The document still carries all twenty types under their own ids -- nothing about
+	 * persistence changes here. What changes is that the reader picks a Title and then says
+	 * whether it has a subtitle and whether it has a logo, instead of choosing between five
+	 * kinds of title in a list of twenty.
+	 */
+	SectionType composedType() const;
+	void showTypeAsSwitches(SectionType type);
+	/* Shows the switches that apply to the base type, and re-reads what they now compose. */
+	void onTypeSwitchChanged();
 	/*
 	 * True when any artwork this section places would animate. Read from file headers rather
 	 * than from a decode, so it is cheap enough to ask on every section switch.
@@ -194,7 +249,17 @@ private:
 	void refreshLogoPlayback();
 	/* The playback settings the controls currently describe. */
 	LogoPlayback currentLogoPlayback() const;
-	void rebuildEntryTable(SectionType type);
+	/*
+	 * `rowSubtitles` is passed rather than read off the checkbox because the table is rebuilt
+	 * from a section being loaded as well as from a type being picked, and in the first case the
+	 * widgets have not been written yet.
+	 */
+	void rebuildEntryTable(SectionType type, bool rowSubtitles);
+	/*
+	 * Re-columns the entry table for a new type, carrying the entries across. The table's shape
+	 * follows the type, so a rebuild without this reads back as a table with nothing in it.
+	 */
+	void relayoutEntryTable(SectionType type);
 	void readEntriesFromTable(Section *target) const;
 	void writeEntriesToTable(const Section &source);
 
@@ -204,16 +269,18 @@ private:
 	 * about, and rebuilding from a reordered vector cannot leave a row's widgets behind while
 	 * its text moves.
 	 */
-	void writeCentreToTable(const Section &source);
-	void readCentreFromTable(Section *target) const;
-	void addCentrePiece();
-	void removeSelectedCentrePieces();
-	void moveSelectedCentrePiece(int delta);
-	void browseForCentreFile();
+	void writePiecesToTable(PieceSlot slot, const Section &source);
+	void readPiecesFromTable(PieceSlot slot, Section *target) const;
+	void addPiece(PieceSlot slot);
+	void removeSelectedPieces(PieceSlot slot);
+	void movePiece(PieceSlot slot, int delta);
+	void browseForPieceFile(PieceSlot slot);
 	/* Shows the fields that apply to the piece in `row` and hides the rest. */
-	void applyCentreRowVisibility(int row);
-	/* True when any piece of the centre stack draws its artwork from a file. */
-	bool centreUsesFile() const;
+	void applyPieceRowVisibility(PieceSlot slot, int row);
+	/* True when any piece of any of the three stacks draws its artwork from a file. */
+	bool dividerUsesFile() const;
+
+	QTableWidget *pieceTable(PieceSlot slot) const { return pieceTables[static_cast<int>(slot)]; }
 
 	void addEntry();
 	void removeSelectedEntries();
@@ -227,9 +294,35 @@ private:
 
 	void emitChanged();
 
+	/* The form rows are being added to at this point in the constructor. */
 	QFormLayout *form = nullptr;
+	/* Which form each row's field belongs to, for setRowVisible. */
+	QHash<QWidget *, QFormLayout *> rowOwner;
+	/* The rows held back until the reader asks for everything. */
+	QSet<QWidget *> advancedRows;
+
+	CollapsibleGroup *contentGroup = nullptr;
+	CollapsibleGroup *typeSettingsGroup = nullptr;
+	CollapsibleGroup *placementGroup = nullptr;
+	QFormLayout *contentForm = nullptr;
+	QFormLayout *typeSettingsForm = nullptr;
+	QFormLayout *placementForm = nullptr;
 
 	QComboBox *typeBox = nullptr;
+	/*
+	 * The switches that turn a base type into one of the document's own. A heading with a
+	 * subtitle and a logo is a Title, a subtitle and a logo -- three plain answers -- rather than
+	 * "Title w/ Subtitle & Logo" picked out of a list of ten headings.
+	 */
+	QCheckBox *typeSubtitle = nullptr;
+	QCheckBox *typeLogo = nullptr;
+	QCheckBox *typeLogoOnly = nullptr;
+	QComboBox *typeListContent = nullptr;
+	/* One line saying what the selected type is for, under the picker. */
+	QLabel *typeHelp = nullptr;
+	/* Shows the settings that are otherwise held back; see markAdvanced. */
+	QCheckBox *showAdvanced = nullptr;
+
 	QLineEdit *labelEdit = nullptr;
 	QCheckBox *visibleBox = nullptr;
 	QPlainTextEdit *textEdit = nullptr;
@@ -264,18 +357,18 @@ private:
 	QSpinBox *bridgeThickness = nullptr;
 	QSpinBox *bridgeOffset = nullptr;
 	QSpinBox *bridgeGap = nullptr;
+	/* Empty bridges only: how much room the gap keeps when nothing is drawn in it. */
+	QSpinBox *bridgeMinGap = nullptr;
 	QCheckBox *bridgeTint = nullptr;
 	QComboBox *bridgeFill = nullptr;
 	QComboBox *bridgeSizing = nullptr;
 	QSpinBox *bridgeSplit = nullptr;
 	QComboBox *bridgeRowAlign = nullptr;
 	QCheckBox *bridgeSpanEmpty = nullptr;
+	/* Bridged rows only: draw a second line under each side of every row. */
+	QCheckBox *rowSubtitles = nullptr;
 
-	QComboBox *dividerCap = nullptr;
-	QLineEdit *dividerCapSvgPath = nullptr;
 	QCheckBox *dividerMirrorEnds = nullptr;
-	QComboBox *dividerEndCap = nullptr;
-	QLineEdit *dividerEndCapSvgPath = nullptr;
 	QComboBox *dividerArm = nullptr;
 	QLineEdit *dividerArmSvgPath = nullptr;
 	QSpinBox *dividerThickness = nullptr;
@@ -286,9 +379,15 @@ private:
 	QSpinBox *dividerRuleInset = nullptr;
 	QCheckBox *dividerTint = nullptr;
 
-	QGroupBox *centreGroup = nullptr;
-	QTableWidget *centreTable = nullptr;
-	QToolButton *centreFileButton = nullptr;
+	/*
+	 * The divider's three piece stacks, in PieceSlot order. One table each rather than one table
+	 * and a selector, because they are the same kind of list and the tabs are what say so -- and
+	 * because the right-hand end's tab can simply be taken away while the ends are mirrored.
+	 */
+	QGroupBox *dividerPiecesGroup = nullptr;
+	QTabWidget *pieceTabs = nullptr;
+	QTableWidget *pieceTables[kPieceSlotCount] = {};
+	QToolButton *pieceFileButtons[kPieceSlotCount] = {};
 
 	QSpinBox *columns = nullptr;
 	QSpinBox *columnGap = nullptr;
@@ -304,12 +403,29 @@ private:
 	QComboBox *sectionAlign = nullptr;
 	QSpinBox *spacerHeight = nullptr;
 
+	/* Sticky Ending Block sections only. */
+	QComboBox *stickyAnchor = nullptr;
+	QSpinBox *stickyCanvasPosition = nullptr;
+	QSpinBox *stickyOffset = nullptr;
+	QDoubleSpinBox *stickyHold = nullptr;
+	QCheckBox *stickyHoldForever = nullptr;
+	QComboBox *stickyRelease = nullptr;
+	QLabel *stickyForeverWarning = nullptr;
+	QCheckBox *stickyBackdrop = nullptr;
+	ColourButton *stickyBackdropColour = nullptr;
+	QSpinBox *stickyBackdropPadding = nullptr;
+
 	StyleEditor *primaryStyle = nullptr;
 	QGroupBox *secondaryGroup = nullptr;
 	StyleEditor *secondaryStyle = nullptr;
 	/* Shown for the two shapes that draw a bridge, and only ever edits that bridge's ink. */
 	QGroupBox *bridgeStyleGroup = nullptr;
 	StyleEditor *bridgeStyle = nullptr;
+	/* The two subtitles of a bridged row, shown only while that row draws them. */
+	QGroupBox *rowSubtitleStyleGroup = nullptr;
+	StyleEditor *rowSubtitleStyle = nullptr;
+	QGroupBox *rowSecondarySubtitleStyleGroup = nullptr;
+	StyleEditor *rowSecondarySubtitleStyle = nullptr;
 
 	QGroupBox *entriesGroup = nullptr;
 	QTableWidget *entryTable = nullptr;
@@ -332,6 +448,8 @@ private:
 	StyleEditor *presetOrigin = nullptr;
 
 	Section current;
+	/* The type the entry table's columns currently stand for; see relayoutEntryTable. */
+	SectionType tableType = SectionType::Title;
 	bool loading = false;
 };
 

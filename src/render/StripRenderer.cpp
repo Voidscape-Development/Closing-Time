@@ -425,6 +425,16 @@ qreal naturalTextWidth(const QString &text, const TextStyle &style)
 }
 
 /*
+ * The width a title/subtitle pair wants before any wrapping is imposed on it: whichever of its
+ * two lines is wider, since the two are laid out into the same column.
+ */
+qreal naturalPairWidth(const QString &title, const QString &subtitle, const TextStyle &titleStyle,
+		       const TextStyle &subtitleStyle)
+{
+	return std::max(naturalTextWidth(title, titleStyle), naturalTextWidth(subtitle, subtitleStyle));
+}
+
+/*
  * Distance from the top of a run of this text down to the baseline of its first line, when laid
  * out into `width` pixels.
  *
@@ -647,6 +657,27 @@ struct BoxCollector {
  * the measure pass for the same reason the boxes are -- that pass visits each section once,
  * whatever tiles the section straddles.
  */
+/*
+ * Collects the sticky blocks the layout placed, the way AnimatedCollector collects animated logos.
+ *
+ * Only a caller that can actually draw a block over the strip asks for these -- the source and the
+ * designer's preview. `measure()` passes nothing and rasterises nothing, so asking a roll how tall
+ * it is stays as cheap as it was.
+ */
+struct StickyCollector {
+	QVector<StickyBlockPlacement> *placements = nullptr;
+	int section = -1;
+
+	void add(StickyBlockPlacement placement)
+	{
+		if (!placements || placement.rect.isEmpty())
+			return;
+
+		placement.section = section;
+		placements->append(std::move(placement));
+	}
+};
+
 struct AnimatedCollector {
 	QVector<AnimatedLogoPlacement> *placements = nullptr;
 	int section = -1;
@@ -774,6 +805,30 @@ LogoRow placeLogoRow(const Section &section, qreal contentX, qreal contentWidth,
 	return row;
 }
 
+/*
+ * One side of a bridged row: the line, whatever is stacked under it, and the style of each.
+ *
+ * A side is a pair rather than a string because `rowSubtitles` lets either of them carry a second
+ * line, and every question the row asks of a side -- how wide does it want to be, where is its top
+ * line's baseline, is there anything in it at all -- has to be asked of both lines or of neither.
+ * Threading four more parameters through the placement instead would leave each of those questions
+ * free to answer for only half of the side, which is exactly the bug this shape cannot have.
+ *
+ * Pointers rather than copies because everything here is already owned by the entry or the section
+ * being laid out, and a style is the larger half of what would otherwise be copied once per row.
+ */
+struct BridgedSide {
+	const QString *text;
+	const QString *subtitle;
+	const TextStyle *style;
+	const TextStyle *subtitleStyle;
+
+	bool isEmpty() const { return text->isEmpty() && subtitle->isEmpty(); }
+
+	/* The width the side wants: whichever of its two lines is wider, since they share a column. */
+	qreal naturalWidth() const { return naturalPairWidth(*text, *subtitle, *style, *subtitleStyle); }
+};
+
 /* Where the three parts of one bridged row sit horizontally. */
 struct BridgedRow {
 	qreal leftX = 0.0;
@@ -793,11 +848,14 @@ struct BridgedRow {
  * for a Fixed bridge with Natural sizing, since every other combination has already
  * consumed the full width.
  */
-BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, const TextStyle &rightStyle,
-			   const Entry &entry, qreal contentX, qreal contentWidth, qreal naturalBridge)
+BridgedRow placeBridgedRow(const Section &section, const BridgedSide &left, const BridgedSide &right, qreal contentX,
+			   qreal contentWidth, qreal naturalBridge)
 {
 	qreal leftWidth = 0.0;
 	qreal rightWidth = 0.0;
+
+	/* An empty bridge is laid out as a Fixed one whatever the setting says; see the model. */
+	const BridgeFill fill = effectiveBridgeFill(section);
 
 	if (section.bridgeSizing == BridgeSizing::Split) {
 		/*
@@ -806,14 +864,13 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 		 * have always drawn it. With a filling bridge there is nothing to reserve, and
 		 * the ratio becomes a plain tab stop for the leader to start at.
 		 */
-		const qreal reserved = section.bridgeFill == BridgeFill::Fixed ? naturalBridge : 0.0;
+		const qreal reserved = fill == BridgeFill::Fixed ? naturalBridge : 0.0;
 		leftWidth = section.bridgeSplit * std::max(0.0, contentWidth - reserved);
 
-		if (section.bridgeFill == BridgeFill::Fixed) {
+		if (fill == BridgeFill::Fixed) {
 			rightWidth = std::max(0.0, contentWidth - leftWidth - naturalBridge);
 		} else {
-			rightWidth = std::min(naturalTextWidth(entry.secondaryText, rightStyle),
-					      std::max(0.0, contentWidth - leftWidth));
+			rightWidth = std::min(right.naturalWidth(), std::max(0.0, contentWidth - leftWidth));
 
 			/*
 			 * With a filling bridge the split is a tab stop rather than a cap: there is
@@ -822,12 +879,12 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 			 * its column with the gap beside it left empty. Rows that do fit still start
 			 * their bridge at the same x, which is the whole point of the setting.
 			 */
-			leftWidth = std::clamp(naturalTextWidth(entry.text, leftStyle), leftWidth,
+			leftWidth = std::clamp(left.naturalWidth(), leftWidth,
 					       std::max(leftWidth, contentWidth - rightWidth));
 		}
 	} else {
-		leftWidth = naturalTextWidth(entry.text, leftStyle);
-		rightWidth = naturalTextWidth(entry.secondaryText, rightStyle);
+		leftWidth = left.naturalWidth();
+		rightWidth = right.naturalWidth();
 
 		/*
 		 * Overlong rows shrink both sides in proportion rather than letting whichever
@@ -847,10 +904,10 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 	 * is also what leaves Natural sizing with a Fixed bridge as the only way to get a row
 	 * narrower than the section -- which is exactly where the row placement control shows.
 	 */
-	if (section.bridgeFill != BridgeFill::Fixed) {
-		if (section.bridgeSpanEmpty && entry.text.isEmpty())
+	if (fill != BridgeFill::Fixed) {
+		if (section.bridgeSpanEmpty && left.isEmpty())
 			leftWidth = 0.0;
-		if (section.bridgeSpanEmpty && entry.secondaryText.isEmpty())
+		if (section.bridgeSpanEmpty && right.isEmpty())
 			rightWidth = 0.0;
 	}
 
@@ -859,7 +916,7 @@ BridgedRow placeBridgedRow(const Section &section, const TextStyle &leftStyle, c
 	BridgedRow row;
 	row.leftWidth = leftWidth;
 	row.rightWidth = rightWidth;
-	row.bridgeWidth = section.bridgeFill == BridgeFill::Fixed ? std::min(naturalBridge, slack) : slack;
+	row.bridgeWidth = fill == BridgeFill::Fixed ? std::min(naturalBridge, slack) : slack;
 
 	const qreal rowWidth = leftWidth + row.bridgeWidth + rightWidth;
 	row.leftX = contentX + alignOffset(section.bridgeRowAlign, contentWidth, rowWidth);
@@ -951,6 +1008,18 @@ PreparedBridge prepareTextBridge(const Section &section, const TextStyle &style,
 
 PreparedBridge prepareBridge(const Section &section, const TextStyle &style, BridgeArtCache *bridges, qreal width)
 {
+	if (bridgeTypeIsEmpty(section.bridgeType)) {
+		/*
+		 * Nothing to draw, and deliberately nothing to measure either: an empty bridge
+		 * reports no ascent and no height, so the row is exactly as tall as its own texts
+		 * and its baseline is theirs. The space it occupies is still real -- the columns
+		 * were placed around `bridgeMinGap` before this was ever called.
+		 */
+		PreparedBridge prepared;
+		prepared.font = makeFont(style);
+		return prepared;
+	}
+
 	if (!bridgeTypeUsesArt(section.bridgeType))
 		return prepareTextBridge(section, style, width);
 
@@ -964,6 +1033,14 @@ PreparedBridge prepareBridge(const Section &section, const TextStyle &style, Bri
 /* The width one copy of the bridge wants, which is what a Fixed bridge reserves from a row. */
 qreal naturalBridgeWidth(const Section &section, const TextStyle &style, BridgeArtCache *bridges)
 {
+	/*
+	 * An empty bridge is nothing but its own width, which is the whole reason `bridgeMinGap`
+	 * exists: it is what keeps the two texts of a naturally sized row off each other when
+	 * there is no leader between them to do it.
+	 */
+	if (bridgeTypeIsEmpty(section.bridgeType))
+		return std::max(0.0, section.bridgeMinGap);
+
 	if (!bridgeTypeUsesArt(section.bridgeType))
 		return naturalTextWidth(section.bridge, style);
 
@@ -1089,16 +1166,6 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 	return qCeil(cursor - y);
 }
 
-/*
- * The width a title/subtitle pair wants before any wrapping is imposed on it: whichever of its
- * two lines is wider, since the two are laid out into the same column.
- */
-qreal naturalPairWidth(const QString &title, const QString &subtitle, const TextStyle &titleStyle,
-		       const TextStyle &subtitleStyle)
-{
-	return std::max(naturalTextWidth(title, titleStyle), naturalTextWidth(subtitle, subtitleStyle));
-}
-
 /* Collects nothing, for the measure pass a caller makes before it knows where to place a pair. */
 const auto kIgnoreBoxes = [](LayoutBox::Kind, const QRectF &) { /* deliberately nothing */ };
 
@@ -1133,13 +1200,123 @@ struct DividerLayout {
 	qreal height = 0.0;
 };
 
-/* One centre piece, measured but not yet placed. */
+/* One piece of a divider -- an end or a centrepiece -- measured but not yet placed. */
 struct MeasuredPiece {
 	const DividerPiece *piece;
 	QSizeF size;
 	/* Logo pieces only, resolved once here so the paint pass does not look it up again. */
 	LogoArt art;
 };
+
+/* A measured stack of them: what one end or the middle of a divider comes to. */
+struct MeasuredStack {
+	QVector<MeasuredPiece> pieces;
+	qreal width = 0.0;
+	qreal height = 0.0;
+
+	bool isEmpty() const { return pieces.isEmpty(); }
+};
+
+/*
+ * Measures a run of divider pieces laid side by side, `pieceGap` apart.
+ *
+ * One helper for all three stacks rather than one for the middle and a separate path for the two
+ * ends, because an end *is* a stack: that is the whole of what makes a shape offered in one place
+ * offered in the other, and a word or a mark able to cap a rule as well as break one.
+ */
+MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const TextStyle &style,
+				  const LogoSource &logos, DividerArtCache *dividers, qreal thickness,
+				  qreal pieceGap, qreal available)
+{
+	MeasuredStack stack;
+	stack.pieces.reserve(pieces.size());
+
+	for (const DividerPiece &piece : pieces) {
+		MeasuredPiece measured{&piece, QSizeF(), LogoArt()};
+
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament:
+			measured.size = dividerShapeSize(piece.shape, piece.svgPath, dividers, thickness, piece.scale);
+			break;
+
+		case DividerPiece::Kind::Text: {
+			if (piece.text.isEmpty())
+				break;
+			/*
+			 * Measured at its natural width and then laid out into exactly that, so the
+			 * word occupies the room it needs and never wraps inside a divider. A divider
+			 * piece has no column to wrap into -- the arms are what the space around it
+			 * is for.
+			 */
+			const qreal textWidth = naturalTextWidth(piece.text, style);
+			const qreal textHeight = layoutText(nullptr, piece.text, style, 0, 0, textWidth);
+			measured.size = QSizeF(textWidth, textHeight);
+			break;
+		}
+
+		case DividerPiece::Kind::Logo: {
+			measured.art = logos.resolve(piece.logo);
+			measured.size = QSizeF(logoDrawSize(measured.art.poster, piece.logo, qRound(available)));
+			break;
+		}
+		}
+
+		/*
+		 * A piece that measures to nothing -- an empty word, a logo that would not decode, a
+		 * shape whose file is missing -- is dropped along with the gap that would have sat
+		 * beside it, rather than left as a hole in the rule.
+		 */
+		if (measured.size.width() > 0.0 && measured.size.height() > 0.0)
+			stack.pieces.append(measured);
+	}
+
+	for (int i = 0; i < stack.pieces.size(); ++i) {
+		stack.width += stack.pieces.at(i).size.width();
+		if (i > 0)
+			stack.width += pieceGap;
+		stack.height = std::max(stack.height, stack.pieces.at(i).size.height());
+	}
+
+	return stack;
+}
+
+/*
+ * Places a measured stack, left to right from `left`, centred on `midY`.
+ *
+ * `mirrored` is what an end at the right-hand side of the divider is drawn with: the pieces run in
+ * reverse, so the figure is a mirror image of the same list, and each piece's *artwork* is flipped
+ * along x -- the caps in the shape library are authored pointing outward along -x, so an arrowhead
+ * at the right-hand end has to be. A word and a picture are deliberately left unflipped: mirrored
+ * type is not a design, it is a mistake, and neither is authored pointing anywhere.
+ */
+void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal left, qreal midY, qreal pieceGap,
+		       bool mirrored)
+{
+	qreal cursor = left;
+
+	for (int i = 0; i < stack.pieces.size(); ++i) {
+		const MeasuredPiece &measured = stack.pieces.at(mirrored ? stack.pieces.size() - 1 - i : i);
+		const DividerPiece &piece = *measured.piece;
+		const QRectF box(cursor, midY - measured.size.height() / 2.0, measured.size.width(),
+				 measured.size.height());
+
+		switch (piece.kind) {
+		case DividerPiece::Kind::Ornament:
+			layout->art.append(DividerArtPlacement{box, piece.shape, piece.svgPath, mirrored});
+			break;
+
+		case DividerPiece::Kind::Text:
+			layout->texts.append(DividerLayout::TextPiece{piece.text, box});
+			break;
+
+		case DividerPiece::Kind::Logo:
+			layout->logos.append(DividerLayout::LogoPiece{measured.art, &piece.logo, box.toRect()});
+			break;
+		}
+
+		cursor += measured.size.width() + pieceGap;
+	}
+}
 
 /*
  * Composes a divider across `width`, starting at `x`, with its content beginning at `top`.
@@ -1158,75 +1335,26 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	if (!dividers || thickness <= 0.0 || width <= 0.0)
 		return layout;
 
-	/* --- Measure the centre stack ---------------------------------------------------- */
+	/* --- Measure the three stacks ---------------------------------------------------- */
 
-	QVector<MeasuredPiece> centre;
-	centre.reserve(section.dividerCentre.size());
+	const qreal pieceGap = section.dividerPieceGap;
+	const auto measure = [&](const QVector<DividerPiece> &pieces) {
+		return measureDividerStack(pieces, style, logos, dividers, thickness, pieceGap, width);
+	};
 
-	for (const DividerPiece &piece : section.dividerCentre) {
-		MeasuredPiece measured{&piece, QSizeF(), LogoArt()};
-
-		switch (piece.kind) {
-		case DividerPiece::Kind::Ornament:
-			measured.size = dividerShapeSize(piece.shape, piece.svgPath, dividers, thickness, piece.scale);
-			break;
-
-		case DividerPiece::Kind::Text: {
-			if (piece.text.isEmpty())
-				break;
-			/*
-			 * Measured at its natural width and then laid out into exactly that, so the
-			 * word occupies the room it needs and never wraps inside a divider. A centre
-			 * piece has no column to wrap into -- the arms are what the space either
-			 * side of it is for.
-			 */
-			const qreal textWidth = naturalTextWidth(piece.text, style);
-			const qreal textHeight = layoutText(nullptr, piece.text, style, 0, 0, textWidth);
-			measured.size = QSizeF(textWidth, textHeight);
-			break;
-		}
-
-		case DividerPiece::Kind::Logo: {
-			measured.art = logos.resolve(piece.logo);
-			measured.size = QSizeF(logoDrawSize(measured.art.poster, piece.logo, qRound(width)));
-			break;
-		}
-		}
-
-		/*
-		 * A piece that measures to nothing -- an empty word, a logo that would not decode, a
-		 * shape whose file is missing -- is dropped along with the gap that would have sat
-		 * beside it, rather than left as a hole in the middle of the rule.
-		 */
-		if (measured.size.width() > 0.0 && measured.size.height() > 0.0)
-			centre.append(measured);
-	}
-
-	qreal centreWidth = 0.0;
-	qreal centreHeight = 0.0;
-	for (int i = 0; i < centre.size(); ++i) {
-		centreWidth += centre.at(i).size.width();
-		if (i > 0)
-			centreWidth += section.dividerPieceGap;
-		centreHeight = std::max(centreHeight, centre.at(i).size.height());
-	}
-
-	/* --- Measure the ends ------------------------------------------------------------ */
-
+	const MeasuredStack centre = measure(section.dividerCentre);
+	const MeasuredStack leftEnd = measure(section.dividerCap);
 	/*
-	 * Both caps are authored pointing outward along -x, so the right-hand one is the same
-	 * artwork drawn mirrored whether it is the left cap repeated or a second shape of its own.
+	 * Mirroring says the two ends are the same list, not that the right-hand one is drawn
+	 * unflipped: an end is always drawn as a mirror image of the way it is written, whichever
+	 * list it came from, so the divider cannot come out pointing the same way at both ends.
 	 */
-	const DividerShape rightShape = section.dividerMirrorEnds ? section.dividerCap : section.dividerEndCap;
-	const QString &rightFile = section.dividerMirrorEnds ? section.dividerCapSvg : section.dividerEndCapSvg;
-
-	const QSizeF leftCap = dividerShapeSize(section.dividerCap, section.dividerCapSvg, dividers, thickness);
-	const QSizeF rightCap = dividerShapeSize(rightShape, rightFile, dividers, thickness);
+	const MeasuredStack rightEnd = section.dividerMirrorEnds ? leftEnd : measure(section.dividerEndCap);
 
 	const int rules = std::clamp(section.dividerRules, 1, 16);
 	const qreal stackHeight = rules * thickness + (rules - 1) * section.dividerRuleGap;
 
-	layout.height = std::max({stackHeight, leftCap.height(), rightCap.height(), centreHeight});
+	layout.height = std::max({stackHeight, leftEnd.height, rightEnd.height, centre.height});
 	if (layout.height <= 0.0)
 		return layout;
 
@@ -1235,24 +1363,16 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	/* --- Place the ends -------------------------------------------------------------- */
 
 	/*
-	 * The caps sit at the divider's full extent and on its midline, and are drawn once however
+	 * The ends sit at the divider's full extent and on its midline, and are drawn once however
 	 * many rules run between them: three lines meeting one arrowhead is the figure the deco
 	 * rules draw, where three arrowheads stacked on top of each other is not.
 	 */
-	const auto placeCap = [&](DividerShape shape, const QString &file, const QSizeF &size, qreal left,
-				  bool mirrored) {
-		if (size.isEmpty())
-			return;
-		layout.art.append(DividerArtPlacement{
-			QRectF(left, midY - size.height() / 2.0, size.width(), size.height()), shape, file, mirrored});
-	};
+	placeDividerStack(&layout, leftEnd, x, midY, pieceGap, false);
+	placeDividerStack(&layout, rightEnd, x + width - rightEnd.width, midY, pieceGap, true);
 
-	placeCap(section.dividerCap, section.dividerCapSvg, leftCap, x, false);
-	placeCap(rightShape, rightFile, rightCap, x + width - rightCap.width(), true);
-
-	/* Nothing to keep clear of at an end with no cap on it. */
-	const qreal armLeft = x + leftCap.width() + (leftCap.width() > 0.0 ? section.dividerGap : 0.0);
-	const qreal armRight = x + width - rightCap.width() - (rightCap.width() > 0.0 ? section.dividerGap : 0.0);
+	/* Nothing to keep clear of at an end with nothing on it. */
+	const qreal armLeft = x + leftEnd.width + (leftEnd.width > 0.0 ? section.dividerGap : 0.0);
+	const qreal armRight = x + width - rightEnd.width - (rightEnd.width > 0.0 ? section.dividerGap : 0.0);
 
 	/* --- Place the centre ------------------------------------------------------------ */
 
@@ -1260,34 +1380,9 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	 * Centred on the section's own box rather than between the two arms, so a divider whose
 	 * ends differ still has its ornament on the middle of the line the eye follows.
 	 */
-	const qreal centreLeft = x + (width - centreWidth) / 2.0;
+	const qreal centreLeft = x + (width - centre.width) / 2.0;
 
-	qreal cursor = centreLeft;
-	for (const MeasuredPiece &measured : centre) {
-		const DividerPiece &piece = *measured.piece;
-		const qreal pieceTop = midY - measured.size.height() / 2.0;
-
-		switch (piece.kind) {
-		case DividerPiece::Kind::Ornament:
-			layout.art.append(DividerArtPlacement{QRectF(cursor, pieceTop, measured.size.width(),
-								     measured.size.height()),
-							      piece.shape, piece.svgPath, false});
-			break;
-
-		case DividerPiece::Kind::Text:
-			layout.texts.append(DividerLayout::TextPiece{
-				piece.text, QRectF(cursor, pieceTop, measured.size.width(), measured.size.height())});
-			break;
-
-		case DividerPiece::Kind::Logo:
-			layout.logos.append(DividerLayout::LogoPiece{
-				measured.art, &piece.logo,
-				QRectF(cursor, pieceTop, measured.size.width(), measured.size.height()).toRect()});
-			break;
-		}
-
-		cursor += measured.size.width() + section.dividerPieceGap;
-	}
+	placeDividerStack(&layout, centre, centreLeft, midY, pieceGap, false);
 
 	/* --- Place the arms -------------------------------------------------------------- */
 
@@ -1338,11 +1433,34 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 			placeArm(left, right, false);
 		} else {
 			placeArm(left, centreLeft - section.dividerGap, false);
-			placeArm(centreLeft + centreWidth + section.dividerGap, right, true);
+			placeArm(centreLeft + centre.width + section.dividerGap, right, true);
 		}
 	}
 
 	return layout;
+}
+
+/* How far outside its own box one section can paint. Zero for a section that draws nothing. */
+double sectionBleed(const Document &document, const Section &section)
+{
+	/*
+	 * Logos cast the style's shadow as well, so a section that only places art counts
+	 * too -- and a divider counts whatever its centre holds, since its rule is inked by
+	 * the same style and can carry the same shadow with nothing but artwork in it.
+	 */
+	if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
+				  section.type == SectionType::SectionDivider))
+		return 0.0;
+
+	double bleed = std::max(document.effectiveStyle(section).effectBleed(),
+				document.effectiveSecondaryStyle(section).effectBleed());
+	/*
+	 * A bridge inked separately can carry a heavier shadow than either text beside it, and
+	 * it is counted for every section rather than only the bridged shapes: the override
+	 * costs nothing to resolve for a section that never draws a bridge, and the alternative
+	 * is this predicate and the layout switch's having to agree on which types those are.
+	 */
+	return std::max(bleed, document.effectiveBridgeStyle(section).effectBleed());
 }
 
 /*
@@ -1356,7 +1474,34 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
  */
 int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
 		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes = nullptr,
-		  AnimatedCollector *animated = nullptr)
+		  AnimatedCollector *animated = nullptr, StickyCollector *sticky = nullptr);
+
+/*
+ * Lays a sticky block's children out, one under the next, and returns the height they come to.
+ *
+ * The children go through the very same layout call every other section does -- they *are* sections
+ * -- so a block holds whatever the roll holds and nothing here has to know what any of it is. What
+ * they do not get is the sticky collector: a block cannot hold a block, and the loader drops any
+ * that tries.
+ */
+int layoutStickyChildren(QPainter *painter, const Section &block, const Document &document, const LogoSource &logos,
+			 BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes,
+			 AnimatedCollector *animated)
+{
+	int y = top;
+	for (const Section &child : block.children) {
+		if (!child.visible)
+			continue;
+
+		y += layoutSection(painter, child, document, logos, bridges, dividers, y, boxes, animated);
+	}
+
+	return y - top;
+}
+
+int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
+		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes,
+		  AnimatedCollector *animated, StickyCollector *sticky)
 {
 	/* Reads as one call at every site whether or not anyone is collecting. */
 	const auto record = [boxes](LayoutBox::Kind kind, const QRectF &rect) {
@@ -1384,11 +1529,20 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	 * At the defaults -- the full width, centred -- the box is the canvas and this is exactly
 	 * the inset from both edges that it has always been.
 	 */
-	const qreal boxWidth = std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
-	const int boxX = qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
+	/*
+	 * A sticky block is the exception: it spans the canvas whatever these say, because what it
+	 * holds is whole sections and each of them carries a box of its own. Two nested shares of the
+	 * width would be two settings for one thing, and the inner one is the one that can already
+	 * say everything the outer one could.
+	 */
+	const bool spansCanvas = section.type == SectionType::StickyBlock;
 
-	const int contentX = boxX + section.marginX;
-	const int contentWidth = std::max(1, qRound(boxWidth) - section.marginX * 2);
+	const qreal boxWidth = spansCanvas ? document.width : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
+	const int boxX = spansCanvas ? 0 : qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
+
+	const int contentX = spansCanvas ? 0 : boxX + section.marginX;
+	const int contentWidth =
+		spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
 
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
 	const TextStyle &style = document.effectiveStyle(section);
@@ -1400,6 +1554,93 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	case SectionType::Spacer:
 		y += section.spacerHeight;
 		break;
+
+	case SectionType::StickyBlock: {
+		/*
+		 * The block takes up its slot in the roll exactly as its content would have inline, so
+		 * everything above and below it sits where it always did and the slot goes on scrolling
+		 * after the block has detached from it. What it does *not* do is draw into the strip:
+		 * with a painter this leaves the slot empty, and the block itself is handed to the
+		 * compositor as a picture of its own.
+		 *
+		 * Its children are laid out without the animation cache, which is the documented way to
+		 * ask for every logo as a still: the strip's hole-and-overlay trick has nowhere to put a
+		 * second hole inside a picture that is itself drawn as one quad, and a logo left as a
+		 * hole with nothing over it would simply not be drawn at all.
+		 */
+		const LogoSource stills{logos.stills, nullptr};
+
+		const int height = layoutStickyChildren(nullptr, section, document, stills, bridges, dividers, y,
+							boxes, nullptr);
+		record(LayoutBox::Kind::Sticky, QRectF(0, y, document.width, height));
+
+		if (sticky && height > 0) {
+			/*
+			 * Rasterised at the strip's full width, because a child places itself across
+			 * the canvas exactly as a top-level section does -- its own `sectionWidth` and
+			 * placement are what narrow it, and they would mean something different if the
+			 * block handed them a narrower canvas to sit in.
+			 *
+			 * The picture is grown by the roll's bleed at top and bottom: a shadow cast by
+			 * the first or last child reaches outside the slot, and unlike the strip -- where
+			 * the neighbouring tile catches it -- there is nothing outside this picture to
+			 * catch it in.
+			 */
+			const int bleed = qCeil(sectionBleed(document, section));
+			int blockBleed = bleed;
+			for (const Section &child : section.children)
+				blockBleed = std::max(blockBleed, qCeil(sectionBleed(document, child)));
+
+			StickyBlockPlacement placement;
+			placement.rect = QRectF(0, y, document.width, height);
+			placement.anchor = section.stickyAnchor;
+			placement.canvasPosition = section.stickyCanvasPosition;
+			placement.offset = section.stickyOffset;
+			placement.hold = section.stickyHold;
+			placement.holdForever = section.stickyHoldForever;
+			placement.release = section.stickyRelease;
+			/*
+			 * The backdrop's padding reaches outside the slot as surely as a shadow does,
+			 * so the picture is grown by whichever of the two asks for more.
+			 */
+			const double backdropPadding =
+				section.stickyBackdrop ? std::max(0.0, section.stickyBackdropPadding) : 0.0;
+			const int margin = std::max(blockBleed, qCeil(backdropPadding));
+			placement.margin = margin;
+
+			QImage image(std::max(1, document.width), std::max(1, height + margin * 2),
+				     QImage::Format_ARGB32_Premultiplied);
+			image.fill(Qt::transparent);
+
+			QPainter blockPainter(&image);
+			blockPainter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing |
+						    QPainter::SmoothPixmapTransform);
+			/* The children are laid out in strip space; shift the picture under them. */
+			blockPainter.translate(0, -(y - margin));
+
+			/*
+			 * The panel goes down first, under everything the block holds: it is there to
+			 * keep the roll running past behind the block from reading through its
+			 * lettering, which is a job it can only do from underneath.
+			 */
+			if (section.stickyBackdrop && section.stickyBackdropColor.alpha() > 0) {
+				blockPainter.fillRect(QRectF(0, y - backdropPadding, document.width,
+							     height + backdropPadding * 2.0),
+						      section.stickyBackdropColor);
+			}
+
+			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y,
+					     nullptr, nullptr);
+			blockPainter.end();
+
+			/* Straight alpha, for the same reason the tiles are. */
+			placement.image = image.convertToFormat(QImage::Format_ARGB32);
+			sticky->add(std::move(placement));
+		}
+
+		y += height;
+		break;
+	}
 
 	case SectionType::SectionDivider: {
 		const DividerLayout divider = layoutDivider(section, style, logos, dividers, contentX, y, contentWidth);
@@ -1555,6 +1796,16 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	case SectionType::Bridged: {
 		const TextStyle &rightStyle = document.effectiveSecondaryStyle(section);
 		/*
+		 * The two subtitles, and the empty string that stands in for them when the section
+		 * does not draw any. Standing one in rather than testing the flag at each use is what
+		 * makes a row without subtitles go through the very same code as one with them: an
+		 * empty line takes no height and no gap, so the pair collapses to exactly the single
+		 * line a bridged row has always been, measured and placed identically.
+		 */
+		const TextStyle &leftSubtitleStyle = document.effectiveRowSubtitleStyle(section);
+		const TextStyle &rightSubtitleStyle = document.effectiveRowSecondarySubtitleStyle(section);
+		const QString noSubtitle;
+		/*
 		 * The bridge's own ink over the row's own font. Everything below measures from the
 		 * fields the merge leaves alone -- the string is set in the row's face at the row's
 		 * size -- so a leader given a colour of its own reserves exactly the width it did.
@@ -1563,8 +1814,14 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const qreal naturalBridge = naturalBridgeWidth(section, bridgeStyle, bridges);
 
 		for (const Entry &entry : section.entries) {
-			const BridgedRow row = placeBridgedRow(section, style, rightStyle, entry, contentX,
-							       contentWidth, naturalBridge);
+			const BridgedSide left{&entry.text, section.rowSubtitles ? &entry.subtitle : &noSubtitle,
+					       &style, &leftSubtitleStyle};
+			const BridgedSide right{&entry.secondaryText,
+						section.rowSubtitles ? &entry.secondarySubtitle : &noSubtitle,
+						&rightStyle, &rightSubtitleStyle};
+
+			const BridgedRow row =
+				placeBridgedRow(section, left, right, contentX, contentWidth, naturalBridge);
 			const PreparedBridge bridge = prepareBridge(section, bridgeStyle, bridges, row.bridgeWidth);
 
 			/*
@@ -1572,9 +1829,21 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * keeps a leader running through the middle of the text when the two
 			 * sides are set at different sizes. It is anchored on whichever part
 			 * reaches lowest, so nothing climbs above the row into the one before it.
+			 *
+			 * A side carrying a subtitle is anchored on the line that ends up on *top* of
+			 * its stack -- the same rule a bridged logo row follows, and for the same reason:
+			 * adding a subtitle under a row should leave the leader exactly where it was
+			 * rather than dragging it down to the middle of a two-line block.
 			 */
-			const qreal leftAscent = firstBaseline(entry.text, style, row.leftWidth);
-			const qreal rightAscent = firstBaseline(entry.secondaryText, rightStyle, row.rightWidth);
+			const StackedLine leftTopLine = topStackedLine(section, *left.text, *left.subtitle,
+								       *left.style, *left.subtitleStyle);
+			const StackedLine rightTopLine = topStackedLine(section, *right.text, *right.subtitle,
+									*right.style, *right.subtitleStyle);
+
+			const qreal leftAscent =
+				firstBaseline(*leftTopLine.text, *leftTopLine.style, row.leftWidth);
+			const qreal rightAscent =
+				firstBaseline(*rightTopLine.text, *rightTopLine.style, row.rightWidth);
 			const qreal bridgeAscent = bridge.ascent(section);
 			const qreal baseline = std::max({leftAscent, rightAscent, bridgeAscent});
 
@@ -1582,15 +1851,20 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const qreal rightTop = y + baseline - rightAscent;
 			const qreal bridgeTop = y + baseline - bridgeAscent;
 
-			const int leftHeight =
-				layoutText(painter, entry.text, style, row.leftX, leftTop, row.leftWidth);
-			const int rightHeight = layoutText(painter, entry.secondaryText, rightStyle, row.rightX,
-							   rightTop, row.rightWidth);
+			/*
+			 * Both sides go through the pair helper whether or not they carry a subtitle,
+			 * which is what records their text boxes as well as drawing them.
+			 */
+			const int leftHeight = layoutTitleSubtitle(painter, section, *left.style,
+								  *left.subtitleStyle, *left.text, *left.subtitle,
+								  row.leftX, leftTop, row.leftWidth, record);
+			const int rightHeight = layoutTitleSubtitle(painter, section, *right.style,
+								    *right.subtitleStyle, *right.text,
+								    *right.subtitle, row.rightX, rightTop,
+								    row.rightWidth, record);
 			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
 							     row.bridgeX, bridgeTop, row.bridgeWidth);
 
-			record(LayoutBox::Kind::Text, QRectF(row.leftX, leftTop, row.leftWidth, leftHeight));
-			record(LayoutBox::Kind::Text, QRectF(row.rightX, rightTop, row.rightWidth, rightHeight));
 			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
 
 			int rowHeight = 1;
@@ -1748,39 +2022,28 @@ int effectBleed(const Document &document)
 {
 	double bleed = 0.0;
 
-	for (const Section &section : document.sections) {
-		/*
-		 * Logos cast the style's shadow as well, so a section that only places art counts
-		 * too -- and a divider counts whatever its centre holds, since its rule is inked by
-		 * the same style and can carry the same shadow with nothing but artwork in it.
-		 */
-		if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
-					  section.type == SectionType::SectionDivider))
-			continue;
-
-		bleed = std::max(bleed, document.effectiveStyle(section).effectBleed());
-		bleed = std::max(bleed, document.effectiveSecondaryStyle(section).effectBleed());
-		/*
-		 * A bridge inked separately can carry a heavier shadow than either text beside it, and
-		 * it is counted for every section rather than only the bridged shapes: the override
-		 * costs nothing to resolve for a section that never draws a bridge, and the alternative
-		 * is this predicate and the layout switch's having to agree on which types those are.
-		 */
-		bleed = std::max(bleed, document.effectiveBridgeStyle(section).effectBleed());
-	}
+	/*
+	 * A sticky block's own children are counted too. They are not drawn into the strip, so they
+	 * cannot bleed across a tile seam -- but the block is rasterised into a picture of its own,
+	 * and that picture has to be big enough to hold what they paint outside their boxes.
+	 */
+	visitSections(document.sections,
+		      [&](const Section &section) { bleed = std::max(bleed, sectionBleed(document, section)); });
 
 	return qCeil(bleed);
 }
 
 QVector<PlacedSection> placeSections(const Document &document, const LogoSource &logos, BridgeArtCache *bridges,
 				     DividerArtCache *dividers, int *totalHeight, LayoutBoxes *boxes = nullptr,
-				     QVector<AnimatedLogoPlacement> *animated = nullptr)
+				     QVector<AnimatedLogoPlacement> *animated = nullptr,
+				     QVector<StickyBlockPlacement> *sticky = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
 
 	BoxCollector collector{boxes, -1};
 	AnimatedCollector animatedCollector{animated, -1};
+	StickyCollector stickyCollector{sticky, -1};
 
 	int y = document.leadIn;
 	for (int index = 0; index < document.sections.size(); ++index) {
@@ -1790,8 +2053,10 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 
 		collector.section = index;
 		animatedCollector.section = index;
+		stickyCollector.section = index;
 		const int height = layoutSection(nullptr, section, document, logos, bridges, dividers, y,
-						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr);
+						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr,
+						 sticky ? &stickyCollector : nullptr);
 		placed.append(PlacedSection{&section, y, height});
 		y += height;
 
@@ -1939,13 +2204,14 @@ Strip StripRenderer::render(const Document &input, LayoutBoxes *boxes) const
 
 	int total = 0;
 	const LogoSource art{logos, animations};
-	const QVector<PlacedSection> placed =
-		placeSections(document, art, &bridges, &dividers, &total, boxes, &strip.animatedLogos);
+	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total, boxes,
+							   &strip.animatedLogos, &strip.stickyBlocks);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
 	if (strip.height <= 0 || placed.isEmpty()) {
 		/* Nothing is drawn over a strip that is not drawn. */
 		strip.animatedLogos.clear();
+		strip.stickyBlocks.clear();
 		return strip;
 	}
 

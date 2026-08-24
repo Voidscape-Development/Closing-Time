@@ -56,9 +56,13 @@ Section distinctive(SectionType type)
 	section.bridgeSplit = 0.25;
 	section.bridgeRowAlign = HAlign::Left;
 	section.bridgeSpanEmpty = true;
-	section.dividerCap = DividerShape::Diamond;
+	section.bridgeMinGap = 33.5;
+	section.rowSubtitles = true;
+	section.dividerCap = {
+		DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 2.25, {}, {}},
+		DividerPiece{DividerPiece::Kind::Text, DividerShape::None, {}, 1.0, QStringLiteral("MMXXVI"), {}}};
 	section.dividerMirrorEnds = false;
-	section.dividerEndCap = DividerShape::Dot;
+	section.dividerEndCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}}};
 	section.dividerArm = DividerShape::Rule;
 	section.dividerThickness = 6.5;
 	section.dividerGap = 15.5;
@@ -77,14 +81,29 @@ Section distinctive(SectionType type)
 	section.stylePresetName = QStringLiteral("preset a");
 	section.secondaryStylePresetName = QStringLiteral("preset b");
 	section.bridgeStylePresetName = QStringLiteral("preset c");
+	section.rowSubtitleStylePresetName = QStringLiteral("preset d");
+	section.rowSecondarySubtitleStylePresetName = QStringLiteral("preset e");
+	section.rowSubtitleStyle.pixelSize = 19;
+	section.rowSecondarySubtitleStyle.pixelSize = 21;
 	section.paddingTop = 21;
 	section.paddingBottom = 23;
 	section.marginX = 29;
 	section.sectionWidth = 0.75;
 	section.sectionAlign = HAlign::Right;
 	section.spacerHeight = 313;
+	section.stickyAnchor = StickyAnchor::Bottom;
+	section.stickyCanvasPosition = 0.2;
+	section.stickyOffset = -18.0;
+	section.stickyHold = 12.5;
+	section.stickyHoldForever = true;
+	section.stickyRelease = StickyRelease::ResumeEndAtHold;
+	section.stickyBackdrop = true;
+	section.stickyBackdropColor = QColor(12, 34, 56, 210);
+	section.stickyBackdropPadding = 37.0;
+	section.children.push_back(Section::makeDefault(SectionType::Header));
 	section.visible = false;
-	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), LogoRef{QStringLiteral("/e.png"), 61}}};
+	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), QStringLiteral("three"),
+				 QStringLiteral("four"), LogoRef{QStringLiteral("/e.png"), 61}}};
 
 	return section;
 }
@@ -114,9 +133,21 @@ void compare(const Section &loaded, const Section &original)
 	checkNear(loaded.bridgeSplit, original.bridgeSplit, 0.001, "bridgeSplit");
 	check(loaded.bridgeRowAlign == original.bridgeRowAlign, "bridgeRowAlign");
 	check(loaded.bridgeSpanEmpty == original.bridgeSpanEmpty, "bridgeSpanEmpty");
-	check(loaded.dividerCap == original.dividerCap, "dividerCap");
+	checkNear(loaded.bridgeMinGap, original.bridgeMinGap, 0.001, "bridgeMinGap");
+	check(loaded.rowSubtitles == original.rowSubtitles, "rowSubtitles");
+	checkEq(loaded.dividerCap.size(), original.dividerCap.size(), "dividerCap size");
+	for (int i = 0; i < std::min(loaded.dividerCap.size(), original.dividerCap.size()); ++i) {
+		const DividerPiece &piece = loaded.dividerCap.at(i);
+		const DividerPiece &was = original.dividerCap.at(i);
+		check(piece.kind == was.kind, QStringLiteral("dividerCap %1 kind").arg(i));
+		check(piece.shape == was.shape, QStringLiteral("dividerCap %1 shape").arg(i));
+		checkNear(piece.scale, was.scale, 0.001, QStringLiteral("dividerCap %1 scale").arg(i));
+		checkEq(piece.text, was.text, QStringLiteral("dividerCap %1 text").arg(i));
+	}
 	check(loaded.dividerMirrorEnds == original.dividerMirrorEnds, "dividerMirrorEnds");
-	check(loaded.dividerEndCap == original.dividerEndCap, "dividerEndCap");
+	checkEq(loaded.dividerEndCap.size(), original.dividerEndCap.size(), "dividerEndCap size");
+	if (!loaded.dividerEndCap.isEmpty() && !original.dividerEndCap.isEmpty())
+		check(loaded.dividerEndCap.first().shape == original.dividerEndCap.first().shape, "dividerEndCap shape");
 	check(loaded.dividerArm == original.dividerArm, "dividerArm");
 	checkNear(loaded.dividerThickness, original.dividerThickness, 0.001, "dividerThickness");
 	checkNear(loaded.dividerGap, original.dividerGap, 0.001, "dividerGap");
@@ -134,12 +165,32 @@ void compare(const Section &loaded, const Section &original)
 	checkEq(loaded.stylePresetName, original.stylePresetName, "stylePresetName");
 	checkEq(loaded.secondaryStylePresetName, original.secondaryStylePresetName, "secondaryStylePresetName");
 	checkEq(loaded.bridgeStylePresetName, original.bridgeStylePresetName, "bridgeStylePresetName");
+	checkEq(loaded.rowSubtitleStylePresetName, original.rowSubtitleStylePresetName, "rowSubtitleStylePresetName");
+	checkEq(loaded.rowSecondarySubtitleStylePresetName, original.rowSecondarySubtitleStylePresetName,
+		"rowSecondarySubtitleStylePresetName");
+	checkEq(loaded.rowSubtitleStyle.pixelSize, original.rowSubtitleStyle.pixelSize, "rowSubtitleStyle.pixelSize");
+	checkEq(loaded.rowSecondarySubtitleStyle.pixelSize, original.rowSecondarySubtitleStyle.pixelSize,
+		"rowSecondarySubtitleStyle.pixelSize");
 	checkEq(loaded.paddingTop, original.paddingTop, "paddingTop");
 	checkEq(loaded.paddingBottom, original.paddingBottom, "paddingBottom");
 	checkEq(loaded.marginX, original.marginX, "marginX");
 	checkNear(loaded.sectionWidth, original.sectionWidth, 0.001, "sectionWidth");
 	check(loaded.sectionAlign == original.sectionAlign, "sectionAlign");
 	checkEq(loaded.spacerHeight, original.spacerHeight, "spacerHeight");
+	check(loaded.stickyAnchor == original.stickyAnchor, "stickyAnchor");
+	checkNear(loaded.stickyCanvasPosition, original.stickyCanvasPosition, 0.001, "stickyCanvasPosition");
+	checkNear(loaded.stickyOffset, original.stickyOffset, 0.001, "stickyOffset");
+	checkNear(loaded.stickyHold, original.stickyHold, 0.001, "stickyHold");
+	check(loaded.stickyHoldForever == original.stickyHoldForever, "stickyHoldForever");
+	check(loaded.stickyRelease == original.stickyRelease, "stickyRelease");
+	check(loaded.stickyBackdrop == original.stickyBackdrop, "stickyBackdrop");
+	check(loaded.stickyBackdropColor == original.stickyBackdropColor, "stickyBackdropColor");
+	checkNear(loaded.stickyBackdropPadding, original.stickyBackdropPadding, 0.001, "stickyBackdropPadding");
+	checkEq(static_cast<int>(loaded.children.size()), static_cast<int>(original.children.size()), "child count");
+	if (!loaded.children.empty() && !original.children.empty()) {
+		check(loaded.children.front().type == original.children.front().type, "a child keeps its type");
+		checkEq(loaded.children.front().text, original.children.front().text, "and its content");
+	}
 	check(loaded.visible == original.visible, "visible");
 
 	checkEq(loaded.entries.size(), original.entries.size(), "entry count");
@@ -147,6 +198,10 @@ void compare(const Section &loaded, const Section &original)
 		checkEq(loaded.entries.at(i).text, original.entries.at(i).text, QStringLiteral("entry %1 text").arg(i));
 		checkEq(loaded.entries.at(i).secondaryText, original.entries.at(i).secondaryText,
 			QStringLiteral("entry %1 secondaryText").arg(i));
+		checkEq(loaded.entries.at(i).subtitle, original.entries.at(i).subtitle,
+			QStringLiteral("entry %1 subtitle").arg(i));
+		checkEq(loaded.entries.at(i).secondarySubtitle, original.entries.at(i).secondarySubtitle,
+			QStringLiteral("entry %1 secondarySubtitle").arg(i));
 		checkEq(loaded.entries.at(i).logo.path, original.entries.at(i).logo.path,
 			QStringLiteral("entry %1 logo").arg(i));
 	}
@@ -216,11 +271,42 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	checkNear(legacy.bridgeThickness, 4.0, 0.001, "bridgeThickness falls back to something drawable");
 	check(legacy.bridgeTint, "bridgeTint falls back to on");
 	checkNear(legacy.bridgeSplit, 0.5, 0.001, "bridgeSplit falls back to an even split");
-	check(legacy.dividerCap == DividerShape::None, "an absent divider cap is None");
+	check(legacy.dividerCap.isEmpty(), "an absent divider cap is an end with nothing on it");
 	check(legacy.dividerArm == DividerShape::Rule, "an absent divider arm is the plain rule, not None");
 	check(legacy.dividerMirrorEnds, "divider ends are mirrored by default");
+	check(legacy.children.empty(), "a section from before sticky blocks holds nothing");
+	check(legacy.stickyAnchor == StickyAnchor::Center, "a sticky block pins by its middle unless told otherwise");
+	checkNear(legacy.stickyCanvasPosition, 0.5, 0.001, "halfway down the frame");
+	checkNear(legacy.stickyHold, 5.0, 0.001, "and holds for a measured time rather than none");
+	check(legacy.stickyRelease == StickyRelease::EndAtHold, "with the hold being the end of the roll");
 	checkEq(legacy.dividerRules, 1, "a divider has at least one rule");
 	checkNear(legacy.sectionWidth, 1.0, 0.001, "sectionWidth falls back to the full canvas");
+
+	/*
+	 * An end written as a single shape, which is every document from before an end was a stack.
+	 * It has to come back as the one-piece stack that draws the same divider.
+	 */
+	OBSDataAutoRelease oldEnds = obs_data_create();
+	obs_data_set_string(oldEnds, "type", "section_divider");
+	obs_data_set_string(oldEnds, "divider_cap", "arrow");
+	obs_data_set_bool(oldEnds, "divider_mirror_ends", false);
+	obs_data_set_string(oldEnds, "divider_end_cap", "custom");
+	obs_data_set_string(oldEnds, "divider_end_cap_svg", "/art/end.svg");
+
+	Section migrated;
+	migrated.load(oldEnds);
+
+	checkEq(migrated.dividerCap.size(), 1, "a single cap shape migrates to one piece");
+	if (!migrated.dividerCap.isEmpty()) {
+		check(migrated.dividerCap.first().kind == DividerPiece::Kind::Ornament, "and it is an ornament");
+		check(migrated.dividerCap.first().shape == DividerShape::Arrow, "carrying the shape it named");
+		checkNear(migrated.dividerCap.first().scale, 1.0, 0.001, "at its own size");
+	}
+	checkEq(migrated.dividerEndCap.size(), 1, "so does the far end");
+	if (!migrated.dividerEndCap.isEmpty()) {
+		check(migrated.dividerEndCap.first().shape == DividerShape::Custom, "keeping its custom shape");
+		checkEq(migrated.dividerEndCap.first().svgPath, QStringLiteral("/art/end.svg"), "and its file");
+	}
 
 	/*
 	 * Every one of these is a value a user can legitimately store, so the loader has to tell a

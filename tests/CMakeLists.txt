@@ -15,10 +15,13 @@ target_sources(
     harness/Probe.hpp
     harness/main.cpp
     suites/AnimatedLogos.cpp
+    suites/BridgedRows.cpp
+    suites/Dividers.cpp
     suites/Fonts.cpp
     suites/Layout.cpp
     suites/LogoRows.cpp
     suites/Persistence.cpp
+    suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp
     suites/SectionTypes.cpp
     suites/SubtitleHeadings.cpp

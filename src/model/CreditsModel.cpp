@@ -82,6 +82,12 @@ const SectionTypeInfo kSectionTypes[] = {
 	 */
 	{SectionType::SectionDivider, "section_divider", "Section Divider", false, false, false, false, false},
 	{SectionType::Spacer, "spacer", "Spacer", false, false, false, false, false},
+	/*
+	 * Every flag is false for the same reason a divider's are: a sticky block has no content of
+	 * its own at all. What it holds is whole sections, each of which answers these questions for
+	 * itself, so a block claiming to carry text or a list would be claiming its children's.
+	 */
+	{SectionType::StickyBlock, "sticky_block", "Sticky Ending Block", false, false, false, false, false},
 };
 
 /* Listed in the order the divider's centre-piece picker presents them. */
@@ -181,6 +187,36 @@ bool sectionUsesSubtitles(SectionType type)
 	return sectionTypeInfo(type).subtitles;
 }
 
+void visitSections(const QVector<Section> &sections, const std::function<void(const Section &)> &visit)
+{
+	for (const Section &section : sections) {
+		visit(section);
+		for (const Section &child : section.children)
+			visit(child);
+	}
+}
+
+void visitSections(QVector<Section> &sections, const std::function<void(Section &)> &visit)
+{
+	for (Section &section : sections) {
+		visit(section);
+		for (Section &child : section.children)
+			visit(child);
+	}
+}
+
+bool sectionStacksSubtitles(const Section &section)
+{
+	/*
+	 * A bridged row is the one shape whose subtitles are a choice rather than a property of the
+	 * type, so it is the one that has to be asked about the section rather than about the type.
+	 */
+	if (section.type == SectionType::Bridged)
+		return section.rowSubtitles;
+
+	return sectionUsesSubtitles(section.type);
+}
+
 bool sectionUsesSecondaryText(SectionType type)
 {
 	return type == SectionType::Bridged || sectionUsesSubtitles(type);
@@ -226,6 +262,181 @@ const QVector<DividerPiece::Kind> &allDividerPieceKinds()
 		return result;
 	}();
 	return kinds;
+}
+
+SectionTypeSwitches decomposeSectionType(SectionType type)
+{
+	SectionTypeSwitches switches;
+
+	switch (type) {
+	case SectionType::Title:
+	case SectionType::TitleWithSubtitle:
+	case SectionType::TitleWithLogo:
+	case SectionType::TitleWithSubtitleAndLogo:
+	case SectionType::LogoTitle:
+		switches.base = SectionType::Title;
+		break;
+
+	case SectionType::Header:
+	case SectionType::HeaderWithSubtitle:
+	case SectionType::HeaderWithLogo:
+	case SectionType::HeaderWithSubtitleAndLogo:
+	case SectionType::LogoHeader:
+		switches.base = SectionType::Header;
+		break;
+
+	case SectionType::TextList:
+	case SectionType::TitleSubtitleList:
+	case SectionType::LogoList:
+	case SectionType::MultiTextList:
+	case SectionType::MultiTitleSubtitleList:
+	case SectionType::MultiLogoList:
+		switches.base = SectionType::TextList;
+		break;
+
+	default:
+		/* Every other type is its own base and carries no switches at all. */
+		switches.base = type;
+		return switches;
+	}
+
+	if (switches.base == SectionType::TextList) {
+		switch (type) {
+		case SectionType::TitleSubtitleList:
+		case SectionType::MultiTitleSubtitleList:
+			switches.content = SectionListContent::Pairs;
+			break;
+		case SectionType::LogoList:
+		case SectionType::MultiLogoList:
+			switches.content = SectionListContent::Logos;
+			break;
+		default:
+			switches.content = SectionListContent::Text;
+			break;
+		}
+
+		switches.multiColumn = sectionUsesColumns(type);
+		return switches;
+	}
+
+	/*
+	 * A heading is either a logo or words, so "logo only" is the absence of text rather than a
+	 * flag of its own -- which is what keeps the two switches from ever both being on.
+	 */
+	switches.logoOnly = sectionUsesLogos(type) && !sectionUsesText(type);
+	switches.logo = sectionUsesLogos(type) && sectionUsesText(type);
+	switches.subtitle = sectionUsesSubtitles(type);
+
+	return switches;
+}
+
+SectionType composeSectionType(const SectionTypeSwitches &switches)
+{
+	const bool title = switches.base == SectionType::Title;
+
+	if (title || switches.base == SectionType::Header) {
+		if (switches.logoOnly)
+			return title ? SectionType::LogoTitle : SectionType::LogoHeader;
+		if (switches.subtitle && switches.logo)
+			return title ? SectionType::TitleWithSubtitleAndLogo
+				     : SectionType::HeaderWithSubtitleAndLogo;
+		if (switches.subtitle)
+			return title ? SectionType::TitleWithSubtitle : SectionType::HeaderWithSubtitle;
+		if (switches.logo)
+			return title ? SectionType::TitleWithLogo : SectionType::HeaderWithLogo;
+
+		return title ? SectionType::Title : SectionType::Header;
+	}
+
+	if (switches.base == SectionType::TextList) {
+		switch (switches.content) {
+		case SectionListContent::Pairs:
+			return switches.multiColumn ? SectionType::MultiTitleSubtitleList
+						    : SectionType::TitleSubtitleList;
+		case SectionListContent::Logos:
+			return switches.multiColumn ? SectionType::MultiLogoList : SectionType::LogoList;
+		case SectionListContent::Text:
+		default:
+			return switches.multiColumn ? SectionType::MultiTextList : SectionType::TextList;
+		}
+	}
+
+	return switches.base;
+}
+
+const char *stickyAnchorId(StickyAnchor anchor)
+{
+	switch (anchor) {
+	case StickyAnchor::Top:
+		return "top";
+	case StickyAnchor::Bottom:
+		return "bottom";
+	case StickyAnchor::Center:
+	default:
+		return "center";
+	}
+}
+
+StickyAnchor stickyAnchorFromId(const char *id, StickyAnchor fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "top") == 0)
+		return StickyAnchor::Top;
+	if (strcmp(id, "bottom") == 0)
+		return StickyAnchor::Bottom;
+	if (strcmp(id, "center") == 0)
+		return StickyAnchor::Center;
+	return fallback;
+}
+
+double stickyAnchorFraction(StickyAnchor anchor)
+{
+	switch (anchor) {
+	case StickyAnchor::Top:
+		return 0.0;
+	case StickyAnchor::Bottom:
+		return 1.0;
+	case StickyAnchor::Center:
+	default:
+		return 0.5;
+	}
+}
+
+const char *stickyReleaseId(StickyRelease release)
+{
+	switch (release) {
+	case StickyRelease::ResumeThenEnd:
+		return "resume_then_end";
+	case StickyRelease::ResumeEndAtHold:
+		return "resume_end_at_hold";
+	case StickyRelease::EndAtHold:
+	default:
+		return "end_at_hold";
+	}
+}
+
+StickyRelease stickyReleaseFromId(const char *id, StickyRelease fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "resume_then_end") == 0)
+		return StickyRelease::ResumeThenEnd;
+	if (strcmp(id, "resume_end_at_hold") == 0)
+		return StickyRelease::ResumeEndAtHold;
+	if (strcmp(id, "end_at_hold") == 0)
+		return StickyRelease::EndAtHold;
+	return fallback;
+}
+
+bool stickyReleaseResumes(StickyRelease release)
+{
+	return release != StickyRelease::EndAtHold;
+}
+
+bool stickyReleaseEndsAtHold(StickyRelease release)
+{
+	return release != StickyRelease::ResumeThenEnd;
 }
 
 const char *hAlignId(HAlign align)
@@ -336,6 +547,17 @@ BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback)
 	if (strcmp(id, "split") == 0)
 		return BridgeSizing::Split;
 	return fallback;
+}
+
+BridgeFill effectiveBridgeFill(const Section &section)
+{
+	/*
+	 * An empty bridge has nothing to cover a gap with, so the three fills would differ only in
+	 * how they measure the text columns -- invisibly, from a control whose name promises
+	 * something visible. Fixed is the one that behaves the way an empty gap reads: the minimum
+	 * is reserved between the two columns and the split divides what is left of them.
+	 */
+	return bridgeTypeIsEmpty(section.bridgeType) ? BridgeFill::Fixed : section.bridgeFill;
 }
 
 const char *textFillId(TextFill fill)
@@ -622,6 +844,8 @@ void Entry::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "text", text.toUtf8().constData());
 	obs_data_set_string(data, "secondary_text", secondaryText.toUtf8().constData());
+	obs_data_set_string(data, "subtitle", subtitle.toUtf8().constData());
+	obs_data_set_string(data, "secondary_subtitle", secondarySubtitle.toUtf8().constData());
 
 	OBSDataAutoRelease logoData = obs_data_create();
 	logo.save(logoData);
@@ -632,6 +856,10 @@ void Entry::load(obs_data_t *data)
 {
 	text = QString::fromUtf8(obs_data_get_string(data, "text"));
 	secondaryText = QString::fromUtf8(obs_data_get_string(data, "secondary_text"));
+	/* Absent in every entry written before bridged rows could carry them, and an absent
+	 * subtitle is an empty one: nothing is drawn and nothing has to be migrated. */
+	subtitle = QString::fromUtf8(obs_data_get_string(data, "subtitle"));
+	secondarySubtitle = QString::fromUtf8(obs_data_get_string(data, "secondary_subtitle"));
 
 	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");
 	if (logoData)
@@ -682,16 +910,14 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "bridge_thickness", bridgeThickness);
 	obs_data_set_double(data, "bridge_offset", bridgeOffset);
 	obs_data_set_double(data, "bridge_gap", bridgeGap);
+	obs_data_set_double(data, "bridge_min_gap", bridgeMinGap);
 	obs_data_set_bool(data, "bridge_tint", bridgeTint);
 	obs_data_set_string(data, "bridge_fill", bridgeFillId(bridgeFill));
 	obs_data_set_string(data, "bridge_sizing", bridgeSizingId(bridgeSizing));
 	obs_data_set_double(data, "bridge_split", bridgeSplit);
 	obs_data_set_string(data, "bridge_row_align", hAlignId(bridgeRowAlign));
 	obs_data_set_bool(data, "bridge_span_empty", bridgeSpanEmpty);
-	obs_data_set_string(data, "divider_cap", dividerShapeId(dividerCap));
-	obs_data_set_string(data, "divider_cap_svg", dividerCapSvg.toUtf8().constData());
-	obs_data_set_string(data, "divider_end_cap", dividerShapeId(dividerEndCap));
-	obs_data_set_string(data, "divider_end_cap_svg", dividerEndCapSvg.toUtf8().constData());
+	obs_data_set_bool(data, "row_subtitles", rowSubtitles);
 	obs_data_set_bool(data, "divider_mirror_ends", dividerMirrorEnds);
 	obs_data_set_string(data, "divider_arm", dividerShapeId(dividerArm));
 	obs_data_set_string(data, "divider_arm_svg", dividerArmSvg.toUtf8().constData());
@@ -714,12 +940,24 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "section_width", sectionWidth);
 	obs_data_set_string(data, "section_align", hAlignId(sectionAlign));
 	obs_data_set_int(data, "spacer_height", spacerHeight);
+	obs_data_set_string(data, "sticky_anchor", stickyAnchorId(stickyAnchor));
+	obs_data_set_double(data, "sticky_canvas_position", stickyCanvasPosition);
+	obs_data_set_double(data, "sticky_offset", stickyOffset);
+	obs_data_set_double(data, "sticky_hold", stickyHold);
+	obs_data_set_bool(data, "sticky_hold_forever", stickyHoldForever);
+	obs_data_set_string(data, "sticky_release", stickyReleaseId(stickyRelease));
+	obs_data_set_bool(data, "sticky_backdrop", stickyBackdrop);
+	obs_data_set_int(data, "sticky_backdrop_color", static_cast<long long>(stickyBackdropColor.rgba()));
+	obs_data_set_double(data, "sticky_backdrop_padding", stickyBackdropPadding);
 	obs_data_set_bool(data, "visible", visible);
 	obs_data_set_bool(data, "use_secondary_style", useSecondaryStyle);
 	obs_data_set_bool(data, "use_bridge_style", useBridgeStyle);
 	obs_data_set_string(data, "style_preset", stylePresetName.toUtf8().constData());
 	obs_data_set_string(data, "secondary_style_preset", secondaryStylePresetName.toUtf8().constData());
 	obs_data_set_string(data, "bridge_style_preset", bridgeStylePresetName.toUtf8().constData());
+	obs_data_set_string(data, "row_subtitle_style_preset", rowSubtitleStylePresetName.toUtf8().constData());
+	obs_data_set_string(data, "row_secondary_subtitle_style_preset",
+			    rowSecondarySubtitleStylePresetName.toUtf8().constData());
 
 	OBSDataAutoRelease logoData = obs_data_create();
 	logo.save(logoData);
@@ -737,6 +975,14 @@ void Section::save(obs_data_t *data) const
 	bridgeStyle.save(bridgeStyleData);
 	obs_data_set_obj(data, "bridge_style", bridgeStyleData);
 
+	OBSDataAutoRelease rowSubtitleStyleData = obs_data_create();
+	rowSubtitleStyle.save(rowSubtitleStyleData);
+	obs_data_set_obj(data, "row_subtitle_style", rowSubtitleStyleData);
+
+	OBSDataAutoRelease rowSecondarySubtitleStyleData = obs_data_create();
+	rowSecondarySubtitleStyle.save(rowSecondarySubtitleStyleData);
+	obs_data_set_obj(data, "row_secondary_subtitle_style", rowSecondarySubtitleStyleData);
+
 	saveArray(
 		data, "entries", entries.size(),
 		[](obs_data_t *item, int index, const void *context) {
@@ -744,12 +990,42 @@ void Section::save(obs_data_t *data) const
 		},
 		&entries);
 
-	saveArray(
-		data, "divider_centre", dividerCentre.size(),
-		[](obs_data_t *item, int index, const void *context) {
-			static_cast<const QVector<DividerPiece> *>(context)->at(index).save(item);
-		},
-		&dividerCentre);
+	const auto savePieces = [data](const char *key, const QVector<DividerPiece> &pieces) {
+		saveArray(
+			data, key, pieces.size(),
+			[](obs_data_t *item, int index, const void *context) {
+				static_cast<const QVector<DividerPiece> *>(context)->at(index).save(item);
+			},
+			&pieces);
+	};
+
+	savePieces("divider_centre", dividerCentre);
+	/*
+	 * Under keys of their own rather than the "divider_cap"/"divider_end_cap" a single shape was
+	 * written to: those still have to be readable as what they were, and a key that is a string
+	 * in one document and an array in the next is a trap for every reader of either.
+	 */
+	savePieces("divider_cap_pieces", dividerCap);
+	savePieces("divider_end_cap_pieces", dividerEndCap);
+
+	/*
+	 * A sticky block's children are sections, saved by the very same call that saved this one.
+	 * Only one level deep can ever be written, because only one level can ever be held.
+	 *
+	 * Written only when there are any: every other section in every document would otherwise
+	 * carry an empty array it has no use for, in settings that are rewritten on every save and
+	 * read back on every load.
+	 */
+	if (!children.empty()) {
+		saveArray(
+			data, "children", static_cast<int>(children.size()),
+			[](obs_data_t *item, int index, const void *context) {
+				static_cast<const std::vector<Section> *>(context)
+					->at(static_cast<size_t>(index))
+					.save(item);
+			},
+			&children);
+	}
 }
 
 void Section::load(obs_data_t *data)
@@ -776,6 +1052,14 @@ void Section::load(obs_data_t *data)
 	 */
 	bridgeGap = obs_data_has_user_value(data, "bridge_gap") ? obs_data_get_double(data, "bridge_gap") : 8.0;
 	bridgeGap = std::max(0.0, bridgeGap);
+	/*
+	 * Nor is a zero minimum gap absurd -- two columns set hard against each other is a layout,
+	 * if an unusual one -- so this is read the same careful way, and a document written before
+	 * the empty bridge existed gets the default rather than a gap of nothing.
+	 */
+	bridgeMinGap = obs_data_has_user_value(data, "bridge_min_gap") ? obs_data_get_double(data, "bridge_min_gap")
+								      : 24.0;
+	bridgeMinGap = std::max(0.0, bridgeMinGap);
 	/* A thickness of zero would draw nothing at all, which no document ever means. */
 	bridgeThickness = obs_data_get_double(data, "bridge_thickness");
 	if (bridgeThickness <= 0.0)
@@ -786,6 +1070,9 @@ void Section::load(obs_data_t *data)
 	bridgeSizing = bridgeSizingFromId(obs_data_get_string(data, "bridge_sizing"), BridgeSizing::Split);
 	bridgeRowAlign = hAlignFromId(obs_data_get_string(data, "bridge_row_align"), HAlign::Center);
 	bridgeSpanEmpty = obs_data_get_bool(data, "bridge_span_empty");
+	/* Off in every document written before a bridged row could carry subtitles, which is also
+	 * what an entry with nothing in either subtitle draws. */
+	rowSubtitles = obs_data_get_bool(data, "row_subtitles");
 
 	/*
 	 * 0.0 is a legitimate split -- everything to the right of the bridge -- so a missing
@@ -801,10 +1088,6 @@ void Section::load(obs_data_t *data)
 	 * exception: an arm of None is a divider with no rule in it at all, which is never what a
 	 * missing key means, so that one falls back to the plain rule.
 	 */
-	dividerCap = dividerShapeFromId(obs_data_get_string(data, "divider_cap"), DividerShape::None);
-	dividerCapSvg = QString::fromUtf8(obs_data_get_string(data, "divider_cap_svg"));
-	dividerEndCap = dividerShapeFromId(obs_data_get_string(data, "divider_end_cap"), DividerShape::None);
-	dividerEndCapSvg = QString::fromUtf8(obs_data_get_string(data, "divider_end_cap_svg"));
 	dividerMirrorEnds = obs_data_has_user_value(data, "divider_mirror_ends")
 				    ? obs_data_get_bool(data, "divider_mirror_ends")
 				    : true;
@@ -857,6 +1140,29 @@ void Section::load(obs_data_t *data)
 	sectionWidth = std::clamp(sectionWidth, 0.0, 1.0);
 	sectionAlign = hAlignFromId(obs_data_get_string(data, "section_align"), HAlign::Center);
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
+	stickyAnchor = stickyAnchorFromId(obs_data_get_string(data, "sticky_anchor"), StickyAnchor::Center);
+	/*
+	 * 0.0 is the top of the canvas and a perfectly ordinary place to pin something, so a missing
+	 * key has to be told apart from a stored zero here as everywhere else.
+	 */
+	stickyCanvasPosition = obs_data_has_user_value(data, "sticky_canvas_position")
+				       ? obs_data_get_double(data, "sticky_canvas_position")
+				       : 0.5;
+	stickyCanvasPosition = std::clamp(stickyCanvasPosition, 0.0, 1.0);
+	stickyOffset = obs_data_get_double(data, "sticky_offset");
+	stickyHold = obs_data_has_user_value(data, "sticky_hold") ? obs_data_get_double(data, "sticky_hold") : 5.0;
+	stickyHold = std::max(0.0, stickyHold);
+	stickyHoldForever = obs_data_get_bool(data, "sticky_hold_forever");
+	stickyRelease = stickyReleaseFromId(obs_data_get_string(data, "sticky_release"), StickyRelease::EndAtHold);
+	stickyBackdrop = obs_data_get_bool(data, "sticky_backdrop");
+	if (obs_data_has_user_value(data, "sticky_backdrop_color")) {
+		stickyBackdropColor = QColor::fromRgba(
+			static_cast<QRgb>(obs_data_get_int(data, "sticky_backdrop_color")));
+	}
+	stickyBackdropPadding = obs_data_has_user_value(data, "sticky_backdrop_padding")
+					? obs_data_get_double(data, "sticky_backdrop_padding")
+					: 24.0;
+	stickyBackdropPadding = std::max(0.0, stickyBackdropPadding);
 	visible = obs_data_get_bool(data, "visible");
 	useSecondaryStyle = obs_data_get_bool(data, "use_secondary_style");
 	/* Absent in every document written before the bridge had ink of its own, all of which took the row's. */
@@ -864,6 +1170,9 @@ void Section::load(obs_data_t *data)
 	stylePresetName = QString::fromUtf8(obs_data_get_string(data, "style_preset"));
 	secondaryStylePresetName = QString::fromUtf8(obs_data_get_string(data, "secondary_style_preset"));
 	bridgeStylePresetName = QString::fromUtf8(obs_data_get_string(data, "bridge_style_preset"));
+	rowSubtitleStylePresetName = QString::fromUtf8(obs_data_get_string(data, "row_subtitle_style_preset"));
+	rowSecondarySubtitleStylePresetName =
+		QString::fromUtf8(obs_data_get_string(data, "row_secondary_subtitle_style_preset"));
 
 	if (columns < 1)
 		columns = 1;
@@ -907,6 +1216,32 @@ void Section::load(obs_data_t *data)
 	else
 		bridgeStyle = style;
 
+	/*
+	 * A subtitle style absent from the document is seeded the way a new section's is: the line
+	 * it sits under, a size down. Falling back to the line's own style outright would draw a
+	 * subtitle indistinguishable from the text above it, which is the one thing a subtitle must
+	 * not be -- and a document that predates these has no opinion to preserve, since it carried
+	 * no subtitles for them to be wrong about.
+	 */
+	const auto seedSubtitleStyle = [](const TextStyle &from) {
+		TextStyle seeded = from;
+		seeded.pixelSize = std::max(1, static_cast<int>(std::lround(from.pixelSize * 0.7)));
+		seeded.bold = false;
+		return seeded;
+	};
+
+	OBSDataAutoRelease rowSubtitleStyleData = obs_data_get_obj(data, "row_subtitle_style");
+	if (rowSubtitleStyleData)
+		rowSubtitleStyle.load(rowSubtitleStyleData);
+	else
+		rowSubtitleStyle = seedSubtitleStyle(style);
+
+	OBSDataAutoRelease rowSecondarySubtitleStyleData = obs_data_get_obj(data, "row_secondary_subtitle_style");
+	if (rowSecondarySubtitleStyleData)
+		rowSecondarySubtitleStyle.load(rowSecondarySubtitleStyleData);
+	else
+		rowSecondarySubtitleStyle = seedSubtitleStyle(useSecondaryStyle ? secondaryStyle : style);
+
 	entries.clear();
 	OBSDataArrayAutoRelease array = obs_data_get_array(data, "entries");
 	if (array) {
@@ -920,16 +1255,72 @@ void Section::load(obs_data_t *data)
 		}
 	}
 
-	dividerCentre.clear();
-	OBSDataArrayAutoRelease centreArray = obs_data_get_array(data, "divider_centre");
-	if (centreArray) {
-		const size_t count = obs_data_array_count(centreArray);
-		dividerCentre.reserve(static_cast<int>(count));
+	const auto loadPieces = [data](const char *key, QVector<DividerPiece> *into) {
+		into->clear();
+
+		OBSDataArrayAutoRelease array = obs_data_get_array(data, key);
+		if (!array)
+			return false;
+
+		const size_t count = obs_data_array_count(array);
+		into->reserve(static_cast<int>(count));
 		for (size_t i = 0; i < count; ++i) {
-			OBSDataAutoRelease item = obs_data_array_item(centreArray, i);
+			OBSDataAutoRelease item = obs_data_array_item(array, i);
 			DividerPiece piece;
 			piece.load(item);
-			dividerCentre.append(piece);
+			into->append(piece);
+		}
+		return true;
+	};
+
+	loadPieces("divider_centre", &dividerCentre);
+
+	/*
+	 * An end written as a single shape -- every document from before an end was a stack -- is
+	 * read back as the one-piece stack it is. None is the fallback there for the reason it is
+	 * everywhere else in a divider, and a `None` end is simply an end with nothing on it, so it
+	 * migrates to an empty list rather than to a piece that draws nothing.
+	 */
+	const auto loadEnd = [&](const char *key, const char *legacyShape, const char *legacyFile,
+				 QVector<DividerPiece> *into) {
+		if (loadPieces(key, into))
+			return;
+
+		const DividerShape shape =
+			dividerShapeFromId(obs_data_get_string(data, legacyShape), DividerShape::None);
+		if (dividerShapeIsEmpty(shape))
+			return;
+
+		DividerPiece piece;
+		piece.kind = DividerPiece::Kind::Ornament;
+		piece.shape = shape;
+		piece.svgPath = QString::fromUtf8(obs_data_get_string(data, legacyFile));
+		into->append(piece);
+	};
+
+	loadEnd("divider_cap_pieces", "divider_cap", "divider_cap_svg", &dividerCap);
+	loadEnd("divider_end_cap_pieces", "divider_end_cap", "divider_end_cap_svg", &dividerEndCap);
+
+	children.clear();
+	OBSDataArrayAutoRelease childArray = obs_data_get_array(data, "children");
+	if (childArray) {
+		const size_t count = obs_data_array_count(childArray);
+		children.reserve(count);
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(childArray, i);
+
+			Section child;
+			child.load(item);
+			/*
+			 * A sticky block inside a sticky block is not something the designer can
+			 * make, and is dropped rather than loaded: everything downstream -- the
+			 * layout, the playback, the pinned quad -- is written for one level, and a
+			 * hand-written document is not a reason to find out what two would do.
+			 */
+			if (child.type == SectionType::StickyBlock)
+				continue;
+
+			children.push_back(child);
 		}
 	}
 }
@@ -1009,12 +1400,12 @@ Section Section::makeDefault(SectionType type)
 		section.secondaryStyle.align = HAlign::Left;
 		section.useSecondaryStyle = true;
 		section.marginX = 160;
-		section.entries.append(Entry{QStringLiteral("Role"), QStringLiteral("Name"), {}});
+		section.entries.append(Entry{QStringLiteral("Role"), QStringLiteral("Name"), {}, {}, {}});
 		break;
 
 	case SectionType::TextList:
 		section.style.pixelSize = 32;
-		section.entries.append(Entry{QStringLiteral("Name"), {}, {}});
+		section.entries.append(Entry{QStringLiteral("Name"), {}, {}, {}, {}});
 		break;
 
 	case SectionType::TitleSubtitleList:
@@ -1044,7 +1435,7 @@ Section Section::makeDefault(SectionType type)
 			section.marginX = 120;
 		}
 		for (int i = 0; i < count; ++i)
-			section.entries.append(Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}});
+			section.entries.append(Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}, {}, {}});
 		break;
 	}
 
@@ -1057,7 +1448,7 @@ Section Section::makeDefault(SectionType type)
 		section.columns = 3;
 		section.marginX = 120;
 		for (int i = 0; i < 3; ++i)
-			section.entries.append(Entry{QStringLiteral("Name"), {}, {}});
+			section.entries.append(Entry{QStringLiteral("Name"), {}, {}, {}, {}});
 		break;
 
 	case SectionType::MultiLogoList:
@@ -1074,7 +1465,7 @@ Section Section::makeDefault(SectionType type)
 		 * single ornament, because the first thing anyone does with a new divider is take a
 		 * piece out or put one in, and starting from three shows that the centre is a list.
 		 */
-		section.dividerCap = DividerShape::Arrow;
+		section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Arrow, {}, 1.0, {}, {}}};
 		section.dividerArm = DividerShape::Rule;
 		section.dividerThickness = 5.0;
 		section.dividerCentre.append(
@@ -1097,6 +1488,19 @@ Section Section::makeDefault(SectionType type)
 		section.paddingTop = 0;
 		section.paddingBottom = 0;
 		break;
+
+	case SectionType::StickyBlock:
+		/*
+		 * A closing card to start from, because an empty block is invisible in the preview and
+		 * gives the reader nothing to drag other sections next to. Held in the middle of the
+		 * frame for five seconds and then treated as the end of the roll, which is the thing
+		 * the type is named after; everything else about it is one control away.
+		 */
+		section.children.push_back(makeDefault(SectionType::Title));
+		section.children.front().text = QStringLiteral("The End");
+		section.paddingTop = 0;
+		section.paddingBottom = 0;
+		break;
 	}
 
 	/*
@@ -1116,6 +1520,26 @@ Section Section::makeDefault(SectionType type)
 		section.bridgeType = BridgeType::Dots;
 		section.bridgeFill = BridgeFill::Repeat;
 	}
+
+	/*
+	 * The two subtitles a bridged row can carry are seeded from the line each of them sits
+	 * under, a size down and without its weight, whatever the type -- switching a section to
+	 * Bridged and turning the subtitles on then draws something that reads as a subtitle
+	 * straight away, rather than a second line indistinguishable from the first.
+	 *
+	 * Done here for every type rather than in the Bridged arm because changing a section's type
+	 * is non-destructive: the fields a type does not read are kept, so they had better be worth
+	 * keeping by the time another type does read them.
+	 */
+	const auto subtitleOf = [](const TextStyle &line) {
+		TextStyle subtitle = line;
+		subtitle.pixelSize = std::max(1, static_cast<int>(std::lround(line.pixelSize * 0.7)));
+		subtitle.bold = false;
+		return subtitle;
+	};
+	section.rowSubtitleStyle = subtitleOf(section.style);
+	section.rowSecondarySubtitleStyle =
+		subtitleOf(section.useSecondaryStyle ? section.secondaryStyle : section.style);
 
 	return section;
 }
@@ -1163,6 +1587,15 @@ QString Section::displayLabel() const
 	case SectionType::Spacer:
 		return QStringLiteral("%1 (%2 px)").arg(QString::fromUtf8(sectionTypeName(type))).arg(spacerHeight);
 
+	case SectionType::StickyBlock:
+		/*
+		 * Named by what it holds rather than by how long it holds for: the list is a list of
+		 * content, and the children are indented under it saying the same thing in more detail.
+		 */
+		return QStringLiteral("%1 (%2)")
+			.arg(QString::fromUtf8(sectionTypeName(type)))
+			.arg(static_cast<int>(children.size()));
+
 	default:
 		break;
 	}
@@ -1195,6 +1628,18 @@ const TextStyle &Document::effectiveSecondaryStyle(const Section &section) const
 
 	const TextStyle *preset = findStylePreset(section.secondaryStylePresetName);
 	return preset ? *preset : section.secondaryStyle;
+}
+
+const TextStyle &Document::effectiveRowSubtitleStyle(const Section &section) const
+{
+	const TextStyle *preset = findStylePreset(section.rowSubtitleStylePresetName);
+	return preset ? *preset : section.rowSubtitleStyle;
+}
+
+const TextStyle &Document::effectiveRowSecondarySubtitleStyle(const Section &section) const
+{
+	const TextStyle *preset = findStylePreset(section.rowSecondarySubtitleStylePresetName);
+	return preset ? *preset : section.rowSecondarySubtitleStyle;
 }
 
 TextStyle Document::effectiveBridgeStyle(const Section &section) const
@@ -1282,14 +1727,18 @@ bool Document::applyLibraryRenames()
 		preset.name = renamed;
 
 		/* Every binding that named it, or the roll would follow the rename into nothing. */
-		for (Section &section : sections) {
+		visitSections(sections, [&](Section &section) {
 			if (section.stylePresetName == from)
 				section.stylePresetName = renamed;
 			if (section.secondaryStylePresetName == from)
 				section.secondaryStylePresetName = renamed;
 			if (section.bridgeStylePresetName == from)
 				section.bridgeStylePresetName = renamed;
-		}
+			if (section.rowSubtitleStylePresetName == from)
+				section.rowSubtitleStylePresetName = renamed;
+			if (section.rowSecondarySubtitleStylePresetName == from)
+				section.rowSecondarySubtitleStylePresetName = renamed;
+		});
 
 		changed = true;
 	}
@@ -1341,14 +1790,18 @@ void Document::removeStylePreset(const QString &name)
 	 * section's own style either way, but clearing them means a later preset that happens
 	 * to reuse the name does not silently recapture sections the user had unbound.
 	 */
-	for (Section &section : sections) {
+	visitSections(sections, [&name](Section &section) {
 		if (section.stylePresetName == name)
 			section.stylePresetName.clear();
 		if (section.secondaryStylePresetName == name)
 			section.secondaryStylePresetName.clear();
 		if (section.bridgeStylePresetName == name)
 			section.bridgeStylePresetName.clear();
-	}
+		if (section.rowSubtitleStylePresetName == name)
+			section.rowSubtitleStylePresetName.clear();
+		if (section.rowSecondarySubtitleStylePresetName == name)
+			section.rowSecondarySubtitleStylePresetName.clear();
+	});
 }
 
 QStringList Document::usedFontFamilies() const
@@ -1380,28 +1833,42 @@ QVector<FontUse> Document::usedFonts() const
 		fonts.append(FontUse{style.family, {style.styleName}});
 	};
 
-	for (const Section &section : sections) {
+	visitSections(sections, [&](const Section &section) {
 		if (!section.visible)
-			continue;
+			return;
 
 		/*
 		 * A divider draws text only when its centre stack holds some, so it is asked rather
 		 * than assumed: reporting a font for a roll whose every divider is pure artwork
 		 * would send the user hunting for a substitution that never happened.
 		 */
+		const auto holdsWord = [](const QVector<DividerPiece> &pieces) {
+			return std::any_of(pieces.cbegin(), pieces.cend(), [](const DividerPiece &piece) {
+				return piece.kind == DividerPiece::Kind::Text && !piece.text.isEmpty();
+			});
+		};
+
+		/* Any of the three stacks can hold a word, so all three are asked. */
 		const bool dividerText = section.type == SectionType::SectionDivider &&
-					 std::any_of(section.dividerCentre.cbegin(), section.dividerCentre.cend(),
-						     [](const DividerPiece &piece) {
-							     return piece.kind == DividerPiece::Kind::Text &&
-								    !piece.text.isEmpty();
-						     });
+					 (holdsWord(section.dividerCentre) || holdsWord(section.dividerCap) ||
+					  holdsWord(section.dividerEndCap));
 
 		if (!sectionUsesText(section.type) && !dividerText)
-			continue;
+			return;
 
 		consider(effectiveStyle(section));
 		consider(effectiveSecondaryStyle(section));
-	}
+
+		/*
+		 * The subtitles of a bridged row are asked for the same reason a divider's text is:
+		 * they are drawn only when the section turns them on, and a family reported for a
+		 * roll that never draws it is a font hunt with nothing at the end of it.
+		 */
+		if (sectionStacksSubtitles(section) && section.type == SectionType::Bridged) {
+			consider(effectiveRowSubtitleStyle(section));
+			consider(effectiveRowSecondarySubtitleStyle(section));
+		}
+	});
 
 	std::sort(fonts.begin(), fonts.end(), [](const FontUse &left, const FontUse &right) {
 		return left.family.compare(right.family, Qt::CaseInsensitive) < 0;
@@ -1465,14 +1932,16 @@ bool Document::applyFontSubstitutions(const QStringList &families)
 	for (StylePreset &preset : stylePresets)
 		rewrite(preset.style);
 
-	for (Section &section : sections) {
+	visitSections(sections, [&rewrite](Section &section) {
 		rewrite(section.style);
 		rewrite(section.secondaryStyle);
+		rewrite(section.rowSubtitleStyle);
+		rewrite(section.rowSecondarySubtitleStyle);
 		/*
 		 * `bridgeStyle` is deliberately left alone: a bridge keeps the row's own font and
 		 * takes only ink from it, so the family recorded there is never drawn with.
 		 */
-	}
+	});
 
 	return changed;
 }

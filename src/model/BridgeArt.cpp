@@ -38,6 +38,13 @@ namespace {
  * either side of it.
  */
 const BridgeTypeInfo kBridgeTypes[] = {
+	/*
+	 * Nothing drawn: the row is two texts with a gap between them. Listed first because it is
+	 * the plainest thing the picker can offer, not because it is the fallback -- that is still
+	 * Text, so a document written before this existed keeps the leader it was built against.
+	 */
+	{BridgeType::None, "none", "None", "", 0.0, BridgeStretch::Spread},
+
 	{BridgeType::Text, "text", "Text", "", 0.0, BridgeStretch::Spread},
 
 	{BridgeType::Dots, "dots", "Dots", R"(<circle cx="1" cy="0.5" r="0.5" fill="#ffffff"/>)", 2.0,
@@ -117,7 +124,12 @@ const QVector<BridgeType> &allBridgeTypes()
 
 bool bridgeTypeUsesArt(BridgeType type)
 {
-	return type != BridgeType::Text;
+	return type != BridgeType::Text && type != BridgeType::None;
+}
+
+bool bridgeTypeIsEmpty(BridgeType type)
+{
+	return type == BridgeType::None;
 }
 
 bool bridgeTypeUsesFile(BridgeType type)

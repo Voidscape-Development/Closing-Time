@@ -66,6 +66,8 @@ QColor layoutBoxColour(LayoutBox::Kind kind)
 		return QColor(235, 225, 110);
 	case LayoutBox::Kind::Divider:
 		return QColor(180, 140, 255);
+	case LayoutBox::Kind::Sticky:
+		return QColor(255, 90, 90);
 	case LayoutBox::Kind::Text:
 	default:
 		return QColor(255, 120, 200);
@@ -269,6 +271,7 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), tileHeight), tile.image);
 	}
 
+	paintStickyBlocks(painter, canvasColumn, scale);
 	paintAnimatedLogos(painter, canvasColumn, scale);
 
 	const qreal framedHeight = onAirHeight();
@@ -310,6 +313,33 @@ void PreviewWidget::paintEvent(QPaintEvent *)
  * contents over the top -- so a text column sitting exactly on its section's edge is still
  * visible.
  */
+/*
+ * Draws each sticky block back into the slot the strip left empty for it.
+ *
+ * The pane is the roll end to end rather than a canvas playing, so a block is shown where it sits
+ * in the running order -- which is what makes the section list, the preview and the scroll bar
+ * agree about where the block is. Where it *pins* is a property of playback, and playback is what
+ * the OBS canvas shows; drawing the block halfway up the pane instead would leave a hole in the
+ * roll and a card floating over a part of it that has nothing to do with either.
+ */
+void PreviewWidget::paintStickyBlocks(QPainter &painter, const QRect &canvasColumn, qreal scale) const
+{
+	for (const StickyBlockPlacement &placement : strip.stickyBlocks) {
+		if (placement.image.isNull())
+			continue;
+
+		/* The picture reaches past the slot by its margin at each end; so does what is drawn. */
+		const qreal top = (placement.rect.top() - placement.margin) * scale - scroll;
+		const qreal blockHeight = placement.image.height() * scale;
+
+		if (top + blockHeight < 0 || top > height())
+			continue;
+
+		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), blockHeight),
+				  placement.image);
+	}
+}
+
 void PreviewWidget::paintAnimatedLogos(QPainter &painter, const QRect &canvasColumn, qreal scale) const
 {
 	if (strip.animatedLogos.isEmpty())
@@ -378,7 +408,12 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 			colour.setAlpha(dim ? 60 : 230);
 
 			QPen boxPen(colour, 1);
-			if (kind == LayoutBox::Kind::Section)
+			/*
+			 * A sticky block's slot is dashed for the reason a section box is: it is a
+			 * bound rather than something drawn -- and doubly so here, since the block is
+			 * drawn somewhere else entirely the moment it pins.
+			 */
+			if (kind == LayoutBox::Kind::Section || kind == LayoutBox::Kind::Sticky)
 				boxPen.setStyle(Qt::DashLine);
 			else if (kind == LayoutBox::Kind::Content)
 				boxPen.setStyle(Qt::DotLine);
@@ -395,6 +430,7 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 	draw(LayoutBox::Kind::Logo);
 	draw(LayoutBox::Kind::Bridge);
 	draw(LayoutBox::Kind::Divider);
+	draw(LayoutBox::Kind::Sticky);
 
 	painter.restore();
 }

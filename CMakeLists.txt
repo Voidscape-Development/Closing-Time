@@ -84,6 +84,8 @@ target_sources(
     src/plugin-main.cpp
     src/source/CreditsSource.cpp
     src/source/CreditsSource.hpp
+    src/ui/CollapsibleGroup.cpp
+    src/ui/CollapsibleGroup.hpp
     src/ui/CsvImportDialog.cpp
     src/ui/CsvImportDialog.hpp
     src/ui/DesignerDialog.cpp

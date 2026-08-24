@@ -114,6 +114,61 @@ struct AnimatedLogoPlacement {
 	int section = -1;
 };
 
+/*
+ * A sticky block the layout placed, and everything needed to draw it.
+ *
+ * The strip is one tall picture that scrolls; a block that stops scrolling while the rest of it
+ * carries on is by definition not part of that picture. So a sticky block is not painted into the
+ * strip at all -- the same bargain an animated logo strikes, and for the same reason. The slot it
+ * occupies is left empty and the block is carried here as a picture of its own, drawn over the
+ * strip by whoever is compositing: the source on the graphics thread, the designer's preview on
+ * the UI thread.
+ *
+ * The layout does not move for any of it. The block occupies exactly the slot its content would
+ * have occupied inline, so everything above and below it sits where it always did, and the empty
+ * slot goes on scrolling after the block has detached from it.
+ */
+struct StickyBlockPlacement {
+	/* The slot, in strip space. Consumers add the scroll offset to find where it would be. */
+	QRectF rect;
+	/* The block itself, rasterised at the strip's width, exactly `rect` in size. */
+	QImage image;
+
+	/* Everything about how it pins, copied off the section so the compositor reads no model. */
+	StickyAnchor anchor = StickyAnchor::Center;
+	double canvasPosition = 0.5;
+	double offset = 0.0;
+	double hold = 5.0;
+	bool holdForever = false;
+	StickyRelease release = StickyRelease::EndAtHold;
+
+	/*
+	 * How far past the slot the picture reaches at top and bottom, in pixels: enough for the
+	 * shadows a child can cast outside its own box, and for the backdrop's padding when the block
+	 * carries one. The picture is `rect.height() + margin * 2` tall and its top edge belongs
+	 * `margin` pixels above wherever the block is drawn.
+	 *
+	 * The backdrop itself is painted into the picture rather than carried here as a colour to be
+	 * drawn behind it. A flat quad would mean a second effect -- libobs draws solids and textures
+	 * from different ones -- started inside the pass that is drawing the strip, and the panel is
+	 * a rectangle the rasteriser can fill for nothing at rebuild time.
+	 */
+	int margin = 0;
+
+	/* Index into Document::sections, for the designer's overlay and its highlighting. */
+	int section = -1;
+
+	/*
+	 * Where the block's top edge sits in canvas space once it has pinned, for a block of this
+	 * height on a canvas this tall. The one piece of arithmetic both the source and the preview
+	 * need, kept here so they cannot disagree about where "pinned" is.
+	 */
+	double pinnedTop(int canvasHeight) const
+	{
+		return canvasPosition * canvasHeight + offset - stickyAnchorFraction(anchor) * rect.height();
+	}
+};
+
 struct Strip {
 	QVector<StripTile> tiles;
 	/*
@@ -121,6 +176,12 @@ struct Strip {
 	 * straddles a tile seam is reported once rather than once per tile it touches.
 	 */
 	QVector<AnimatedLogoPlacement> animatedLogos;
+	/*
+	 * Collected in the same pass, and for the same reason: a block straddling a tile seam is
+	 * reported once rather than once per tile. Empty for a roll with no sticky blocks in it,
+	 * and always empty from `measure()`, which rasterises nothing.
+	 */
+	QVector<StickyBlockPlacement> stickyBlocks;
 	int width = 0;
 	int height = 0;
 
@@ -150,6 +211,12 @@ struct LayoutBox {
 		Text,
 		Logo,
 		Bridge,
+		/*
+		 * The slot a sticky block occupies in the roll. Worth its own kind rather than being
+		 * another Section box: the block is drawn somewhere else entirely once it pins, and
+		 * the overlay showing where its slot *was* is the whole point of drawing it.
+		 */
+		Sticky,
 		/*
 		 * A Section Divider's own box, over the height its artwork occupies -- which is not
 		 * the same as its content box, since a divider narrower than its section sits

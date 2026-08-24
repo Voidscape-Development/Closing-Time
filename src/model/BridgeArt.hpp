@@ -35,9 +35,16 @@ namespace closingtime {
  * `Custom` takes its tile from a file the user picks. Every other art type takes it from the
  * table in BridgeArt.cpp, and adding one there is a row plus the markup for its tile.
  *
+ * `None` draws nothing at all. It is a real type rather than an absence because a row's two
+ * texts held apart by a plain gap is a layout people ask for -- a cast list set as two columns
+ * with nothing running between them -- and expressing it as "the bridge is empty" keeps every
+ * other setting on the row meaning exactly what it always did. What it costs is one number,
+ * `Section::bridgeMinGap`, since an empty bridge has no natural width of its own to keep the
+ * two texts off each other with.
+ *
  * Persisted by string id (bridgeTypeId), never by ordinal, so the enum may be reordered.
  */
-enum class BridgeType { Text, Dots, Dashes, Line, DoubleLine, Diamonds, Custom };
+enum class BridgeType { None, Text, Dots, Dashes, Line, DoubleLine, Diamonds, Custom };
 
 /*
  * What a type does when asked to cover a gap wider than one tile.
@@ -84,6 +91,15 @@ const QVector<BridgeType> &allBridgeTypes();
 
 /* True when the type is drawn from vector art rather than from the section's bridge string. */
 bool bridgeTypeUsesArt(BridgeType type);
+
+/*
+ * True when the type draws nothing, leaving the space between the two texts empty.
+ *
+ * Worth asking by name rather than comparing against None at each call site: an empty bridge is
+ * neither text nor art, so both of the questions above answer "no" for it and neither of them
+ * says what it actually is.
+ */
+bool bridgeTypeIsEmpty(BridgeType type);
 
 /* True when the art comes from a file the user picks rather than from the built-in table. */
 bool bridgeTypeUsesFile(BridgeType type);

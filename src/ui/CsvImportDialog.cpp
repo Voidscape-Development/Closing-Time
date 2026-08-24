@@ -64,7 +64,10 @@ const DelimiterOption kDelimiters[] = {
 
 } // namespace
 
-CsvImportDialog::CsvImportDialog(SectionType type, QWidget *parent) : QDialog(parent), targetType(type)
+CsvImportDialog::CsvImportDialog(SectionType type, bool subtitles, QWidget *parent)
+	: QDialog(parent),
+	  targetType(type),
+	  rowSubtitles(subtitles)
 {
 	setWindowTitle(moduleText("Import.Title"));
 	setModal(true);
@@ -179,6 +182,11 @@ QVector<CsvImportDialog::Field> CsvImportDialog::availableFields() const
 		return {Field::Ignore, Field::LogoPath, Field::LogoHeight};
 
 	default:
+		/* Four, when a bridged row carries a subtitle under each of its two sides. */
+		if (targetType == SectionType::Bridged && rowSubtitles)
+			return {Field::Ignore, Field::Text, Field::Subtitle, Field::SecondaryText,
+				Field::SecondarySubtitle};
+
 		/* Two texts per entry -- a bridged row's two sides, or a title and its subtitle. */
 		if (sectionUsesSecondaryText(targetType))
 			return {Field::Ignore, Field::Text, Field::SecondaryText};
@@ -199,6 +207,10 @@ QString CsvImportDialog::fieldLabel(Field field) const
 							  : moduleText("Designer.Column.Text");
 	case Field::SecondaryText:
 		return subtitles ? moduleText("Designer.Column.Subtitle") : moduleText("Designer.Column.Right");
+	case Field::Subtitle:
+		return moduleText("Designer.Column.LeftSubtitle");
+	case Field::SecondarySubtitle:
+		return moduleText("Designer.Column.RightSubtitle");
 	case Field::LogoPath:
 		return moduleText("Designer.Column.Logo");
 	case Field::LogoHeight:
@@ -389,6 +401,12 @@ void CsvImportDialog::accept()
 				break;
 			case Field::SecondaryText:
 				entry.secondaryText = value;
+				break;
+			case Field::Subtitle:
+				entry.subtitle = value;
+				break;
+			case Field::SecondarySubtitle:
+				entry.secondarySubtitle = value;
 				break;
 			case Field::LogoPath:
 				entry.logo.path = value;

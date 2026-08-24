@@ -26,6 +26,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+#include <vector>
+
 #include "model/BridgeArt.hpp"
 #include "model/DividerArt.hpp"
 #include "model/EndingAction.hpp"
@@ -58,6 +61,11 @@ enum class SectionType {
 	MultiLogoList,
 	SectionDivider,
 	Spacer,
+	/*
+	 * A run of sections that pins itself to a place on the canvas instead of scrolling past it.
+	 * It holds other sections rather than content of its own; see `Section::children`.
+	 */
+	StickyBlock,
 };
 
 const char *sectionTypeId(SectionType type);
@@ -90,6 +98,79 @@ bool sectionUsesSubtitles(SectionType type);
  * and that the secondary style is worth offering at all.
  */
 bool sectionUsesSecondaryText(SectionType type);
+
+/* What a list holds, which with a column count is the whole of what tells the six list types apart. */
+enum class SectionListContent { Text, Pairs, Logos };
+
+/*
+ * A section type taken apart into the handful of plain answers it stands for.
+ *
+ * The nineteen shapes of heading and list are not nineteen different things: they are two
+ * headings, a list and a bridged row, crossed with whether a subtitle is stacked under it, whether
+ * a logo sits beside it, what a list holds, and how many columns it runs over. A picker that
+ * offers all of them at once asks one hard question where this asks three easy ones.
+ *
+ * It lives here rather than in the designer because it is a property of the type table -- the
+ * *editor's* decision is which base types to offer -- and because a mapping that has to be exactly
+ * reversible is worth a test that can be written without a window on screen.
+ */
+struct SectionTypeSwitches {
+	SectionType base = SectionType::Title;
+	/* Headings only. */
+	bool subtitle = false;
+	bool logo = false;
+	bool logoOnly = false;
+	/* Lists only. */
+	SectionListContent content = SectionListContent::Text;
+	bool multiColumn = false;
+};
+
+/* The base type and the switches a type stands for. */
+SectionTypeSwitches decomposeSectionType(SectionType type);
+
+/* And back again: `composeSectionType(decomposeSectionType(t)) == t` for every type. */
+SectionType composeSectionType(const SectionTypeSwitches &switches);
+
+/*
+ * Which part of a sticky block is pinned, and to what.
+ *
+ * The pin is a pair of points: one on the block and one down the canvas. Saying "the middle of the
+ * block, halfway down the frame" needs both halves, and a single number could only ever express
+ * one of them -- which is why a block's top edge landing at a fixed distance from the top of the
+ * frame and a block *centred* in the frame are two settings rather than one with a fudge in it.
+ */
+enum class StickyAnchor { Top, Center, Bottom };
+
+const char *stickyAnchorId(StickyAnchor anchor);
+StickyAnchor stickyAnchorFromId(const char *id, StickyAnchor fallback = StickyAnchor::Center);
+
+/* Where on the block the pin sits: 0 at its top edge, 1 at its bottom. */
+double stickyAnchorFraction(StickyAnchor anchor);
+
+/*
+ * What a sticky block does when its hold runs out.
+ *
+ *   EndAtHold      - the hold expiring *is* the end of the roll: the ending action fires and the
+ *                    block stays where it is. The closing card that stays on screen.
+ *   ResumeThenEnd  - the block carries on up and off the top, and the roll ends the way it always
+ *                    has, once everything has left the frame.
+ *   ResumeEndAtHold- the block carries on up and off, but the ending action fires at the moment
+ *                    the hold ends rather than waiting for it to clear the frame.
+ *
+ * Three rather than one because they answer two independent questions -- does the block leave, and
+ * what counts as the end of the roll -- and every combination of the two is something somebody
+ * builds a roll around.
+ */
+enum class StickyRelease { EndAtHold, ResumeThenEnd, ResumeEndAtHold };
+
+const char *stickyReleaseId(StickyRelease release);
+StickyRelease stickyReleaseFromId(const char *id, StickyRelease fallback = StickyRelease::EndAtHold);
+
+/* True when the block scrolls on after its hold rather than staying where it was pinned. */
+bool stickyReleaseResumes(StickyRelease release);
+
+/* True when the hold running out is what finishes the roll, rather than the strip clearing. */
+bool stickyReleaseEndsAtHold(StickyRelease release);
 
 enum class HAlign { Left, Center, Right };
 
@@ -152,6 +233,45 @@ enum class BridgeSizing { Split, Natural };
 
 const char *bridgeSizingId(BridgeSizing sizing);
 BridgeSizing bridgeSizingFromId(const char *id, BridgeSizing fallback = BridgeSizing::Split);
+
+struct Section;
+
+/*
+ * The fill a section's bridge is really laid out with.
+ *
+ * An empty bridge has nothing to cover a gap with, so all three modes would come out looking the
+ * same on screen while quietly measuring the text columns three different ways -- a "fill" setting
+ * for something that draws nothing is exactly the kind of control that makes this editor hard to
+ * read. So an empty bridge is always laid out as Fixed, reserving `bridgeMinGap` between the two
+ * columns, and the designer hides the row rather than offering a choice that only moves text.
+ *
+ * Everything that measures or places a bridged row goes through this rather than reading
+ * `bridgeFill` directly, the same guarantee `effectiveStyle` gives the text.
+ */
+BridgeFill effectiveBridgeFill(const Section &section);
+
+/*
+ * True when this section really stacks a subtitle under something, which is not a question the
+ * type alone can answer any more: a bridged row does it only when `rowSubtitles` is on.
+ *
+ * `sectionUsesSubtitles` stays a property of the type, since that is what the layout switch and
+ * the field visibility are written against; this is what anything asking about a particular
+ * section -- the editor's `subtitleGap` and `subtitleFirst` rows, which shape any stack -- should
+ * ask instead.
+ */
+bool sectionStacksSubtitles(const Section &section);
+
+/*
+ * Every section in `sections`, the children of any sticky block among them included, in the order
+ * they are drawn.
+ *
+ * The document's list is no longer flat, and everything that walks it to ask a section something --
+ * which fonts does this roll use, which preset does this section bind to -- has to reach a child or
+ * quietly stop working for anything inside a block. One walk in one place is what keeps a new
+ * question from being asked of half the roll.
+ */
+void visitSections(const QVector<Section> &sections, const std::function<void(const Section &)> &visit);
+void visitSections(QVector<Section> &sections, const std::function<void(Section &)> &visit);
 
 /*
  * What the glyphs themselves are painted with.
@@ -398,7 +518,9 @@ struct LogoRef {
 /*
  * One entry inside a list-shaped section. Which fields matter depends on the owning
  * section's type:
- *   Bridged                -> text (left) and secondaryText (right), joined by the bridge string
+ *   Bridged                -> text (left) and secondaryText (right), joined by the bridge string,
+ *                             each with an optional subtitle stacked under it (subtitle and
+ *                             secondarySubtitle) when the section asks for them
  *   TextList               -> text
  *   MultiTextList          -> text, placed into columns in the section's fill order
  *   TitleSubtitleList      -> text (title) and secondaryText (subtitle), stacked one over the other
@@ -409,6 +531,18 @@ struct LogoRef {
 struct Entry {
 	QString text;
 	QString secondaryText;
+	/*
+	 * Bridged rows only: a second line under each side of the row, drawn when the section's
+	 * `rowSubtitles` is on and there is something here to draw. A role under a name on the left,
+	 * a company under a name on the right.
+	 *
+	 * They are fields of the entry rather than a reuse of `text`/`secondaryText` because a
+	 * bridged row already spends both of those on the two sides of the row -- and keeping them
+	 * whatever the section's type means a list switched to another shape and back keeps them,
+	 * exactly as every other field on the model does.
+	 */
+	QString subtitle;
+	QString secondarySubtitle;
 	LogoRef logo;
 
 	void save(obs_data_t *data) const;
@@ -540,6 +674,16 @@ struct Section {
 	 */
 	double bridgeOffset = 0.0;
 	/*
+	 * Empty bridges only: the space the bridge takes up when there is nothing in it, in pixels.
+	 *
+	 * Every other type has a natural width of its own -- a string's advance, a tile's aspect --
+	 * and that width is what a Fixed bridge reserves between the two columns. An empty bridge
+	 * has none, so without this a Natural-sized row would set its two texts hard against each
+	 * other. It is a minimum rather than an exact gap for the same reason every other bridge's
+	 * natural width is: whatever the columns leave over past it still belongs to the bridge.
+	 */
+	double bridgeMinGap = 24.0;
+	/*
 	 * Art bridges only: space left at each end of the art, in pixels, so a leader does not
 	 * run into the words it joins. A text bridge carries its own spacing in the string the
 	 * user typed, which is why this is confined to art -- applying it there too would move
@@ -575,6 +719,21 @@ struct Section {
 	bool bridgeSpanEmpty = false;
 
 	/*
+	 * Bridged sections only: draw a second line under each side of every row, from the entry's
+	 * `subtitle` and `secondarySubtitle`.
+	 *
+	 * A switch rather than a section type of its own, because a bridged row with subtitles is the
+	 * same content laid out the same way with one more line under each side -- and because the
+	 * subtitles are optional per row: a side with nothing in it draws nothing and takes no height,
+	 * so a list where only some of the rows carry a role under the name needs no second section.
+	 *
+	 * Switching it off leaves the text where it is, like every other non-destructive choice here.
+	 * The stack itself is shaped by `subtitleGap` and `subtitleFirst`, which mean here exactly
+	 * what they mean for a title/subtitle list: the pair's own spacing, and which line is on top.
+	 */
+	bool rowSubtitles = false;
+
+	/*
 	 * Section Divider sections only.
 	 *
 	 * A divider is composed rather than drawn from one piece of artwork: an end cap, an arm
@@ -589,15 +748,26 @@ struct Section {
 	 * a divider whose text is white while its rule carries the title's gold sweep is precisely
 	 * what the override is for.
 	 */
-	DividerShape dividerCap = DividerShape::None;
-	/* Custom caps only: absolute path to the artwork drawn at the left-hand end. */
-	QString dividerCapSvg;
+	/*
+	 * The left-hand end, outermost piece first.
+	 *
+	 * A list of the same `DividerPiece` the centre holds rather than a single shape, because an
+	 * end is the same kind of thing a middle is: something drawn once at its own size, and just
+	 * as often a compound -- a diamond outside an arrowhead, a year set against the rule. Making
+	 * them the same list means a shape offered in one place is offered in the other, a piece can
+	 * be resized where it sits, and a word or a mark can cap a rule exactly as it can break one.
+	 *
+	 * Empty is an end with nothing on it, which is the ordinary case for a plain rule.
+	 */
+	QVector<DividerPiece> dividerCap;
 	/*
 	 * The right-hand end, used only when `dividerMirrorEnds` is off. Kept whether or not it is
 	 * in use, so mirroring can be switched off and back on without losing what was set.
+	 *
+	 * Written in the same order as the left-hand one -- outermost piece first -- and drawn
+	 * flipped, so an end reads the same way whichever list it came from.
 	 */
-	DividerShape dividerEndCap = DividerShape::None;
-	QString dividerEndCapSvg;
+	QVector<DividerPiece> dividerEndCap;
 	/*
 	 * Draw the right-hand end as the left one flipped. On by default, and true of every
 	 * ornamental rule that is not an arrow pointing somewhere: it is what stops the two ends of
@@ -683,6 +853,21 @@ struct Section {
 	bool useBridgeStyle = false;
 
 	/*
+	 * The two subtitles of a bridged row, when `rowSubtitles` is on.
+	 *
+	 * One style each rather than one shared between them, because the two sides of a bridged row
+	 * are already styled apart -- that is what `secondaryStyle` is for -- and a subtitle that
+	 * could not follow the line it belongs under would be the one part of the row unable to.
+	 *
+	 * Unlike `secondaryStyle` these carry no switch of their own. There is nothing sensible for
+	 * an off position to mean: a subtitle set in exactly the style of the line above it is not a
+	 * subtitle, it is a second line of the same text, so `makeDefault` hands out a smaller size
+	 * and the styles are simply used whenever the subtitles are drawn at all.
+	 */
+	TextStyle rowSubtitleStyle;
+	TextStyle rowSecondarySubtitleStyle;
+
+	/*
 	 * Names of the document style presets this section follows, or empty to use the
 	 * section's own `style`/`secondaryStyle`/`bridgeStyle`. A name that no longer resolves falls
 	 * back to the section's own style as well, so deleting a preset degrades rather than breaks.
@@ -695,6 +880,8 @@ struct Section {
 	QString stylePresetName;
 	QString secondaryStylePresetName;
 	QString bridgeStylePresetName;
+	QString rowSubtitleStylePresetName;
+	QString rowSecondarySubtitleStylePresetName;
 
 	/* Vertical padding above and below the section's content, in pixels. */
 	int paddingTop = 16;
@@ -717,6 +904,59 @@ struct Section {
 	HAlign sectionAlign = HAlign::Center;
 	/* Spacer sections only: how tall the blank run is, in pixels. */
 	int spacerHeight = 120;
+
+	/*
+	 * Sticky Ending Block sections only.
+	 *
+	 * The block is laid into the roll like any other section and scrolls up with it. When its
+	 * slot reaches the anchor it detaches and stays there while the rest of the roll goes on
+	 * past behind it -- which is why the renderer leaves a hole where it would have been and
+	 * hands the block out as a picture of its own, the same bargain an animated logo strikes.
+	 *
+	 * `children` is what it holds. Any section type may go inside except another sticky block:
+	 * pinning something to something already pinned is a second kind of position with a second
+	 * set of rules, and one level is what the feature is for. The loader drops any that turn up,
+	 * so a hand-written document cannot smuggle one in either.
+	 *
+	 * Held as std::vector rather than QVector because this is a member of the very type it holds:
+	 * the standard says a vector may be declared over an incomplete type, and Qt's containers
+	 * make no such promise.
+	 */
+	std::vector<Section> children;
+
+	/* Which point of the block is pinned, and where down the canvas that point lands. */
+	StickyAnchor stickyAnchor = StickyAnchor::Center;
+	/*
+	 * How far down the canvas the anchor sits, 0.0 at the top edge and 1.0 at the bottom. A
+	 * share of the height rather than a pixel offset, so a roll designed at 1080 still pins
+	 * where it was meant to when the canvas is resized under it.
+	 */
+	double stickyCanvasPosition = 0.5;
+	/* A nudge on the pinned position, in pixels. Positive moves the block down. */
+	double stickyOffset = 0.0;
+
+	/* How long the block holds once it has pinned, in seconds. */
+	double stickyHold = 5.0;
+	/*
+	 * Hold until something else stops the roll -- a hotkey, a scene change -- rather than for a
+	 * measured time. A block that never lets go can never end the roll either, so the designer
+	 * says as much next to the release setting rather than leaving it to be discovered on air.
+	 */
+	bool stickyHoldForever = false;
+
+	StickyRelease stickyRelease = StickyRelease::EndAtHold;
+
+	/*
+	 * A panel drawn behind the block while it is pinned, so the roll running past underneath
+	 * does not read through its lettering.
+	 *
+	 * Off by default: a closing card set over the last of the credits is a perfectly good look,
+	 * and a backdrop that appeared without being asked for would be the plugin making that
+	 * decision. `stickyBackdropPadding` grows it past the block's own bounds on every side.
+	 */
+	bool stickyBackdrop = false;
+	QColor stickyBackdropColor = QColor(0, 0, 0, 180);
+	double stickyBackdropPadding = 24.0;
 
 	bool visible = true;
 
@@ -789,6 +1029,14 @@ struct Document {
 	 */
 	const TextStyle &effectiveStyle(const Section &section) const;
 	const TextStyle &effectiveSecondaryStyle(const Section &section) const;
+
+	/*
+	 * The styles the two subtitles of a bridged row are drawn with, once their preset bindings
+	 * are resolved. Like every other effective-style accessor, a name that no longer resolves
+	 * falls back to the section's own copy rather than failing.
+	 */
+	const TextStyle &effectiveRowSubtitleStyle(const Section &section) const;
+	const TextStyle &effectiveRowSecondarySubtitleStyle(const Section &section) const;
 
 	/*
 	 * The style a section's bridge is drawn with, once its own preset binding is resolved.

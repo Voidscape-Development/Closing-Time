@@ -45,7 +45,12 @@ class CsvImportDialog : public QDialog {
 	Q_OBJECT
 
 public:
-	explicit CsvImportDialog(SectionType targetType, QWidget *parent = nullptr);
+	/*
+	 * `rowSubtitles` is the Bridged section's own switch, which is what decides whether a row
+	 * has two texts or four. It is passed rather than derived from the type because it is a
+	 * property of the section being imported into, not of its type.
+	 */
+	explicit CsvImportDialog(SectionType targetType, bool rowSubtitles = false, QWidget *parent = nullptr);
 
 	/* Valid once the dialog has been accepted. */
 	QVector<Entry> entries() const { return imported; }
@@ -53,7 +58,7 @@ public:
 
 private:
 	/* A field of Entry that a CSV column can be mapped onto. */
-	enum class Field { Ignore, Text, SecondaryText, LogoPath, LogoHeight };
+	enum class Field { Ignore, Text, SecondaryText, Subtitle, SecondarySubtitle, LogoPath, LogoHeight };
 
 	void browse();
 	void reloadFile();
@@ -69,6 +74,7 @@ private:
 	QString columnName(int column) const;
 
 	SectionType targetType;
+	bool rowSubtitles = false;
 
 	QLineEdit *pathEdit = nullptr;
 	QPushButton *browseButton = nullptr;

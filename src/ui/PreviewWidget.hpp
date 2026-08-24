@@ -89,6 +89,11 @@ private:
 
 	void paintLayoutBoxes(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
 	/*
+	 * Draws the sticky blocks into the slots the strip left for them, so the preview shows the
+	 * roll as it is written rather than as it will be pinned.
+	 */
+	void paintStickyBlocks(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
+	/*
 	 * Draws the animated logos into the holes the strip left for them. Always called, playing or
 	 * not: a hole with nothing drawn into it is a missing logo, not a paused one.
 	 */

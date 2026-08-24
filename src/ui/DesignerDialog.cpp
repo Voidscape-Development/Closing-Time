@@ -386,9 +386,19 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 		connect(action, &QAction::triggered, this, [this, type] {
 			commitCurrentSection();
 			beginUndoStep();
-			const int insertAt = currentIndex >= 0 ? currentIndex + 1 : document.sections.size();
-			document.sections.insert(insertAt, Section::makeDefault(type));
-			refreshSectionList(insertAt);
+
+			/*
+			 * Next to whatever is selected, in the same container: a section added while a
+			 * child of a sticky block is selected joins that block, which is the only
+			 * reading of "add one here" that does not surprise anyone.
+			 */
+			const SectionPath at = currentPath.isValid()
+						       ? SectionPath{currentPath.parent, currentPath.index + 1}
+						       : SectionPath{-1, static_cast<int>(document.sections.size())};
+
+			const SectionPath added = insertSection(at, Section::makeDefault(type));
+			refreshSectionList(-1);
+			refreshSectionList(rowOf(added));
 			schedulePreviewRefresh();
 		});
 	}
@@ -694,26 +704,139 @@ void DesignerDialog::writeToSource()
 	obs_source_update(source, updated);
 }
 
+Section *DesignerDialog::sectionAt(const SectionPath &path)
+{
+	return const_cast<Section *>(std::as_const(*this).sectionAt(path));
+}
+
+const Section *DesignerDialog::sectionAt(const SectionPath &path) const
+{
+	if (path.index < 0)
+		return nullptr;
+
+	if (path.parent < 0)
+		return path.index < document.sections.size() ? &document.sections.at(path.index) : nullptr;
+
+	if (path.parent >= document.sections.size())
+		return nullptr;
+
+	const std::vector<Section> &children = document.sections.at(path.parent).children;
+	return static_cast<size_t>(path.index) < children.size() ? &children[static_cast<size_t>(path.index)]
+								 : nullptr;
+}
+
+QVector<DesignerDialog::SectionPath> DesignerDialog::pathsInOrder() const
+{
+	QVector<SectionPath> paths;
+	paths.reserve(document.sections.size());
+
+	for (int index = 0; index < document.sections.size(); ++index) {
+		paths.append(SectionPath{-1, index});
+
+		const std::vector<Section> &children = document.sections.at(index).children;
+		for (int child = 0; child < static_cast<int>(children.size()); ++child)
+			paths.append(SectionPath{index, child});
+	}
+
+	return paths;
+}
+
+int DesignerDialog::rowOf(const SectionPath &path) const
+{
+	for (int row = 0; row < rowPaths.size(); ++row) {
+		if (rowPaths.at(row).parent == path.parent && rowPaths.at(row).index == path.index)
+			return row;
+	}
+	return -1;
+}
+
+DesignerDialog::SectionPath DesignerDialog::insertSection(const SectionPath &path, const Section &section)
+{
+	/*
+	 * A sticky block never goes inside another one -- the model says so and the loader enforces
+	 * it -- so one dropped into a block lands after it instead of vanishing into it.
+	 */
+	if (path.parent >= 0 && section.type == SectionType::StickyBlock) {
+		const int after = std::min(path.parent + 1, static_cast<int>(document.sections.size()));
+		document.sections.insert(after, section);
+		return SectionPath{-1, after};
+	}
+
+	if (path.parent < 0) {
+		const int at = std::clamp(path.index, 0, static_cast<int>(document.sections.size()));
+		document.sections.insert(at, section);
+		return SectionPath{-1, at};
+	}
+
+	if (path.parent >= document.sections.size())
+		return SectionPath{};
+
+	std::vector<Section> &children = document.sections[path.parent].children;
+	const int at = std::clamp(path.index, 0, static_cast<int>(children.size()));
+	children.insert(children.begin() + at, section);
+	return SectionPath{path.parent, at};
+}
+
+void DesignerDialog::removeSectionAt(const SectionPath &path)
+{
+	if (!sectionAt(path))
+		return;
+
+	if (path.parent < 0) {
+		document.sections.removeAt(path.index);
+		return;
+	}
+
+	std::vector<Section> &children = document.sections[path.parent].children;
+	children.erase(children.begin() + path.index);
+}
+
+int DesignerDialog::highlightFor(const SectionPath &path) const
+{
+	/*
+	 * The overlay and the preview know sections by their top-level index -- a child is drawn as
+	 * part of its block's picture and has no box of its own out there -- so selecting a child
+	 * highlights the block it belongs to.
+	 */
+	return path.parent >= 0 ? path.parent : path.index;
+}
+
 void DesignerDialog::refreshSectionList(int selectRow)
 {
 	const QSignalBlocker blocker(sectionList);
 
 	sectionList->clear();
-	for (const Section &section : document.sections) {
-		auto *item = new QListWidgetItem(section.displayLabel(), sectionList);
-		item->setToolTip(QString::fromUtf8(sectionTypeName(section.type)));
-		if (!section.visible)
+	rowPaths = pathsInOrder();
+
+	for (const SectionPath &path : rowPaths) {
+		const Section *section = sectionAt(path);
+		if (!section)
+			continue;
+
+		/*
+		 * Children are indented by their label rather than by a delegate: a list is the right
+		 * widget for a roll that is a run of sections with one shallow exception in it, and a
+		 * tree would trade the drag-and-drop reordering that works for one that has to be
+		 * taught which drops mean what.
+		 */
+		const QString label = path.parent >= 0 ? QStringLiteral("      ") + section->displayLabel()
+						       : section->displayLabel();
+
+		auto *item = new QListWidgetItem(label, sectionList);
+		item->setToolTip(QString::fromUtf8(sectionTypeName(section->type)));
+		if (!section->visible)
 			item->setForeground(Qt::gray);
 	}
 
-	const int row = std::clamp(selectRow, -1, static_cast<int>(document.sections.size()) - 1);
+	const int row = std::clamp(selectRow, -1, static_cast<int>(rowPaths.size()) - 1);
 	sectionList->setCurrentRow(row);
-	currentIndex = row;
+	currentRow = row;
+	currentPath = row >= 0 ? rowPaths.at(row) : SectionPath{};
 	/* Set here as well as on selection: this path moves the row with the list's signals blocked. */
-	preview->setHighlightedSection(row);
+	preview->setHighlightedSection(row >= 0 ? highlightFor(currentPath) : -1);
 
-	if (row >= 0)
-		editor->setSection(document.sections.at(row));
+	if (const Section *section = sectionAt(currentPath))
+		editor->setSection(*section);
 
 	editorScroll->setEnabled(row >= 0);
 }
@@ -721,7 +844,7 @@ void DesignerDialog::refreshSectionList(int selectRow)
 DesignerDialog::DocumentSnapshot DesignerDialog::snapshot() const
 {
 	return DocumentSnapshot{document.sections,     document.stylePresets,      document.bundleFonts,
-				document.bundledFonts, document.fontSubstitutions, currentIndex};
+				document.bundledFonts, document.fontSubstitutions, currentRow};
 }
 
 void DesignerDialog::beginUndoStep()
@@ -762,9 +885,11 @@ void DesignerDialog::restore(const DocumentSnapshot &state)
 	document.fontSubstitutions = state.fontSubstitutions;
 
 	/* Cleared first so refreshSectionList cannot write the editor back into a stale row. */
-	currentIndex = -1;
+	currentPath = SectionPath{};
+	currentRow = -1;
 	editor->setPresets(document.stylePresets);
-	refreshSectionList(std::min(state.currentIndex, static_cast<int>(document.sections.size()) - 1));
+	refreshSectionList(-1);
+	refreshSectionList(std::min(state.currentIndex, static_cast<int>(rowPaths.size()) - 1));
 	refreshPreview();
 }
 
@@ -839,20 +964,30 @@ void DesignerDialog::onSelectionChanged()
 	editBurstTimer->stop();
 
 	const int row = sectionList->currentRow();
-	currentIndex = row;
+	currentRow = row;
+	currentPath = row >= 0 && row < rowPaths.size() ? rowPaths.at(row) : SectionPath{};
 	editorScroll->setEnabled(row >= 0);
-	preview->setHighlightedSection(row);
+	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
 
-	if (row >= 0 && row < document.sections.size())
-		editor->setSection(document.sections.at(row));
+	if (const Section *section = sectionAt(currentPath))
+		editor->setSection(*section);
 }
 
 void DesignerDialog::commitCurrentSection()
 {
-	if (currentIndex < 0 || currentIndex >= document.sections.size())
+	Section *section = sectionAt(currentPath);
+	if (!section)
 		return;
 
-	document.sections[currentIndex] = editor->section();
+	/*
+	 * The editor knows nothing about children -- a sticky block's contents are edited as their
+	 * own rows -- so what it hands back carries none, and the block's own are put back over the
+	 * top of it. Writing the editor's copy through unchanged would empty the block on the first
+	 * keystroke made anywhere on its form.
+	 */
+	std::vector<Section> children = std::move(section->children);
+	*section = editor->section();
+	section->children = std::move(children);
 }
 
 void DesignerDialog::onSectionEdited()
@@ -860,12 +995,13 @@ void DesignerDialog::onSectionEdited()
 	beginEditUndoStep();
 	commitCurrentSection();
 
-	if (currentIndex >= 0 && currentIndex < sectionList->count()) {
+	const Section *section = sectionAt(currentPath);
+	if (section && currentRow >= 0 && currentRow < sectionList->count()) {
 		const QSignalBlocker blocker(sectionList);
-		const Section &section = document.sections.at(currentIndex);
-		QListWidgetItem *item = sectionList->item(currentIndex);
-		item->setText(section.displayLabel());
-		item->setForeground(section.visible ? QBrush() : QBrush(Qt::gray));
+		QListWidgetItem *item = sectionList->item(currentRow);
+		item->setText(currentPath.parent >= 0 ? QStringLiteral("      ") + section->displayLabel()
+						      : section->displayLabel());
+		item->setForeground(section->visible ? QBrush() : QBrush(Qt::gray));
 	}
 
 	schedulePreviewRefresh();
@@ -874,28 +1010,71 @@ void DesignerDialog::onSectionEdited()
 void DesignerDialog::duplicateSection()
 {
 	commitCurrentSection();
-	if (currentIndex < 0 || currentIndex >= document.sections.size())
+
+	const Section *section = sectionAt(currentPath);
+	if (!section)
 		return;
 
 	beginUndoStep();
-	document.sections.insert(currentIndex + 1, document.sections.at(currentIndex));
-	refreshSectionList(currentIndex + 1);
+	/* Copied first: inserting into the container can move the section the pointer names. */
+	const Section copy = *sectionAt(currentPath);
+	const SectionPath added = insertSection(SectionPath{currentPath.parent, currentPath.index + 1}, copy);
+	refreshSectionList(-1);
+	refreshSectionList(rowOf(added));
 	schedulePreviewRefresh();
+}
+
+bool DesignerDialog::confirmRemoveSection(const Section &section)
+{
+	if (!askBeforeRemovingSection)
+		return true;
+
+	QMessageBox box(this);
+	box.setWindowTitle(moduleText("Designer.RemoveSection.Title"));
+	/*
+	 * Named rather than merely counted, because the section list is a column of short labels and
+	 * "the selected one" is exactly what a misclick makes uncertain.
+	 */
+	box.setText(moduleText("Designer.RemoveSection.Confirm").arg(section.displayLabel()));
+	box.setIcon(QMessageBox::Question);
+	box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+	box.setDefaultButton(QMessageBox::Cancel);
+
+	/*
+	 * Remembered for this window rather than for the machine: undo already covers a delete, so
+	 * the box is a courtesy rather than the safety net, and someone who has switched it off
+	 * gets it back by opening the designer again rather than by hunting for a setting.
+	 */
+	auto *remember = new QCheckBox(moduleText("Designer.RemoveSection.DontAsk"), &box);
+	box.setCheckBox(remember);
+
+	const bool confirmed = box.exec() == QMessageBox::Yes;
+	if (confirmed && remember->isChecked())
+		askBeforeRemovingSection = false;
+
+	return confirmed;
 }
 
 void DesignerDialog::removeSection()
 {
-	if (currentIndex < 0 || currentIndex >= document.sections.size())
+	const Section *section = sectionAt(currentPath);
+	if (!section)
+		return;
+
+	if (!confirmRemoveSection(*section))
 		return;
 
 	beginUndoStep();
 
-	const int removed = currentIndex;
+	const int removedRow = currentRow;
 	/* Drop the stale selection first so the editor cannot write back into the gap. */
-	currentIndex = -1;
-	document.sections.removeAt(removed);
+	const SectionPath removed = currentPath;
+	currentPath = SectionPath{};
+	currentRow = -1;
+	removeSectionAt(removed);
 
-	refreshSectionList(std::min(removed, static_cast<int>(document.sections.size()) - 1));
+	refreshSectionList(-1);
+	refreshSectionList(std::min(removedRow, static_cast<int>(rowPaths.size()) - 1));
 	schedulePreviewRefresh();
 }
 
@@ -903,13 +1082,28 @@ void DesignerDialog::moveSection(int delta)
 {
 	commitCurrentSection();
 
-	const int target = currentIndex + delta;
-	if (currentIndex < 0 || target < 0 || target >= document.sections.size())
+	/*
+	 * Within the section's own container. The buttons are for ordering a run, and a section that
+	 * hopped into or out of a sticky block on its way up the list would be doing something the
+	 * arrow it was clicked on never said it would; dragging is what moves a section between
+	 * containers, where the drop says plainly where it landed.
+	 */
+	const SectionPath target{currentPath.parent, currentPath.index + delta};
+	if (!sectionAt(currentPath) || !sectionAt(target))
 		return;
 
 	beginUndoStep();
-	document.sections.swapItemsAt(currentIndex, target);
-	refreshSectionList(target);
+
+	if (currentPath.parent < 0) {
+		document.sections.swapItemsAt(currentPath.index, target.index);
+	} else {
+		std::vector<Section> &children = document.sections[currentPath.parent].children;
+		std::swap(children[static_cast<size_t>(currentPath.index)],
+			  children[static_cast<size_t>(target.index)]);
+	}
+
+	refreshSectionList(-1);
+	refreshSectionList(rowOf(target));
 	schedulePreviewRefresh();
 }
 
@@ -917,13 +1111,47 @@ void DesignerDialog::moveSectionTo(int from, int to)
 {
 	commitCurrentSection();
 
-	const int count = document.sections.size();
+	const int count = rowPaths.size();
 	if (from < 0 || from >= count || to < 0 || to >= count || from == to)
 		return;
 
+	const SectionPath fromPath = rowPaths.at(from);
+	const Section *moved = sectionAt(fromPath);
+	if (!moved)
+		return;
+
+	const Section section = *moved;
+
 	beginUndoStep();
-	document.sections.move(from, to);
-	refreshSectionList(to);
+	removeSectionAt(fromPath);
+
+	/*
+	 * Where it lands is decided by the row it now follows, which is the rule the list is already
+	 * showing: drop something under a sticky block, or under one of that block's own rows, and it
+	 * joins the block; drop it under anything else and it is top-level. Reading the drop off what
+	 * precedes it is what lets one drag both put a section into a block and take it back out,
+	 * without a second gesture to learn.
+	 */
+	const QVector<SectionPath> after = pathsInOrder();
+	const int predecessorRow = std::min(to, static_cast<int>(after.size())) - 1;
+
+	SectionPath at{-1, 0};
+	if (predecessorRow >= 0 && predecessorRow < after.size()) {
+		const SectionPath &before = after.at(predecessorRow);
+		const Section *precedes = sectionAt(before);
+
+		if (before.parent >= 0) {
+			at = SectionPath{before.parent, before.index + 1};
+		} else if (precedes && precedes->type == SectionType::StickyBlock) {
+			at = SectionPath{before.index, 0};
+		} else {
+			at = SectionPath{-1, before.index + 1};
+		}
+	}
+
+	const SectionPath landed = insertSection(at, section);
+	refreshSectionList(-1);
+	refreshSectionList(rowOf(landed));
 	schedulePreviewRefresh();
 }
 
@@ -1035,7 +1263,8 @@ void DesignerDialog::importJson()
 	/* Only the content is taken; canvas and playback settings stay as configured here. */
 	document.sections = loaded.sections;
 	document.stylePresets = loaded.stylePresets;
-	currentIndex = -1;
+	currentPath = SectionPath{};
+	currentRow = -1;
 	editor->setPresets(document.stylePresets);
 	refreshSectionList(document.sections.isEmpty() ? -1 : 0);
 	refreshPreview();
@@ -1103,7 +1332,7 @@ void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, 
 
 	preview->setStrip(strip, rendered.width, rendered.height, rendered.background);
 	preview->setLayoutBoxes(boxes);
-	preview->setHighlightedSection(currentIndex);
+	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
 
 	const double travel = rendered.height + strip.height;
 	const double seconds = rendered.scrollSpeed > 0.0 ? travel / rendered.scrollSpeed : 0.0;
