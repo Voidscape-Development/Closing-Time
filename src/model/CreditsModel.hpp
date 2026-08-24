@@ -99,6 +99,38 @@ bool sectionUsesSubtitles(SectionType type);
  */
 bool sectionUsesSecondaryText(SectionType type);
 
+/* What a list holds, which with a column count is the whole of what tells the six list types apart. */
+enum class SectionListContent { Text, Pairs, Logos };
+
+/*
+ * A section type taken apart into the handful of plain answers it stands for.
+ *
+ * The nineteen shapes of heading and list are not nineteen different things: they are two
+ * headings, a list and a bridged row, crossed with whether a subtitle is stacked under it, whether
+ * a logo sits beside it, what a list holds, and how many columns it runs over. A picker that
+ * offers all of them at once asks one hard question where this asks three easy ones.
+ *
+ * It lives here rather than in the designer because it is a property of the type table -- the
+ * *editor's* decision is which base types to offer -- and because a mapping that has to be exactly
+ * reversible is worth a test that can be written without a window on screen.
+ */
+struct SectionTypeSwitches {
+	SectionType base = SectionType::Title;
+	/* Headings only. */
+	bool subtitle = false;
+	bool logo = false;
+	bool logoOnly = false;
+	/* Lists only. */
+	SectionListContent content = SectionListContent::Text;
+	bool multiColumn = false;
+};
+
+/* The base type and the switches a type stands for. */
+SectionTypeSwitches decomposeSectionType(SectionType type);
+
+/* And back again: `composeSectionType(decomposeSectionType(t)) == t` for every type. */
+SectionType composeSectionType(const SectionTypeSwitches &switches);
+
 /*
  * Which part of a sticky block is pinned, and to what.
  *

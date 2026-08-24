@@ -43,6 +43,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <functional>
+#include <initializer_list>
 #include <utility>
 
 #include "render/AnimatedLogo.hpp"
@@ -200,6 +201,53 @@ enum PieceColumn {
 /* Width of the centre table's two narrow columns, neither of which holds a long word. */
 constexpr int kPieceKindColumnWidth = 110;
 constexpr int kPieceSizeColumnWidth = 70;
+
+/*
+ * The types the picker offers, from which the rest are composed by the switches beside it.
+ *
+ * Deliberately a list here rather than a flag on the type table: which types a *picker* offers is
+ * a decision about this editor, where taking a type apart into switches is a property of the type
+ * table itself -- see decomposeSectionType. Everything the twenty types can express is still
+ * reachable, so nothing has been taken away by asking three easy questions instead of one hard one.
+ */
+const QVector<SectionType> &baseSectionTypes()
+{
+	static const QVector<SectionType> types = {
+		SectionType::Title,   SectionType::Header,         SectionType::TextList, SectionType::Bridged,
+		SectionType::Spacer,  SectionType::SectionDivider, SectionType::StickyBlock,
+	};
+	return types;
+}
+
+/*
+ * What the picker calls a base type.
+ *
+ * Ordinarily the type's own name, but a base stands for every type composed from it, and one of
+ * them is named after only the first: "Text List" is a poor name for the entry that also produces
+ * a list of logos. A locale string per base overrides it where that matters.
+ */
+QString baseTypeLabel(SectionType type)
+{
+	const QString key = QStringLiteral("Designer.BaseType.") + QString::fromLatin1(sectionTypeId(type));
+	const QString text = QString::fromUtf8(obs_module_text(key.toUtf8().constData()));
+
+	return text == key ? QString::fromUtf8(sectionTypeName(type)) : text;
+}
+
+/* True when the base type is one of the two headings, which are the ones the switches apply to. */
+bool isHeadingBase(SectionType base)
+{
+	return base == SectionType::Title || base == SectionType::Header;
+}
+
+/* The one-line description of a type, or nothing when the locale carries none. */
+QString sectionTypeHelp(SectionType type)
+{
+	const QString key = QStringLiteral("Designer.TypeHelp.") + QString::fromLatin1(sectionTypeId(type));
+	const QString text = QString::fromUtf8(obs_module_text(key.toUtf8().constData()));
+
+	return text == key ? QString() : text;
+}
 
 void addAlignmentOptions(QComboBox *box)
 {
@@ -623,25 +671,72 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		emitChanged();
 	};
 
+	/*
+	 * Seven base types and a few switches rather than twenty entries in one list. The twenty are
+	 * still what the document holds -- see composedType -- but "a title, with a subtitle, with a
+	 * logo" is three plain answers where picking "Title w/ Subtitle & Logo" out of a list of ten
+	 * headings is one hard question.
+	 */
 	typeBox = new QComboBox(this);
-	for (SectionType type : allSectionTypes())
-		typeBox->addItem(QString::fromUtf8(sectionTypeName(type)), static_cast<int>(type));
-	form->addRow(moduleText("Designer.SectionType"), typeBox);
+	for (SectionType type : baseSectionTypes())
+		typeBox->addItem(baseTypeLabel(type), static_cast<int>(type));
+	addRow(moduleText("Designer.SectionType"), typeBox);
+
+	typeHelp = new QLabel(this);
+	typeHelp->setWordWrap(true);
+	typeHelp->setEnabled(false);
+	addRow(QString(), typeHelp);
+
+	typeSubtitle = new QCheckBox(moduleText("Designer.TypeSubtitle"), this);
+	typeSubtitle->setToolTip(moduleText("Designer.TypeSubtitle.Tip"));
+	addRow(QString(), typeSubtitle);
+
+	typeLogo = new QCheckBox(moduleText("Designer.TypeLogo"), this);
+	typeLogo->setToolTip(moduleText("Designer.TypeLogo.Tip"));
+	addRow(QString(), typeLogo);
+
+	typeLogoOnly = new QCheckBox(moduleText("Designer.TypeLogoOnly"), this);
+	typeLogoOnly->setToolTip(moduleText("Designer.TypeLogoOnly.Tip"));
+	addRow(QString(), typeLogoOnly);
+
+	typeListContent = new QComboBox(this);
+	typeListContent->addItem(moduleText("Designer.ListContent.Text"),
+				 static_cast<int>(SectionListContent::Text));
+	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"),
+				 static_cast<int>(SectionListContent::Pairs));
+	typeListContent->addItem(moduleText("Designer.ListContent.Logos"),
+				 static_cast<int>(SectionListContent::Logos));
+	addRow(moduleText("Designer.ListContent"), typeListContent);
 
 	labelEdit = new QLineEdit(this);
 	labelEdit->setPlaceholderText(moduleText("Designer.LabelPlaceholder"));
-	form->addRow(moduleText("Designer.Label"), labelEdit);
+	addRow(moduleText("Designer.Label"), labelEdit);
 
 	visibleBox = new QCheckBox(moduleText("Designer.Visible"), this);
-	form->addRow(QString(), visibleBox);
+	addRow(QString(), visibleBox);
+
+	showAdvanced = new QCheckBox(moduleText("Designer.ShowAdvanced"), this);
+	showAdvanced->setToolTip(moduleText("Designer.ShowAdvanced.Tip"));
+	addRow(QString(), showAdvanced);
+
+	/*
+	 * From here the rows go into named groups that fold away. The order is the order the work is
+	 * done in: what the section says, then how this kind of section is put together, then where
+	 * it sits on the canvas -- with the styles and the tables under them in groups of their own.
+	 */
+	contentGroup = new CollapsibleGroup(moduleText("Designer.Group.Content"), this);
+	form = new QFormLayout();
+	contentForm = form;
+	contentGroup->addLayout(form);
+	outer->addWidget(contentGroup);
 
 	textEdit = new QPlainTextEdit(this);
 	textEdit->setMaximumHeight(80);
-	form->addRow(moduleText("Designer.Text"), textEdit);
+	addRow(moduleText("Designer.Text"), textEdit);
 
 	subtitleEdit = new QPlainTextEdit(this);
 	subtitleEdit->setMaximumHeight(80);
-	form->addRow(moduleText("Designer.Subtitle"), subtitleEdit);
+	addRow(moduleText("Designer.Subtitle"), subtitleEdit);
 
 	auto *logoRow = new QWidget(this);
 	auto *logoLayout = new QHBoxLayout(logoRow);
@@ -651,12 +746,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	logoBrowse->setText(QStringLiteral("..."));
 	logoLayout->addWidget(logoPath);
 	logoLayout->addWidget(logoBrowse);
-	form->addRow(moduleText("Designer.Logo"), logoRow);
+	addRow(moduleText("Designer.Logo"), logoRow);
 
 	logoHeight = new QSpinBox(this);
 	logoHeight->setRange(1, 4096);
 	logoHeight->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.LogoHeight"), logoHeight);
+	addRow(moduleText("Designer.LogoHeight"), logoHeight);
 
 	/*
 	 * Playback, on one row: three settings that are only ever read together, and that appear at
@@ -680,35 +775,47 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	playbackLayout->addWidget(logoStartOnEnter);
 	playbackLayout->addWidget(logoSpeed);
 	playbackLayout->addStretch();
-	form->addRow(moduleText("Designer.LogoPlayback"), playbackRow);
+	addRow(moduleText("Designer.LogoPlayback"), playbackRow);
 
 	logoAnimatedShadow = new QCheckBox(moduleText("Designer.LogoAnimatedShadow"), this);
 	logoAnimatedShadow->setToolTip(moduleText("Designer.LogoAnimatedShadow.Tip"));
-	form->addRow(QString(), logoAnimatedShadow);
+	addRow(QString(), logoAnimatedShadow);
+
+	/*
+	 * From here on the rows describe how this kind of section is put together rather than what
+	 * it says: where the logo sits against the words, what the bridge is made of, what a divider
+	 * is composed from, how a block pins. The group is retitled after the selected type, since
+	 * "Bridge settings" and "Divider settings" are never on screen at the same time.
+	 */
+	typeSettingsGroup = new CollapsibleGroup(moduleText("Designer.Group.TypeSettings"), this);
+	form = new QFormLayout();
+	typeSettingsForm = form;
+	typeSettingsGroup->addLayout(form);
+	outer->addWidget(typeSettingsGroup);
 
 	logoPlacement = new QComboBox(this);
 	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Hug"), static_cast<int>(LogoPlacement::Hug));
 	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Edge"), static_cast<int>(LogoPlacement::Edge));
 	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Bridged"), static_cast<int>(LogoPlacement::Bridged));
-	form->addRow(moduleText("Designer.LogoPlacement"), logoPlacement);
+	addRow(moduleText("Designer.LogoPlacement"), logoPlacement);
 
 	logoSide = new QComboBox(this);
 	logoSide->addItem(moduleText("Designer.LogoSide.Left"), static_cast<int>(LogoSide::Left));
 	logoSide->addItem(moduleText("Designer.LogoSide.Right"), static_cast<int>(LogoSide::Right));
-	form->addRow(moduleText("Designer.LogoSide"), logoSide);
+	addRow(moduleText("Designer.LogoSide"), logoSide);
 
 	logoGap = new QSpinBox(this);
 	logoGap->setRange(0, 2048);
 	logoGap->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.LogoGap"), logoGap);
+	addRow(moduleText("Designer.LogoGap"), logoGap);
 
 	bridgeType = new QComboBox(this);
 	for (BridgeType type : allBridgeTypes())
 		bridgeType->addItem(bridgeTypeText(type), static_cast<int>(type));
-	form->addRow(moduleText("Designer.BridgeType"), bridgeType);
+	addRow(moduleText("Designer.BridgeType"), bridgeType);
 
 	bridgeEdit = new QLineEdit(this);
-	form->addRow(moduleText("Designer.Bridge"), bridgeEdit);
+	addRow(moduleText("Designer.Bridge"), bridgeEdit);
 
 	auto *bridgeSvgRow = new QWidget(this);
 	auto *bridgeSvgLayout = new QHBoxLayout(bridgeSvgRow);
@@ -718,62 +825,62 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	bridgeSvgBrowse->setText(QStringLiteral("..."));
 	bridgeSvgLayout->addWidget(bridgeSvgPath);
 	bridgeSvgLayout->addWidget(bridgeSvgBrowse);
-	form->addRow(moduleText("Designer.BridgeSvg"), bridgeSvgRow);
+	addRow(moduleText("Designer.BridgeSvg"), bridgeSvgRow);
 
 	bridgeThickness = new QSpinBox(this);
 	bridgeThickness->setRange(1, 1024);
 	bridgeThickness->setSuffix(QStringLiteral(" px"));
 	bridgeThickness->setToolTip(moduleText("Designer.BridgeThickness.Tip"));
-	form->addRow(moduleText("Designer.BridgeThickness"), bridgeThickness);
+	addRow(moduleText("Designer.BridgeThickness"), bridgeThickness);
 
 	bridgeOffset = new QSpinBox(this);
 	bridgeOffset->setRange(-1024, 1024);
 	bridgeOffset->setSuffix(QStringLiteral(" px"));
 	bridgeOffset->setToolTip(moduleText("Designer.BridgeOffset.Tip"));
-	form->addRow(moduleText("Designer.BridgeOffset"), bridgeOffset);
+	addRow(moduleText("Designer.BridgeOffset"), bridgeOffset);
 
 	bridgeGap = new QSpinBox(this);
 	bridgeGap->setRange(0, 2048);
 	bridgeGap->setSuffix(QStringLiteral(" px"));
 	bridgeGap->setToolTip(moduleText("Designer.BridgeGap.Tip"));
-	form->addRow(moduleText("Designer.BridgeGap"), bridgeGap);
+	addRow(moduleText("Designer.BridgeGap"), bridgeGap);
 
 	bridgeMinGap = new QSpinBox(this);
 	bridgeMinGap->setRange(0, 2048);
 	bridgeMinGap->setSuffix(QStringLiteral(" px"));
 	bridgeMinGap->setToolTip(moduleText("Designer.BridgeMinGap.Tip"));
-	form->addRow(moduleText("Designer.BridgeMinGap"), bridgeMinGap);
+	addRow(moduleText("Designer.BridgeMinGap"), bridgeMinGap);
 
 	bridgeTint = new QCheckBox(moduleText("Designer.BridgeTint"), this);
-	form->addRow(QString(), bridgeTint);
+	addRow(QString(), bridgeTint);
 
 	bridgeFill = new QComboBox(this);
 	bridgeFill->addItem(moduleText("Designer.BridgeFill.Fixed"), static_cast<int>(BridgeFill::Fixed));
 	bridgeFill->addItem(moduleText("Designer.BridgeFill.Repeat"), static_cast<int>(BridgeFill::Repeat));
 	bridgeFill->addItem(moduleText("Designer.BridgeFill.Stretch"), static_cast<int>(BridgeFill::Stretch));
-	form->addRow(moduleText("Designer.BridgeFill"), bridgeFill);
+	addRow(moduleText("Designer.BridgeFill"), bridgeFill);
 
 	bridgeSizing = new QComboBox(this);
 	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Split"), static_cast<int>(BridgeSizing::Split));
 	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Natural"), static_cast<int>(BridgeSizing::Natural));
-	form->addRow(moduleText("Designer.BridgeSizing"), bridgeSizing);
+	addRow(moduleText("Designer.BridgeSizing"), bridgeSizing);
 
 	bridgeSplit = new QSpinBox(this);
 	bridgeSplit->setRange(0, 100);
 	bridgeSplit->setSuffix(QStringLiteral(" %"));
 	bridgeSplit->setToolTip(moduleText("Designer.BridgeSplit.Tip"));
-	form->addRow(moduleText("Designer.BridgeSplit"), bridgeSplit);
+	addRow(moduleText("Designer.BridgeSplit"), bridgeSplit);
 
 	bridgeRowAlign = new QComboBox(this);
 	addAlignmentOptions(bridgeRowAlign);
-	form->addRow(moduleText("Designer.BridgeRowAlign"), bridgeRowAlign);
+	addRow(moduleText("Designer.BridgeRowAlign"), bridgeRowAlign);
 
 	bridgeSpanEmpty = new QCheckBox(moduleText("Designer.BridgeSpanEmpty"), this);
-	form->addRow(QString(), bridgeSpanEmpty);
+	addRow(QString(), bridgeSpanEmpty);
 
 	rowSubtitles = new QCheckBox(moduleText("Designer.RowSubtitles"), this);
 	rowSubtitles->setToolTip(moduleText("Designer.RowSubtitles.Tip"));
-	form->addRow(QString(), rowSubtitles);
+	addRow(QString(), rowSubtitles);
 
 	/*
 	 * The divider's three artwork slots. Each picker is filled from the shape library filtered
@@ -785,7 +892,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		*box = new QComboBox(this);
 		for (DividerShape shape : dividerShapesForRole(role))
 			(*box)->addItem(dividerShapeText(shape), static_cast<int>(shape));
-		form->addRow(moduleText(boxKey), *box);
+		addRow(moduleText(boxKey), *box);
 
 		auto *row = new QWidget(this);
 		auto *layout = new QHBoxLayout(row);
@@ -795,7 +902,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		browse->setText(QStringLiteral("..."));
 		layout->addWidget(*path);
 		layout->addWidget(browse);
-		form->addRow(moduleText(pathKey), row);
+		addRow(moduleText(pathKey), row);
 
 		QLineEdit *target = *path;
 		connect(browse, &QToolButton::clicked, this, [this, target] { browseForDividerSvg(target); });
@@ -803,7 +910,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	dividerMirrorEnds = new QCheckBox(moduleText("Designer.DividerMirrorEnds"), this);
 	dividerMirrorEnds->setToolTip(moduleText("Designer.DividerMirrorEnds.Tip"));
-	form->addRow(QString(), dividerMirrorEnds);
+	addRow(QString(), dividerMirrorEnds);
 
 	addShapeRow(&dividerArm, &dividerArmSvgPath, DividerRoleArm, "Designer.DividerArm", "Designer.DividerArmSvg");
 
@@ -811,68 +918,68 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	dividerThickness->setRange(1, 1024);
 	dividerThickness->setSuffix(QStringLiteral(" px"));
 	dividerThickness->setToolTip(moduleText("Designer.DividerThickness.Tip"));
-	form->addRow(moduleText("Designer.DividerThickness"), dividerThickness);
+	addRow(moduleText("Designer.DividerThickness"), dividerThickness);
 
 	dividerGap = new QSpinBox(this);
 	dividerGap->setRange(0, 2048);
 	dividerGap->setSuffix(QStringLiteral(" px"));
 	dividerGap->setToolTip(moduleText("Designer.DividerGap.Tip"));
-	form->addRow(moduleText("Designer.DividerGap"), dividerGap);
+	addRow(moduleText("Designer.DividerGap"), dividerGap);
 
 	dividerPieceGap = new QSpinBox(this);
 	dividerPieceGap->setRange(0, 2048);
 	dividerPieceGap->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.DividerPieceGap"), dividerPieceGap);
+	addRow(moduleText("Designer.DividerPieceGap"), dividerPieceGap);
 
 	dividerRules = new QSpinBox(this);
 	dividerRules->setRange(1, 16);
 	dividerRules->setToolTip(moduleText("Designer.DividerRules.Tip"));
-	form->addRow(moduleText("Designer.DividerRules"), dividerRules);
+	addRow(moduleText("Designer.DividerRules"), dividerRules);
 
 	dividerRuleGap = new QSpinBox(this);
 	dividerRuleGap->setRange(0, 2048);
 	dividerRuleGap->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.DividerRuleGap"), dividerRuleGap);
+	addRow(moduleText("Designer.DividerRuleGap"), dividerRuleGap);
 
 	dividerRuleInset = new QSpinBox(this);
 	dividerRuleInset->setRange(0, 4096);
 	dividerRuleInset->setSuffix(QStringLiteral(" px"));
 	dividerRuleInset->setToolTip(moduleText("Designer.DividerRuleInset.Tip"));
-	form->addRow(moduleText("Designer.DividerRuleInset"), dividerRuleInset);
+	addRow(moduleText("Designer.DividerRuleInset"), dividerRuleInset);
 
 	dividerTint = new QCheckBox(moduleText("Designer.DividerTint"), this);
-	form->addRow(QString(), dividerTint);
+	addRow(QString(), dividerTint);
 
 	columns = new QSpinBox(this);
 	columns->setRange(1, 12);
-	form->addRow(moduleText("Designer.Columns"), columns);
+	addRow(moduleText("Designer.Columns"), columns);
 
 	columnGap = new QSpinBox(this);
 	columnGap->setRange(0, 2048);
 	columnGap->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.ColumnGap"), columnGap);
+	addRow(moduleText("Designer.ColumnGap"), columnGap);
 
 	fillOrder = new QComboBox(this);
 	fillOrder->addItem(moduleText("Designer.FillDown"), 0);
 	fillOrder->addItem(moduleText("Designer.FillAcross"), 1);
-	form->addRow(moduleText("Designer.FillOrder"), fillOrder);
+	addRow(moduleText("Designer.FillOrder"), fillOrder);
 
 	entryGap = new QSpinBox(this);
 	entryGap->setRange(0, 2048);
 	entryGap->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.EntryGap"), entryGap);
+	addRow(moduleText("Designer.EntryGap"), entryGap);
 
 	subtitleGap = new QSpinBox(this);
 	subtitleGap->setRange(0, 2048);
 	subtitleGap->setSuffix(QStringLiteral(" px"));
 	subtitleGap->setToolTip(moduleText("Designer.SubtitleGap.Tip"));
-	form->addRow(moduleText("Designer.SubtitleGap"), subtitleGap);
+	addRow(moduleText("Designer.SubtitleGap"), subtitleGap);
 
 	subtitleOrder = new QComboBox(this);
 	subtitleOrder->addItem(moduleText("Designer.SubtitleOrder.TitleFirst"), 0);
 	subtitleOrder->addItem(moduleText("Designer.SubtitleOrder.SubtitleFirst"), 1);
 	subtitleOrder->setToolTip(moduleText("Designer.SubtitleOrder.Tip"));
-	form->addRow(moduleText("Designer.SubtitleOrder"), subtitleOrder);
+	addRow(moduleText("Designer.SubtitleOrder"), subtitleOrder);
 
 	/*
 	 * The sticky block's own rows. The pin is a pair of points -- one on the block, one down the
@@ -884,19 +991,19 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	stickyAnchor->addItem(moduleText("Designer.StickyAnchor.Center"), static_cast<int>(StickyAnchor::Center));
 	stickyAnchor->addItem(moduleText("Designer.StickyAnchor.Bottom"), static_cast<int>(StickyAnchor::Bottom));
 	stickyAnchor->setToolTip(moduleText("Designer.StickyAnchor.Tip"));
-	form->addRow(moduleText("Designer.StickyAnchor"), stickyAnchor);
+	addRow(moduleText("Designer.StickyAnchor"), stickyAnchor);
 
 	stickyCanvasPosition = new QSpinBox(this);
 	stickyCanvasPosition->setRange(0, 100);
 	stickyCanvasPosition->setSuffix(QStringLiteral(" %"));
 	stickyCanvasPosition->setToolTip(moduleText("Designer.StickyCanvasPosition.Tip"));
-	form->addRow(moduleText("Designer.StickyCanvasPosition"), stickyCanvasPosition);
+	addRow(moduleText("Designer.StickyCanvasPosition"), stickyCanvasPosition);
 
 	stickyOffset = new QSpinBox(this);
 	stickyOffset->setRange(-4096, 4096);
 	stickyOffset->setSuffix(QStringLiteral(" px"));
 	stickyOffset->setToolTip(moduleText("Designer.StickyOffset.Tip"));
-	form->addRow(moduleText("Designer.StickyOffset"), stickyOffset);
+	addRow(moduleText("Designer.StickyOffset"), stickyOffset);
 
 	stickyHold = new QDoubleSpinBox(this);
 	stickyHold->setRange(0.0, 3600.0);
@@ -904,11 +1011,11 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	stickyHold->setSingleStep(0.5);
 	stickyHold->setSuffix(moduleText("Designer.Seconds"));
 	stickyHold->setToolTip(moduleText("Designer.StickyHold.Tip"));
-	form->addRow(moduleText("Designer.StickyHold"), stickyHold);
+	addRow(moduleText("Designer.StickyHold"), stickyHold);
 
 	stickyHoldForever = new QCheckBox(moduleText("Designer.StickyHoldForever"), this);
 	stickyHoldForever->setToolTip(moduleText("Designer.StickyHoldForever.Tip"));
-	form->addRow(QString(), stickyHoldForever);
+	addRow(QString(), stickyHoldForever);
 
 	stickyRelease = new QComboBox(this);
 	stickyRelease->addItem(moduleText("Designer.StickyRelease.EndAtHold"),
@@ -918,7 +1025,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	stickyRelease->addItem(moduleText("Designer.StickyRelease.ResumeEndAtHold"),
 			       static_cast<int>(StickyRelease::ResumeEndAtHold));
 	stickyRelease->setToolTip(moduleText("Designer.StickyRelease.Tip"));
-	form->addRow(moduleText("Designer.StickyRelease"), stickyRelease);
+	addRow(moduleText("Designer.StickyRelease"), stickyRelease);
 
 	/*
 	 * Said on the form rather than in a tooltip, because a block that holds for ever and is set
@@ -927,52 +1034,59 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 */
 	stickyForeverWarning = new QLabel(moduleText("Designer.StickyHoldForever.Warning"), this);
 	stickyForeverWarning->setWordWrap(true);
-	form->addRow(QString(), stickyForeverWarning);
+	addRow(QString(), stickyForeverWarning);
 
 	stickyBackdrop = new QCheckBox(moduleText("Designer.StickyBackdrop"), this);
 	stickyBackdrop->setToolTip(moduleText("Designer.StickyBackdrop.Tip"));
-	form->addRow(QString(), stickyBackdrop);
+	addRow(QString(), stickyBackdrop);
 
 	stickyBackdropColour = new ColourButton(this);
 	stickyBackdropColour->setDialogTitle(moduleText("Designer.StickyBackdropColor"));
-	form->addRow(moduleText("Designer.StickyBackdropColor"), stickyBackdropColour);
+	addRow(moduleText("Designer.StickyBackdropColor"), stickyBackdropColour);
 
 	stickyBackdropPadding = new QSpinBox(this);
 	stickyBackdropPadding->setRange(0, 2048);
 	stickyBackdropPadding->setSuffix(QStringLiteral(" px"));
 	stickyBackdropPadding->setToolTip(moduleText("Designer.StickyBackdropPadding.Tip"));
-	form->addRow(moduleText("Designer.StickyBackdropPadding"), stickyBackdropPadding);
+	addRow(moduleText("Designer.StickyBackdropPadding"), stickyBackdropPadding);
 
 	spacerHeight = new QSpinBox(this);
 	spacerHeight->setRange(0, 20000);
 	spacerHeight->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.SpacerHeight"), spacerHeight);
+	addRow(moduleText("Designer.SpacerHeight"), spacerHeight);
+
+	/* Where the section sits on the canvas, which is the same set of questions for every type. */
+	placementGroup = new CollapsibleGroup(moduleText("Designer.Group.Placement"), this);
+	form = new QFormLayout();
+	placementForm = form;
+	placementGroup->addLayout(form);
+	outer->addWidget(placementGroup);
 
 	paddingTop = new QSpinBox(this);
 	paddingTop->setRange(0, 20000);
 	paddingTop->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.PaddingTop"), paddingTop);
+	addRow(moduleText("Designer.PaddingTop"), paddingTop);
 
 	paddingBottom = new QSpinBox(this);
 	paddingBottom->setRange(0, 20000);
 	paddingBottom->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.PaddingBottom"), paddingBottom);
+	addRow(moduleText("Designer.PaddingBottom"), paddingBottom);
 
 	marginX = new QSpinBox(this);
 	marginX->setRange(0, 4096);
 	marginX->setSuffix(QStringLiteral(" px"));
-	form->addRow(moduleText("Designer.MarginX"), marginX);
+	addRow(moduleText("Designer.MarginX"), marginX);
 
 	sectionWidth = new QSpinBox(this);
 	sectionWidth->setRange(1, 100);
 	sectionWidth->setSuffix(QStringLiteral(" %"));
 	sectionWidth->setToolTip(moduleText("Designer.SectionWidth.Tip"));
-	form->addRow(moduleText("Designer.SectionWidth"), sectionWidth);
+	addRow(moduleText("Designer.SectionWidth"), sectionWidth);
 
 	sectionAlign = new QComboBox(this);
 	addAlignmentOptions(sectionAlign);
 	sectionAlign->setToolTip(moduleText("Designer.SectionAlign.Tip"));
-	form->addRow(moduleText("Designer.SectionAlign"), sectionAlign);
+	addRow(moduleText("Designer.SectionAlign"), sectionAlign);
 
 	auto *styleGroup = new QGroupBox(moduleText("Designer.TextStyle"), this);
 	auto *styleLayout = new QVBoxLayout(styleGroup);
@@ -1155,14 +1269,38 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	outer->addStretch();
 	trailingStretchIndex = outer->count() - 1;
 
-	connect(typeBox, &QComboBox::currentIndexChanged, this, [this] {
-		if (loading)
-			return;
+	/*
+	 * The settings held back until the reader asks for everything.
+	 *
+	 * Chosen by how often a roll needs them rather than by how hard they are: the side margins
+	 * that a section box says better, the fine spacing of a divider's stack, the ordering of a
+	 * pair. The section box itself stays out in the open -- it is the setting that places a
+	 * section, and hiding it would leave the margin looking like the only way to.
+	 * Every one of them is a thing somebody eventually wants -- which is why the switch shows
+	 * them rather than the editor deciding they do not exist.
+	 */
+	for (QWidget *field : std::initializer_list<QWidget *>{marginX, logoAnimatedShadow, bridgeOffset,
+							      bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
+							      bridgeSizing, dividerPieceGap, dividerRuleGap,
+							      dividerRuleInset, dividerTint, bridgeTint,
+							      subtitleOrder, fillOrder, stickyOffset,
+							      stickyBackdropPadding})
+		markAdvanced(field);
 
-		const auto type = static_cast<SectionType>(typeBox->currentData().toInt());
-		applyTypeVisibility(type);
-		rebuildEntryTable(type, rowSubtitles->isChecked());
-		emitChanged();
+	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
+	connect(typeBox, &QComboBox::currentIndexChanged, this, &SectionEditor::onTypeSwitchChanged);
+	connect(typeListContent, &QComboBox::currentIndexChanged, this, &SectionEditor::onTypeSwitchChanged);
+	for (QCheckBox *box : {typeSubtitle, typeLogo, typeLogoOnly})
+		connect(box, &QCheckBox::toggled, this, &SectionEditor::onTypeSwitchChanged);
+
+	/*
+	 * The column count is part of what a list *is* -- one column or several is the difference
+	 * between two of the document's types -- so it runs the same path the switches do.
+	 */
+	connect(columns, &QSpinBox::valueChanged, this, &SectionEditor::onTypeSwitchChanged);
+
+	connect(showAdvanced, &QCheckBox::toggled, this, [this] {
+		applyTypeVisibility(composedType());
 	});
 
 	connect(labelEdit, &QLineEdit::textChanged, this, notify);
@@ -1197,7 +1335,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		connect(box, &QCheckBox::toggled, this, [this] {
 			if (loading)
 				return;
-			applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+			applyTypeVisibility(composedType());
 			emitChanged();
 		});
 	}
@@ -1210,7 +1348,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		if (loading)
 			return;
 
-		applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+		applyTypeVisibility(composedType());
 		emitChanged();
 	};
 
@@ -1238,7 +1376,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	connect(dividerMirrorEnds, &QCheckBox::toggled, this, revisitVisibility);
 	connect(dividerTint, &QCheckBox::toggled, this, revisitVisibility);
-	connect(columns, &QSpinBox::valueChanged, this, notify);
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(entryGap, &QSpinBox::valueChanged, this, notify);
@@ -1285,11 +1422,9 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		if (loading)
 			return;
 
-		const Section held = section();
-		const QSignalBlocker blocker(entryTable);
-		rebuildEntryTable(held.type, held.rowSubtitles);
-		writeEntriesToTable(held);
-		applyTypeVisibility(held.type);
+		const SectionType type = composedType();
+		applyTypeVisibility(type);
+		relayoutEntryTable(type);
 		emitChanged();
 	});
 	connect(bridgeStyleGroup, &QGroupBox::toggled, this, notify);
@@ -1303,7 +1438,7 @@ void SectionEditor::setSection(const Section &source)
 	loading = true;
 	current = source;
 
-	selectByData(typeBox, static_cast<int>(source.type));
+	showTypeAsSwitches(source.type);
 	labelEdit->setText(source.label);
 	visibleBox->setChecked(source.visible);
 	textEdit->setPlainText(source.text);
@@ -1353,7 +1488,12 @@ void SectionEditor::setSection(const Section &source)
 	dividerRuleGap->setValue(qRound(source.dividerRuleGap));
 	dividerRuleInset->setValue(qRound(source.dividerRuleInset));
 	dividerTint->setChecked(source.dividerTint);
-	columns->setValue(source.columns);
+	/*
+	 * One column or several is the difference between two of the document's types, so the spin
+	 * box shows what the *type* says rather than what the field happens to carry: a list that was
+	 * once three columns wide and is now a plain one reads as one column, not as three.
+	 */
+	columns->setValue(sectionUsesColumns(source.type) ? source.columns : 1);
 	columnGap->setValue(source.columnGap);
 	selectByData(fillOrder, source.fillAcross ? 1 : 0);
 	entryGap->setValue(source.entryGap);
@@ -1409,7 +1549,7 @@ Section SectionEditor::section() const
 {
 	Section result = current;
 
-	result.type = static_cast<SectionType>(typeBox->currentData().toInt());
+	result.type = composedType();
 	result.label = labelEdit->text();
 	result.visible = visibleBox->isChecked();
 	result.text = textEdit->toPlainText();
@@ -1509,8 +1649,153 @@ void SectionEditor::setPresets(const QVector<StylePreset> &newPresets)
 		editor->setPresets(presets, editor->presetName(), editor != presetOrigin);
 }
 
+namespace {
+
+/*
+ * True when any row of a form is still showing.
+ *
+ * Asked of the layout rather than of the widgets in it, because a widget's own `isHidden` answers a
+ * different question during construction -- a child of a window that has not been shown yet reads
+ * as hidden whether or not anything hid it -- and a row nothing has ever set is visible, which is
+ * exactly what the layout says and what a scan of widgets would get wrong.
+ */
+bool formHasVisibleRow(const QFormLayout *form)
+{
+	for (int row = 0; row < form->rowCount(); ++row) {
+		if (form->isRowVisible(row))
+			return true;
+	}
+	return false;
+}
+
+} // namespace
+
+void SectionEditor::addRow(const QString &label, QWidget *field)
+{
+	form->addRow(label, field);
+	rowOwner.insert(field, form);
+}
+
+void SectionEditor::setRowVisible(QWidget *field, bool visible)
+{
+	QFormLayout *owner = rowOwner.value(field);
+	if (!owner)
+		return;
+
+	/*
+	 * A held-back row is hidden on top of whatever the type says, never instead of it: the
+	 * switch decides whether a row *may* show, and the type still decides whether it applies.
+	 */
+	owner->setRowVisible(field, visible && (showAdvanced->isChecked() || !advancedRows.contains(field)));
+}
+
+void SectionEditor::markAdvanced(QWidget *field)
+{
+	advancedRows.insert(field);
+}
+
+SectionType SectionEditor::composedType() const
+{
+	SectionTypeSwitches switches;
+	switches.base = static_cast<SectionType>(typeBox->currentData().toInt());
+	switches.subtitle = typeSubtitle->isChecked();
+	switches.logo = typeLogo->isChecked();
+	switches.logoOnly = typeLogoOnly->isChecked();
+	switches.content = static_cast<SectionListContent>(typeListContent->currentData().toInt());
+	switches.multiColumn = columns->value() > 1;
+
+	return composeSectionType(switches);
+}
+
+void SectionEditor::showTypeAsSwitches(SectionType type)
+{
+	const SectionTypeSwitches switches = decomposeSectionType(type);
+
+	selectByData(typeBox, static_cast<int>(switches.base));
+	typeSubtitle->setChecked(switches.subtitle);
+	typeLogo->setChecked(switches.logo);
+	typeLogoOnly->setChecked(switches.logoOnly);
+	selectByData(typeListContent, static_cast<int>(switches.content));
+}
+
+void SectionEditor::onTypeSwitchChanged()
+{
+	if (loading)
+		return;
+
+	const SectionType type = composedType();
+
+	/*
+	 * A heading is either a logo or words with a logo beside them, so the two switches that say
+	 * which cannot both be on. Turning one off rather than disabling the other keeps the switch
+	 * that was just clicked meaning what it said.
+	 */
+	if (typeLogoOnly->isChecked() && (typeLogo->isChecked() || typeSubtitle->isChecked())) {
+		const QSignalBlocker logoBlocker(typeLogo);
+		const QSignalBlocker subtitleBlocker(typeSubtitle);
+		typeLogo->setChecked(false);
+		typeSubtitle->setChecked(false);
+	}
+
+	applyTypeVisibility(type);
+	relayoutEntryTable(type);
+	emitChanged();
+}
+
+void SectionEditor::relayoutEntryTable(SectionType type)
+{
+	/*
+	 * The table's columns depend on the type, so changing the type has to take the entries out
+	 * through the old columns and put them back through the new ones. Rebuilding without that
+	 * leaves an empty table for the next read to believe, which is a list of credits thrown away
+	 * by a change of type -- the one thing changing a type is documented never to do.
+	 */
+	Section held;
+	held.type = tableType;
+	held.rowSubtitles = rowSubtitles->isChecked();
+	readEntriesFromTable(&held);
+
+	held.type = type;
+	rebuildEntryTable(type, held.rowSubtitles);
+	writeEntriesToTable(held);
+}
+
 void SectionEditor::applyTypeVisibility(SectionType type)
 {
+	/*
+	 * Every held-back row starts from "as visible as the switch allows". Most are then set again
+	 * below by whatever decides they apply to this type; the handful nothing else manages --
+	 * where the section sits on the canvas, which is true of every type -- keep this answer,
+	 * which is the whole of how the switch reaches them.
+	 */
+	for (QWidget *field : advancedRows)
+		setRowVisible(field, true);
+
+	/*
+	 * The picker's own switches first: which of them apply is a property of the base type, and
+	 * the rest of this pass reads the type they add up to.
+	 */
+	const SectionType base = decomposeSectionType(type).base;
+	const bool heading = isHeadingBase(base);
+	const bool list = base == SectionType::TextList;
+
+	setRowVisible(typeSubtitle, heading && !typeLogoOnly->isChecked());
+	setRowVisible(typeLogo, heading && !typeLogoOnly->isChecked());
+	setRowVisible(typeLogoOnly, heading);
+	setRowVisible(typeListContent, list);
+
+	const QString help = sectionTypeHelp(type);
+	typeHelp->setText(help);
+	setRowVisible(typeHelp, !help.isEmpty());
+
+	/*
+	 * The group of type-specific settings is named after the type in it. A group called
+	 * "Settings" says nothing; one called "Divider" says what the reader is looking at, and is
+	 * the only label on screen while the group is folded away.
+	 */
+	typeSettingsGroup->setTitle(
+		moduleText("Designer.Group.TypeSettings").arg(QString::fromUtf8(sectionTypeName(type))));
+
 	const bool hasText = sectionUsesText(type);
 	const bool hasLogos = sectionUsesLogos(type);
 	const bool hasEntries = sectionUsesEntries(type);
@@ -1522,23 +1807,23 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool sectionLogo = hasLogos && !hasEntries;
 	const bool logoBesideText = sectionLogo && hasText;
 
-	form->setRowVisible(textEdit, singleLineText);
+	setRowVisible(textEdit, singleLineText);
 	/*
 	 * A heading's own subtitle. The list types stack one too, but theirs is the entry table's
 	 * second column, so the field belongs to the single-heading shapes alone.
 	 */
-	form->setRowVisible(subtitleEdit, singleLineText && sectionUsesSubtitles(type));
-	form->setRowVisible(logoPath->parentWidget(), sectionLogo);
-	form->setRowVisible(logoHeight, sectionLogo);
+	setRowVisible(subtitleEdit, singleLineText && sectionUsesSubtitles(type));
+	setRowVisible(logoPath->parentWidget(), sectionLogo);
+	setRowVisible(logoHeight, sectionLogo);
 	/*
 	 * Hidden here and shown again by refreshLogoPlayback, which is the one that knows whether the
 	 * artwork moves. Doing it in two steps means every path into this pass -- a type change, a
 	 * section switch, a retyped filename -- ends up asking the same question of the same code.
 	 */
-	form->setRowVisible(logoLoop->parentWidget(), false);
-	form->setRowVisible(logoAnimatedShadow, false);
-	form->setRowVisible(logoSide, logoBesideText);
-	form->setRowVisible(logoGap, logoBesideText);
+	setRowVisible(logoLoop->parentWidget(), false);
+	setRowVisible(logoAnimatedShadow, false);
+	setRowVisible(logoSide, logoBesideText);
+	setRowVisible(logoGap, logoBesideText);
 	const bool bridged = type == SectionType::Bridged;
 	/*
 	 * The fill the row will really be laid out with, not the one the combo happens to hold: an
@@ -1566,30 +1851,30 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	const bool emptyBridge = usesBridge && bridgeTypeIsEmpty(bridgeArt);
 
-	form->setRowVisible(logoPlacement, logoBesideText);
-	form->setRowVisible(bridgeType, usesBridge);
-	form->setRowVisible(bridgeEdit, usesBridge && !drawnArt && !emptyBridge);
-	form->setRowVisible(bridgeSvgPath->parentWidget(), artFromFile);
-	form->setRowVisible(bridgeThickness, drawnArt);
-	form->setRowVisible(bridgeOffset, drawnArt);
-	form->setRowVisible(bridgeGap, drawnArt);
+	setRowVisible(logoPlacement, logoBesideText);
+	setRowVisible(bridgeType, usesBridge);
+	setRowVisible(bridgeEdit, usesBridge && !drawnArt && !emptyBridge);
+	setRowVisible(bridgeSvgPath->parentWidget(), artFromFile);
+	setRowVisible(bridgeThickness, drawnArt);
+	setRowVisible(bridgeOffset, drawnArt);
+	setRowVisible(bridgeGap, drawnArt);
 	/* Only a Bridged section reserves the gap between two columns; a logo row spans what is left. */
-	form->setRowVisible(bridgeMinGap, emptyBridge && bridged);
+	setRowVisible(bridgeMinGap, emptyBridge && bridged);
 	/* The built-in tiles are drawn white to be tinted; only a user's file has colours to keep. */
-	form->setRowVisible(bridgeTint, artFromFile);
-	form->setRowVisible(bridgeFill, usesBridge && !emptyBridge);
+	setRowVisible(bridgeTint, artFromFile);
+	setRowVisible(bridgeFill, usesBridge && !emptyBridge);
 	/* Column sizing and row placement describe two texts, so they stay with that type. */
-	form->setRowVisible(bridgeSizing, bridged);
+	setRowVisible(bridgeSizing, bridged);
 	/* The split is the tab stop; with Natural sizing the text decides where things land. */
-	form->setRowVisible(bridgeSplit, bridged && sizing == BridgeSizing::Split);
+	setRowVisible(bridgeSplit, bridged && sizing == BridgeSizing::Split);
 	/*
 	 * Only a fixed bridge with natural columns can leave a row narrower than the section.
 	 * Every other combination fills the width, so there is nothing left to align.
 	 */
-	form->setRowVisible(bridgeRowAlign, bridged && sizing == BridgeSizing::Natural && fill == BridgeFill::Fixed);
+	setRowVisible(bridgeRowAlign, bridged && sizing == BridgeSizing::Natural && fill == BridgeFill::Fixed);
 	/* A fixed bridge has nothing to run into the space an empty column would free. */
-	form->setRowVisible(bridgeSpanEmpty, bridged && fill != BridgeFill::Fixed);
-	form->setRowVisible(rowSubtitles, bridged);
+	setRowVisible(bridgeSpanEmpty, bridged && fill != BridgeFill::Fixed);
+	setRowVisible(rowSubtitles, bridged);
 
 	/*
 	 * The two subtitle styles show only while the row actually draws subtitles. They are read
@@ -1621,28 +1906,34 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	if (!separateEnds && pieceTabs->currentIndex() == static_cast<int>(PieceSlot::RightEnd))
 		pieceTabs->setCurrentIndex(static_cast<int>(PieceSlot::LeftEnd));
 
-	form->setRowVisible(dividerMirrorEnds, divider);
-	form->setRowVisible(dividerArm, divider);
-	form->setRowVisible(dividerArmSvgPath->parentWidget(), armFromFile);
-	form->setRowVisible(dividerThickness, divider);
-	form->setRowVisible(dividerGap, divider);
-	form->setRowVisible(dividerPieceGap, divider);
-	form->setRowVisible(dividerRules, divider);
+	setRowVisible(dividerMirrorEnds, divider);
+	setRowVisible(dividerArm, divider);
+	setRowVisible(dividerArmSvgPath->parentWidget(), armFromFile);
+	setRowVisible(dividerThickness, divider);
+	setRowVisible(dividerGap, divider);
+	setRowVisible(dividerPieceGap, divider);
+	setRowVisible(dividerRules, divider);
 	/* One rule has nothing to be spaced from and nothing to taper against. */
-	form->setRowVisible(dividerRuleGap, divider && dividerRules->value() > 1);
-	form->setRowVisible(dividerRuleInset, divider && dividerRules->value() > 1);
+	setRowVisible(dividerRuleGap, divider && dividerRules->value() > 1);
+	setRowVisible(dividerRuleInset, divider && dividerRules->value() > 1);
 
 	/*
 	 * The built-in shapes are drawn white to be tinted, so the flag only means anything once
 	 * some slot -- an end, an arm, or a piece of the centre stack -- is pointed at a file.
 	 */
 	const bool dividerFiles = armFromFile || (divider && dividerUsesFile());
-	form->setRowVisible(dividerTint, dividerFiles);
+	setRowVisible(dividerTint, dividerFiles);
 
-	form->setRowVisible(columns, hasColumns);
-	form->setRowVisible(columnGap, hasColumns);
-	form->setRowVisible(fillOrder, hasColumns);
-	form->setRowVisible(entryGap, hasEntries);
+	/*
+	 * The column count is offered for every list, because it is how a list *becomes* one of the
+	 * multi-column types: one column or several is the difference between two of the document's
+	 * types, and asking for a second column is a far plainer way to say that than picking a
+	 * different type out of a list. The two settings that describe a grid follow the count.
+	 */
+	setRowVisible(columns, list);
+	setRowVisible(columnGap, hasColumns);
+	setRowVisible(fillOrder, hasColumns);
+	setRowVisible(entryGap, hasEntries);
 	/*
 	 * The pair's own two settings apply wherever anything is really stacked, which for a bridged
 	 * row is a choice rather than a property of the type -- so this asks about the section
@@ -1651,9 +1942,19 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	const bool hasSubtitles = sectionUsesSubtitles(type);
 	const bool stacksSubtitles = hasSubtitles || (bridged && rowSubtitles->isChecked());
-	form->setRowVisible(subtitleGap, stacksSubtitles);
-	form->setRowVisible(subtitleOrder, stacksSubtitles);
-	form->setRowVisible(spacerHeight, type == SectionType::Spacer);
+	setRowVisible(subtitleGap, stacksSubtitles);
+	setRowVisible(subtitleOrder, stacksSubtitles);
+	setRowVisible(spacerHeight, type == SectionType::Spacer);
+
+	/*
+	 * A sticky block spans the canvas and lets the sections inside it place themselves, so the
+	 * three settings that would narrow it say nothing here -- see the layout, which ignores them
+	 * for this type rather than leaving two nested shares of the width to argue about.
+	 */
+	const bool placeable = type != SectionType::StickyBlock;
+	setRowVisible(marginX, placeable);
+	setRowVisible(sectionWidth, placeable);
+	setRowVisible(sectionAlign, placeable);
 
 	/*
 	 * The sticky block's rows. The hold is hidden outright while the block holds for ever, since
@@ -1664,17 +1965,17 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const auto release = static_cast<StickyRelease>(stickyRelease->currentData().toInt());
 	const bool backdrop = sticky && stickyBackdrop->isChecked();
 
-	form->setRowVisible(stickyAnchor, sticky);
-	form->setRowVisible(stickyCanvasPosition, sticky);
-	form->setRowVisible(stickyOffset, sticky);
-	form->setRowVisible(stickyHold, sticky && !stickyHoldForever->isChecked());
-	form->setRowVisible(stickyHoldForever, sticky);
-	form->setRowVisible(stickyRelease, sticky);
-	form->setRowVisible(stickyForeverWarning,
+	setRowVisible(stickyAnchor, sticky);
+	setRowVisible(stickyCanvasPosition, sticky);
+	setRowVisible(stickyOffset, sticky);
+	setRowVisible(stickyHold, sticky && !stickyHoldForever->isChecked());
+	setRowVisible(stickyHoldForever, sticky);
+	setRowVisible(stickyRelease, sticky);
+	setRowVisible(stickyForeverWarning,
 			    sticky && stickyHoldForever->isChecked() && stickyReleaseEndsAtHold(release));
-	form->setRowVisible(stickyBackdrop, sticky);
-	form->setRowVisible(stickyBackdropColour, backdrop);
-	form->setRowVisible(stickyBackdropPadding, backdrop);
+	setRowVisible(stickyBackdrop, sticky);
+	setRowVisible(stickyBackdropColour, backdrop);
+	setRowVisible(stickyBackdropPadding, backdrop);
 
 	/*
 	 * A divider has a style even though it carries no section text: the artwork is inked from
@@ -1714,12 +2015,23 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * height. With no table at all the trailing spacer takes it instead, which is what keeps the
 	 * rows packed at the top rather than spread down the pane.
 	 */
+	/*
+	 * A group with every row hidden is a heading over nothing, so it goes away with them. Asked
+	 * of the form rather than tracked alongside it: the rows have just been set, and counting
+	 * what is visible cannot disagree with them the way a second list of conditions could.
+	 */
+	contentGroup->setVisible(formHasVisibleRow(contentForm));
+	typeSettingsGroup->setVisible(formHasVisibleRow(typeSettingsForm));
+	placementGroup->setVisible(formHasVisibleRow(placementForm));
+
 	outerLayout->setStretch(trailingStretchIndex, hasEntries || divider ? 0 : 1);
 }
 
 void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 {
 	const QSignalBlocker blocker(entryTable);
+	/* What the columns now stand for, so the next relayout can read them back correctly. */
+	tableType = type;
 
 	entryTable->clear();
 	entryTable->setRowCount(0);
@@ -1906,8 +2218,8 @@ void SectionEditor::refreshLogoPlayback()
 	 */
 	const bool animated = sectionHasAnimatedArt(section());
 
-	form->setRowVisible(logoLoop->parentWidget(), animated);
-	form->setRowVisible(logoAnimatedShadow, animated);
+	setRowVisible(logoLoop->parentWidget(), animated);
+	setRowVisible(logoAnimatedShadow, animated);
 }
 
 void SectionEditor::writePiecesToTable(PieceSlot slot, const Section &source)
@@ -1933,7 +2245,7 @@ void SectionEditor::writePiecesToTable(PieceSlot slot, const Section &source)
 			if (loading)
 				return;
 			applyPieceRowVisibility(slot, row);
-			applyTypeVisibility(static_cast<SectionType>(typeBox->currentData().toInt()));
+			applyTypeVisibility(composedType());
 			emitChanged();
 		};
 	};
@@ -2268,7 +2580,7 @@ void SectionEditor::browseForBridgeSvg()
 
 void SectionEditor::browseForEntryLogo()
 {
-	const auto type = static_cast<SectionType>(typeBox->currentData().toInt());
+	const SectionType type = composedType();
 	if (!sectionUsesLogos(type) || !sectionUsesEntries(type))
 		return;
 
@@ -2299,7 +2611,7 @@ void SectionEditor::browseForEntryLogo()
 
 void SectionEditor::importCsv()
 {
-	const auto type = static_cast<SectionType>(typeBox->currentData().toInt());
+	const SectionType type = composedType();
 
 	CsvImportDialog dialog(type, rowSubtitles->isChecked(), this);
 	if (dialog.exec() != QDialog::Accepted)

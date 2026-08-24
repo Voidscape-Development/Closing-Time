@@ -18,9 +18,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <QHash>
+#include <QSet>
 #include <QWidget>
 
 #include "model/CreditsModel.hpp"
+#include "ui/CollapsibleGroup.hpp"
 #include "ui/FontPickerDialog.hpp"
 #include "ui/StyleControls.hpp"
 
@@ -202,6 +205,41 @@ signals:
 
 private:
 	void applyTypeVisibility(SectionType type);
+
+	/*
+	 * Adds a row to whichever group is being built, and remembers which form owns it.
+	 *
+	 * The editor is one column of settings split across several collapsible groups, so a row's
+	 * visibility can no longer be set on "the form" -- there are several of them. Recording the
+	 * owner as the row is added is what keeps `setRowVisible` a single call at the fifty-odd
+	 * places that make one, rather than each of them having to know which group its row is in.
+	 */
+	void addRow(const QString &label, QWidget *field);
+	void setRowVisible(QWidget *field, bool visible);
+
+	/*
+	 * Marks a row as one of the settings held back until the reader asks for everything.
+	 *
+	 * What makes this editor daunting is not any one control, it is meeting forty at once -- so
+	 * the ones reached for rarely, or that only make sense once the obvious ones have been tried,
+	 * sit behind a switch. Nothing is *removed* by it: a marked row still comes and goes with the
+	 * type exactly as it did, and is simply not shown while the switch is off.
+	 */
+	void markAdvanced(QWidget *field);
+
+	/*
+	 * The section type the picker and its switches add up to, and the reverse: which base type
+	 * and switches stand for a given section type.
+	 *
+	 * The document still carries all twenty types under their own ids -- nothing about
+	 * persistence changes here. What changes is that the reader picks a Title and then says
+	 * whether it has a subtitle and whether it has a logo, instead of choosing between five
+	 * kinds of title in a list of twenty.
+	 */
+	SectionType composedType() const;
+	void showTypeAsSwitches(SectionType type);
+	/* Shows the switches that apply to the base type, and re-reads what they now compose. */
+	void onTypeSwitchChanged();
 	/*
 	 * True when any artwork this section places would animate. Read from file headers rather
 	 * than from a decode, so it is cheap enough to ask on every section switch.
@@ -217,6 +255,11 @@ private:
 	 * widgets have not been written yet.
 	 */
 	void rebuildEntryTable(SectionType type, bool rowSubtitles);
+	/*
+	 * Re-columns the entry table for a new type, carrying the entries across. The table's shape
+	 * follows the type, so a rebuild without this reads back as a table with nothing in it.
+	 */
+	void relayoutEntryTable(SectionType type);
 	void readEntriesFromTable(Section *target) const;
 	void writeEntriesToTable(const Section &source);
 
@@ -251,9 +294,35 @@ private:
 
 	void emitChanged();
 
+	/* The form rows are being added to at this point in the constructor. */
 	QFormLayout *form = nullptr;
+	/* Which form each row's field belongs to, for setRowVisible. */
+	QHash<QWidget *, QFormLayout *> rowOwner;
+	/* The rows held back until the reader asks for everything. */
+	QSet<QWidget *> advancedRows;
+
+	CollapsibleGroup *contentGroup = nullptr;
+	CollapsibleGroup *typeSettingsGroup = nullptr;
+	CollapsibleGroup *placementGroup = nullptr;
+	QFormLayout *contentForm = nullptr;
+	QFormLayout *typeSettingsForm = nullptr;
+	QFormLayout *placementForm = nullptr;
 
 	QComboBox *typeBox = nullptr;
+	/*
+	 * The switches that turn a base type into one of the document's own. A heading with a
+	 * subtitle and a logo is a Title, a subtitle and a logo -- three plain answers -- rather than
+	 * "Title w/ Subtitle & Logo" picked out of a list of ten headings.
+	 */
+	QCheckBox *typeSubtitle = nullptr;
+	QCheckBox *typeLogo = nullptr;
+	QCheckBox *typeLogoOnly = nullptr;
+	QComboBox *typeListContent = nullptr;
+	/* One line saying what the selected type is for, under the picker. */
+	QLabel *typeHelp = nullptr;
+	/* Shows the settings that are otherwise held back; see markAdvanced. */
+	QCheckBox *showAdvanced = nullptr;
+
 	QLineEdit *labelEdit = nullptr;
 	QCheckBox *visibleBox = nullptr;
 	QPlainTextEdit *textEdit = nullptr;
@@ -379,6 +448,8 @@ private:
 	StyleEditor *presetOrigin = nullptr;
 
 	Section current;
+	/* The type the entry table's columns currently stand for; see relayoutEntryTable. */
+	SectionType tableType = SectionType::Title;
 	bool loading = false;
 };
 

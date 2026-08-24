@@ -99,6 +99,62 @@ CT_SUITE(section_types, "The type table, its ids and its predicates")
 	}
 }
 
+CT_SUITE(section_type_switches, "Taking a type apart into switches, and putting it back together")
+{
+	/*
+	 * The designer's picker offers a handful of base types and a few switches beside them, and
+	 * builds the document's own type from the two. Anything that does not come back out of that
+	 * round trip is a type the reader can no longer choose -- which is why this is asserted over
+	 * the whole table rather than over the shapes that happened to be thought of.
+	 */
+	for (SectionType type : allSectionTypes()) {
+		const Context context(QString::fromUtf8(sectionTypeId(type)));
+
+		const SectionTypeSwitches switches = decomposeSectionType(type);
+		check(composeSectionType(switches) == type, "a type survives being taken apart and rebuilt");
+
+		/* A heading is either a logo or words with one beside them, never both at once. */
+		check(!(switches.logoOnly && switches.logo), "logo-only and with-a-logo are never both set");
+		check(!(switches.logoOnly && switches.subtitle), "nor logo-only and a subtitle");
+
+		/* The base is one of the types the picker offers, and is its own base. */
+		check(decomposeSectionType(switches.base).base == switches.base, "a base type is its own base");
+	}
+
+	/* The switches really do reach every shape, rather than the round trip merely being consistent. */
+	SectionTypeSwitches heading;
+	heading.base = SectionType::Header;
+	heading.subtitle = true;
+	heading.logo = true;
+	check(composeSectionType(heading) == SectionType::HeaderWithSubtitleAndLogo,
+	      "a header, a subtitle and a logo compose the type that draws all three");
+
+	heading.logoOnly = true;
+	check(composeSectionType(heading) == SectionType::LogoHeader, "and logo-only wins over both");
+
+	SectionTypeSwitches list;
+	list.base = SectionType::TextList;
+	list.content = SectionListContent::Pairs;
+	list.multiColumn = true;
+	check(composeSectionType(list) == SectionType::MultiTitleSubtitleList,
+	      "a list of pairs over several columns is the multi-column pair list");
+
+	list.multiColumn = false;
+	check(composeSectionType(list) == SectionType::TitleSubtitleList, "and one column is the plain one");
+
+	/* A type with no switches at all is handed straight back. */
+	for (SectionType type : {SectionType::Bridged, SectionType::SectionDivider, SectionType::Spacer,
+				 SectionType::StickyBlock}) {
+		SectionTypeSwitches bare;
+		bare.base = type;
+		/* Set deliberately: a type that reads a switch it has no use for would fail here. */
+		bare.subtitle = true;
+		bare.logo = true;
+		bare.multiColumn = true;
+		check(composeSectionType(bare) == type, "a type with no switches ignores them");
+	}
+}
+
 CT_SUITE(section_defaults, "What a freshly added section of each type carries")
 {
 	for (SectionType type : allSectionTypes()) {

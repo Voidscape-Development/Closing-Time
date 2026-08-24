@@ -264,6 +264,106 @@ const QVector<DividerPiece::Kind> &allDividerPieceKinds()
 	return kinds;
 }
 
+SectionTypeSwitches decomposeSectionType(SectionType type)
+{
+	SectionTypeSwitches switches;
+
+	switch (type) {
+	case SectionType::Title:
+	case SectionType::TitleWithSubtitle:
+	case SectionType::TitleWithLogo:
+	case SectionType::TitleWithSubtitleAndLogo:
+	case SectionType::LogoTitle:
+		switches.base = SectionType::Title;
+		break;
+
+	case SectionType::Header:
+	case SectionType::HeaderWithSubtitle:
+	case SectionType::HeaderWithLogo:
+	case SectionType::HeaderWithSubtitleAndLogo:
+	case SectionType::LogoHeader:
+		switches.base = SectionType::Header;
+		break;
+
+	case SectionType::TextList:
+	case SectionType::TitleSubtitleList:
+	case SectionType::LogoList:
+	case SectionType::MultiTextList:
+	case SectionType::MultiTitleSubtitleList:
+	case SectionType::MultiLogoList:
+		switches.base = SectionType::TextList;
+		break;
+
+	default:
+		/* Every other type is its own base and carries no switches at all. */
+		switches.base = type;
+		return switches;
+	}
+
+	if (switches.base == SectionType::TextList) {
+		switch (type) {
+		case SectionType::TitleSubtitleList:
+		case SectionType::MultiTitleSubtitleList:
+			switches.content = SectionListContent::Pairs;
+			break;
+		case SectionType::LogoList:
+		case SectionType::MultiLogoList:
+			switches.content = SectionListContent::Logos;
+			break;
+		default:
+			switches.content = SectionListContent::Text;
+			break;
+		}
+
+		switches.multiColumn = sectionUsesColumns(type);
+		return switches;
+	}
+
+	/*
+	 * A heading is either a logo or words, so "logo only" is the absence of text rather than a
+	 * flag of its own -- which is what keeps the two switches from ever both being on.
+	 */
+	switches.logoOnly = sectionUsesLogos(type) && !sectionUsesText(type);
+	switches.logo = sectionUsesLogos(type) && sectionUsesText(type);
+	switches.subtitle = sectionUsesSubtitles(type);
+
+	return switches;
+}
+
+SectionType composeSectionType(const SectionTypeSwitches &switches)
+{
+	const bool title = switches.base == SectionType::Title;
+
+	if (title || switches.base == SectionType::Header) {
+		if (switches.logoOnly)
+			return title ? SectionType::LogoTitle : SectionType::LogoHeader;
+		if (switches.subtitle && switches.logo)
+			return title ? SectionType::TitleWithSubtitleAndLogo
+				     : SectionType::HeaderWithSubtitleAndLogo;
+		if (switches.subtitle)
+			return title ? SectionType::TitleWithSubtitle : SectionType::HeaderWithSubtitle;
+		if (switches.logo)
+			return title ? SectionType::TitleWithLogo : SectionType::HeaderWithLogo;
+
+		return title ? SectionType::Title : SectionType::Header;
+	}
+
+	if (switches.base == SectionType::TextList) {
+		switch (switches.content) {
+		case SectionListContent::Pairs:
+			return switches.multiColumn ? SectionType::MultiTitleSubtitleList
+						    : SectionType::TitleSubtitleList;
+		case SectionListContent::Logos:
+			return switches.multiColumn ? SectionType::MultiLogoList : SectionType::LogoList;
+		case SectionListContent::Text:
+		default:
+			return switches.multiColumn ? SectionType::MultiTextList : SectionType::TextList;
+		}
+	}
+
+	return switches.base;
+}
+
 const char *stickyAnchorId(StickyAnchor anchor)
 {
 	switch (anchor) {
