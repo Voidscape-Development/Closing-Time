@@ -369,6 +369,8 @@ private:
 	QCheckBox *rowSubtitles = nullptr;
 
 	QCheckBox *dividerMirrorEnds = nullptr;
+	/* Runs the rule through the ends and the centre rather than stopping at them. */
+	QCheckBox *dividerConnect = nullptr;
 	QComboBox *dividerArm = nullptr;
 	QLineEdit *dividerArmSvgPath = nullptr;
 	QSpinBox *dividerThickness = nullptr;
@@ -415,16 +417,22 @@ private:
 	ColourButton *stickyBackdropColour = nullptr;
 	QSpinBox *stickyBackdropPadding = nullptr;
 
+	/*
+	 * The style groups, which fold away like the three above them. The two that a section can
+	 * switch off carry their checkbox in the fold header; see CollapsibleGroup for why the two
+	 * readings are kept apart.
+	 */
+	CollapsibleGroup *styleGroup = nullptr;
 	StyleEditor *primaryStyle = nullptr;
-	QGroupBox *secondaryGroup = nullptr;
+	CollapsibleGroup *secondaryGroup = nullptr;
 	StyleEditor *secondaryStyle = nullptr;
 	/* Shown for the two shapes that draw a bridge, and only ever edits that bridge's ink. */
-	QGroupBox *bridgeStyleGroup = nullptr;
+	CollapsibleGroup *bridgeStyleGroup = nullptr;
 	StyleEditor *bridgeStyle = nullptr;
 	/* The two subtitles of a bridged row, shown only while that row draws them. */
-	QGroupBox *rowSubtitleStyleGroup = nullptr;
+	CollapsibleGroup *rowSubtitleStyleGroup = nullptr;
 	StyleEditor *rowSubtitleStyle = nullptr;
-	QGroupBox *rowSecondarySubtitleStyleGroup = nullptr;
+	CollapsibleGroup *rowSecondarySubtitleStyleGroup = nullptr;
 	StyleEditor *rowSecondarySubtitleStyle = nullptr;
 
 	QGroupBox *entriesGroup = nullptr;

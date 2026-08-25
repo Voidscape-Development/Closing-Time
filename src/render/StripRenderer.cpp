@@ -1211,10 +1211,27 @@ struct MeasuredPiece {
 /* A measured stack of them: what one end or the middle of a divider comes to. */
 struct MeasuredStack {
 	QVector<MeasuredPiece> pieces;
+	/*
+	 * The join before each piece, already clamped -- `gaps[i]` sits between piece `i - 1` and
+	 * piece `i`, and `gaps[0]` is unused. Carried rather than recomputed at placement time
+	 * because a negative gap is bounded by the two pieces it sits between, and a measure pass
+	 * and a place pass that worked that bound out separately would be two chances to disagree
+	 * about a width the section under this one is positioned from.
+	 */
+	QVector<qreal> gaps;
 	qreal width = 0.0;
 	qreal height = 0.0;
 
 	bool isEmpty() const { return pieces.isEmpty(); }
+
+	/*
+	 * Half the outermost piece, which is where a connected arm stops.
+	 *
+	 * The outermost piece is always the first written: a cap's list runs outermost-first, and
+	 * the right-hand end is the same list placed in reverse, which puts the same piece at the
+	 * far edge either way.
+	 */
+	qreal outerHalfWidth() const { return isEmpty() ? 0.0 : pieces.first().size.width() / 2.0; }
 };
 
 /*
@@ -1224,9 +1241,8 @@ struct MeasuredStack {
  * ends, because an end *is* a stack: that is the whole of what makes a shape offered in one place
  * offered in the other, and a word or a mark able to cap a rule as well as break one.
  */
-MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const TextStyle &style,
-				  const LogoSource &logos, DividerArtCache *dividers, qreal thickness,
-				  qreal pieceGap, qreal available)
+MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const TextStyle &style, const LogoSource &logos,
+				  DividerArtCache *dividers, qreal thickness, qreal pieceGap, qreal available)
 {
 	MeasuredStack stack;
 	stack.pieces.reserve(pieces.size());
@@ -1270,10 +1286,25 @@ MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const Tex
 			stack.pieces.append(measured);
 	}
 
+	stack.gaps.resize(stack.pieces.size());
+
 	for (int i = 0; i < stack.pieces.size(); ++i) {
-		stack.width += stack.pieces.at(i).size.width();
-		if (i > 0)
-			stack.width += pieceGap;
+		const qreal pieceWidth = stack.pieces.at(i).size.width();
+
+		if (i > 0) {
+			/*
+			 * A negative gap pushes two pieces into each other, which is how a stack is
+			 * made to read as one ornament rather than as a row of them. Bounded at half
+			 * the narrower of the pair, so they may be pushed together but never through
+			 * each other: past that the run reorders itself, and a stack whose width
+			 * counts down as the setting goes up is not a design anybody asked for.
+			 */
+			const qreal limit = std::min(stack.pieces.at(i - 1).size.width(), pieceWidth) / 2.0;
+			stack.gaps[i] = std::max(pieceGap, -limit);
+			stack.width += stack.gaps.at(i);
+		}
+
+		stack.width += pieceWidth;
 		stack.height = std::max(stack.height, stack.pieces.at(i).size.height());
 	}
 
@@ -1288,15 +1319,28 @@ MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const Tex
  * along x -- the caps in the shape library are authored pointing outward along -x, so an arrowhead
  * at the right-hand end has to be. A word and a picture are deliberately left unflipped: mirrored
  * type is not a design, it is a mistake, and neither is authored pointing anywhere.
+ *
+ * The joins come from the stack rather than from the section, already bounded by the pieces they
+ * sit between -- see MeasuredStack::gaps.
  */
-void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal left, qreal midY, qreal pieceGap,
-		       bool mirrored)
+void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal left, qreal midY, bool mirrored)
 {
+	const int count = stack.pieces.size();
 	qreal cursor = left;
 
-	for (int i = 0; i < stack.pieces.size(); ++i) {
-		const MeasuredPiece &measured = stack.pieces.at(mirrored ? stack.pieces.size() - 1 - i : i);
+	for (int i = 0; i < count; ++i) {
+		const int index = mirrored ? count - 1 - i : i;
+		const MeasuredPiece &measured = stack.pieces.at(index);
 		const DividerPiece &piece = *measured.piece;
+
+		/*
+		 * The join before the piece about to be placed. Reversing the run reverses the joins
+		 * with it -- the gap that was written after a piece is drawn before it -- so the two
+		 * ends of a divider are the same figure whichever way round it is read.
+		 */
+		if (i > 0)
+			cursor += stack.gaps.at(mirrored ? index + 1 : index);
+
 		const QRectF box(cursor, midY - measured.size.height() / 2.0, measured.size.width(),
 				 measured.size.height());
 
@@ -1314,7 +1358,7 @@ void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal 
 			break;
 		}
 
-		cursor += measured.size.width() + pieceGap;
+		cursor += measured.size.width();
 	}
 }
 
@@ -1360,21 +1404,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 
 	const qreal midY = top + layout.height / 2.0;
 
-	/* --- Place the ends -------------------------------------------------------------- */
-
-	/*
-	 * The ends sit at the divider's full extent and on its midline, and are drawn once however
-	 * many rules run between them: three lines meeting one arrowhead is the figure the deco
-	 * rules draw, where three arrowheads stacked on top of each other is not.
-	 */
-	placeDividerStack(&layout, leftEnd, x, midY, pieceGap, false);
-	placeDividerStack(&layout, rightEnd, x + width - rightEnd.width, midY, pieceGap, true);
-
-	/* Nothing to keep clear of at an end with nothing on it. */
-	const qreal armLeft = x + leftEnd.width + (leftEnd.width > 0.0 ? section.dividerGap : 0.0);
-	const qreal armRight = x + width - rightEnd.width - (rightEnd.width > 0.0 ? section.dividerGap : 0.0);
-
-	/* --- Place the centre ------------------------------------------------------------ */
+	/* --- Work out where the arms run ------------------------------------------------- */
 
 	/*
 	 * Centred on the section's own box rather than between the two arms, so a divider whose
@@ -1382,10 +1412,41 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	 */
 	const qreal centreLeft = x + (width - centre.width) / 2.0;
 
-	placeDividerStack(&layout, centre, centreLeft, midY, pieceGap, false);
+	const bool connect = section.dividerConnect;
+
+	/*
+	 * Connected, the rule runs to the middle of the outermost piece of each end rather than
+	 * stopping outside the stack: that point is inside every cap's silhouette whatever the cap
+	 * is, where running to the stack's outer edge would poke a blunt nose out of a tapering
+	 * arrowhead. Otherwise the arm keeps clear by the section's gap -- which may itself be
+	 * negative, and is then an overlap by exactly the same reasoning, only asked for by hand.
+	 *
+	 * Either way the span is held inside the section's own box. A join deep enough to push an
+	 * arm out of it would have the rule painting over whatever the section above or below drew.
+	 */
+	qreal armLeft = x;
+	qreal armRight = x + width;
+
+	if (connect) {
+		armLeft = x + leftEnd.outerHalfWidth();
+		armRight = x + width - rightEnd.outerHalfWidth();
+	} else {
+		/* Nothing to keep clear of, nor to run under, at an end with nothing on it. */
+		if (leftEnd.width > 0.0)
+			armLeft = std::max(x, x + leftEnd.width + section.dividerGap);
+		if (rightEnd.width > 0.0)
+			armRight = std::min(x + width, x + width - rightEnd.width - section.dividerGap);
+	}
 
 	/* --- Place the arms -------------------------------------------------------------- */
 
+	/*
+	 * Before the stacks rather than after them, so a piece is drawn over the rule it sits on
+	 * rather than under it. It makes no difference to tinted artwork -- every tinted part goes
+	 * into one silhouette, which is what lets an overlap union seamlessly in the first place --
+	 * but a custom picture left in its own colours is painted straight to the strip, and a rule
+	 * running across the front of it is not the ornament anybody placed.
+	 */
 	const qreal stackTop = midY - stackHeight / 2.0;
 
 	for (int rule = 0; rule < rules; ++rule) {
@@ -1422,20 +1483,41 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 			}
 		};
 
-		if (centre.isEmpty()) {
+		if (centre.isEmpty() || connect) {
 			/*
-			 * Nothing in the way, so the rule runs from one cap straight to the other --
-			 * as one arm, not two touching, so a scaling shape is stretched once across
-			 * the whole span and a spreading one is not made to meet in the middle.
-			 * A shape with a direction to it points one way along the whole rule, which
-			 * for an unbroken line is the only reading there is.
+			 * Nothing in the way -- or nothing the rule is asked to stop for -- so it
+			 * runs from one cap straight to the other, as one arm rather than two
+			 * touching: a scaling shape is stretched once across the whole span and a
+			 * spreading one is not made to meet in the middle. A shape with a direction
+			 * to it points one way along the whole rule, which for an unbroken line is
+			 * the only reading there is.
+			 *
+			 * Connected, the centre is then drawn on top of this, which is how an
+			 * ornamental rule is actually composed: the diamond sits *on* the line
+			 * rather than between two lines that stop short of it.
 			 */
 			placeArm(left, right, false);
 		} else {
-			placeArm(left, centreLeft - section.dividerGap, false);
-			placeArm(centreLeft + centre.width + section.dividerGap, right, true);
+			/*
+			 * Each arm still stops at its own end of the span. A join negative enough
+			 * to run one arm past the centre would otherwise carry it out through the
+			 * far cap and off the section's box.
+			 */
+			placeArm(left, std::min(right, centreLeft - section.dividerGap), false);
+			placeArm(std::max(left, centreLeft + centre.width + section.dividerGap), right, true);
 		}
 	}
+
+	/* --- Place the ends and the centre ------------------------------------------------ */
+
+	/*
+	 * The ends sit at the divider's full extent and on its midline, and are drawn once however
+	 * many rules run between them: three lines meeting one arrowhead is the figure the deco
+	 * rules draw, where three arrowheads stacked on top of each other is not.
+	 */
+	placeDividerStack(&layout, leftEnd, x, midY, false);
+	placeDividerStack(&layout, rightEnd, x + width - rightEnd.width, midY, true);
+	placeDividerStack(&layout, centre, centreLeft, midY, false);
 
 	return layout;
 }
@@ -1537,12 +1619,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	 */
 	const bool spansCanvas = section.type == SectionType::StickyBlock;
 
-	const qreal boxWidth = spansCanvas ? document.width : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
+	const qreal boxWidth = spansCanvas ? document.width
+					   : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
 	const int boxX = spansCanvas ? 0 : qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
 
 	const int contentX = spansCanvas ? 0 : boxX + section.marginX;
-	const int contentWidth =
-		spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
+	const int contentWidth = spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
 
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
 	const TextStyle &style = document.effectiveStyle(section);
@@ -1570,8 +1652,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		 */
 		const LogoSource stills{logos.stills, nullptr};
 
-		const int height = layoutStickyChildren(nullptr, section, document, stills, bridges, dividers, y,
-							boxes, nullptr);
+		const int height =
+			layoutStickyChildren(nullptr, section, document, stills, bridges, dividers, y, boxes, nullptr);
 		record(LayoutBox::Kind::Sticky, QRectF(0, y, document.width, height));
 
 		if (sticky && height > 0) {
@@ -1629,8 +1711,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 						      section.stickyBackdropColor);
 			}
 
-			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y,
-					     nullptr, nullptr);
+			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y, nullptr,
+					     nullptr);
 			blockPainter.end();
 
 			/* Straight alpha, for the same reason the tiles are. */
@@ -1835,13 +1917,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * adding a subtitle under a row should leave the leader exactly where it was
 			 * rather than dragging it down to the middle of a two-line block.
 			 */
-			const StackedLine leftTopLine = topStackedLine(section, *left.text, *left.subtitle,
-								       *left.style, *left.subtitleStyle);
+			const StackedLine leftTopLine =
+				topStackedLine(section, *left.text, *left.subtitle, *left.style, *left.subtitleStyle);
 			const StackedLine rightTopLine = topStackedLine(section, *right.text, *right.subtitle,
 									*right.style, *right.subtitleStyle);
 
-			const qreal leftAscent =
-				firstBaseline(*leftTopLine.text, *leftTopLine.style, row.leftWidth);
+			const qreal leftAscent = firstBaseline(*leftTopLine.text, *leftTopLine.style, row.leftWidth);
 			const qreal rightAscent =
 				firstBaseline(*rightTopLine.text, *rightTopLine.style, row.rightWidth);
 			const qreal bridgeAscent = bridge.ascent(section);
@@ -1855,13 +1936,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * Both sides go through the pair helper whether or not they carry a subtitle,
 			 * which is what records their text boxes as well as drawing them.
 			 */
-			const int leftHeight = layoutTitleSubtitle(painter, section, *left.style,
-								  *left.subtitleStyle, *left.text, *left.subtitle,
-								  row.leftX, leftTop, row.leftWidth, record);
+			const int leftHeight = layoutTitleSubtitle(painter, section, *left.style, *left.subtitleStyle,
+								   *left.text, *left.subtitle, row.leftX, leftTop,
+								   row.leftWidth, record);
 			const int rightHeight = layoutTitleSubtitle(painter, section, *right.style,
-								    *right.subtitleStyle, *right.text,
-								    *right.subtitle, row.rightX, rightTop,
-								    row.rightWidth, record);
+								    *right.subtitleStyle, *right.text, *right.subtitle,
+								    row.rightX, rightTop, row.rightWidth, record);
 			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
 							     row.bridgeX, bridgeTop, row.bridgeWidth);
 
@@ -2205,7 +2285,7 @@ Strip StripRenderer::render(const Document &input, LayoutBoxes *boxes) const
 	int total = 0;
 	const LogoSource art{logos, animations};
 	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total, boxes,
-							   &strip.animatedLogos, &strip.stickyBlocks);
+							    &strip.animatedLogos, &strip.stickyBlocks);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
 	if (strip.height <= 0 || placed.isEmpty()) {

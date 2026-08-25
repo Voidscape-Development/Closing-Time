@@ -213,8 +213,8 @@ constexpr int kPieceSizeColumnWidth = 70;
 const QVector<SectionType> &baseSectionTypes()
 {
 	static const QVector<SectionType> types = {
-		SectionType::Title,   SectionType::Header,         SectionType::TextList, SectionType::Bridged,
-		SectionType::Spacer,  SectionType::SectionDivider, SectionType::StickyBlock,
+		SectionType::Title,  SectionType::Header,         SectionType::TextList,    SectionType::Bridged,
+		SectionType::Spacer, SectionType::SectionDivider, SectionType::StickyBlock,
 	};
 	return types;
 }
@@ -700,12 +700,9 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	addRow(QString(), typeLogoOnly);
 
 	typeListContent = new QComboBox(this);
-	typeListContent->addItem(moduleText("Designer.ListContent.Text"),
-				 static_cast<int>(SectionListContent::Text));
-	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"),
-				 static_cast<int>(SectionListContent::Pairs));
-	typeListContent->addItem(moduleText("Designer.ListContent.Logos"),
-				 static_cast<int>(SectionListContent::Logos));
+	typeListContent->addItem(moduleText("Designer.ListContent.Text"), static_cast<int>(SectionListContent::Text));
+	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
+	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
 	addRow(moduleText("Designer.ListContent"), typeListContent);
 
 	labelEdit = new QLineEdit(this);
@@ -920,15 +917,30 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	dividerThickness->setToolTip(moduleText("Designer.DividerThickness.Tip"));
 	addRow(moduleText("Designer.DividerThickness"), dividerThickness);
 
+	/*
+	 * Joining the parts is the first question about them, so it sits above the two gaps it
+	 * makes most of the difference to rather than down among the fine spacing.
+	 */
+	dividerConnect = new QCheckBox(moduleText("Designer.DividerConnect"), this);
+	dividerConnect->setToolTip(moduleText("Designer.DividerConnect.Tip"));
+	addRow(QString(), dividerConnect);
+
+	/*
+	 * Both gaps reach below zero, where they stop holding two parts apart and start pushing
+	 * them into each other. That is not a second setting: a divider whose cap overlaps its rule
+	 * by six pixels is the same edit as one that clears it by six, and one spin box running
+	 * through zero is what says so.
+	 */
 	dividerGap = new QSpinBox(this);
-	dividerGap->setRange(0, 2048);
+	dividerGap->setRange(-static_cast<int>(kMaxDividerJoin), 2048);
 	dividerGap->setSuffix(QStringLiteral(" px"));
 	dividerGap->setToolTip(moduleText("Designer.DividerGap.Tip"));
 	addRow(moduleText("Designer.DividerGap"), dividerGap);
 
 	dividerPieceGap = new QSpinBox(this);
-	dividerPieceGap->setRange(0, 2048);
+	dividerPieceGap->setRange(-static_cast<int>(kMaxDividerJoin), 2048);
 	dividerPieceGap->setSuffix(QStringLiteral(" px"));
+	dividerPieceGap->setToolTip(moduleText("Designer.DividerPieceGap.Tip"));
 	addRow(moduleText("Designer.DividerPieceGap"), dividerPieceGap);
 
 	dividerRules = new QSpinBox(this);
@@ -1088,17 +1100,28 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	sectionAlign->setToolTip(moduleText("Designer.SectionAlign.Tip"));
 	addRow(moduleText("Designer.SectionAlign"), sectionAlign);
 
-	auto *styleGroup = new QGroupBox(moduleText("Designer.TextStyle"), this);
-	auto *styleLayout = new QVBoxLayout(styleGroup);
-	primaryStyle = new StyleEditor(styleGroup);
-	styleLayout->addWidget(primaryStyle);
+	/*
+	 * The style groups fold away like the three above them.
+	 *
+	 * A StyleEditor is the tallest thing in this pane -- a font, a size, a fill with its stops,
+	 * an outline, a shadow, an alignment -- and a bridged row with subtitles puts five of them
+	 * one under the next. Somebody working on the words of a section scrolls past all of it to
+	 * reach the entry table, which is the whole complaint the folding groups were added to
+	 * answer; these were simply left out of that first pass.
+	 *
+	 * Two of them keep their checkbox, which is now carried in the fold header beside the title
+	 * rather than by a QGroupBox: the checkbox still says whether the style applies, and the
+	 * triangle beside it says only whether it is on screen. See CollapsibleGroup.
+	 */
+	styleGroup = new CollapsibleGroup(moduleText("Designer.TextStyle"), this);
+	primaryStyle = new StyleEditor(styleGroup->content());
+	styleGroup->addWidget(primaryStyle);
 	outer->addWidget(styleGroup);
 
-	secondaryGroup = new QGroupBox(moduleText("Designer.SecondaryStyle"), this);
+	secondaryGroup = new CollapsibleGroup(moduleText("Designer.SecondaryStyle"), this);
 	secondaryGroup->setCheckable(true);
-	auto *secondaryLayout = new QVBoxLayout(secondaryGroup);
-	secondaryStyle = new StyleEditor(secondaryGroup);
-	secondaryLayout->addWidget(secondaryStyle);
+	secondaryStyle = new StyleEditor(secondaryGroup->content());
+	secondaryGroup->addWidget(secondaryStyle);
 	outer->addWidget(secondaryGroup);
 
 	/*
@@ -1106,13 +1129,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * read as part of the row. Checked, it keeps the row's font and takes its ink from here --
 	 * yellow dots under white names, or a gradient across a run of diamonds.
 	 */
-	bridgeStyleGroup = new QGroupBox(moduleText("Designer.BridgeStyle"), this);
+	bridgeStyleGroup = new CollapsibleGroup(moduleText("Designer.BridgeStyle"), this);
 	bridgeStyleGroup->setCheckable(true);
-	bridgeStyleGroup->setToolTip(moduleText("Designer.BridgeStyle.Tip"));
-	auto *bridgeStyleLayout = new QVBoxLayout(bridgeStyleGroup);
-	bridgeStyle = new StyleEditor(bridgeStyleGroup);
+	bridgeStyleGroup->setHeaderToolTip(moduleText("Designer.BridgeStyle.Tip"));
+	bridgeStyle = new StyleEditor(bridgeStyleGroup->content());
 	bridgeStyle->setInkOnly(true);
-	bridgeStyleLayout->addWidget(bridgeStyle);
+	bridgeStyleGroup->addWidget(bridgeStyle);
 	outer->addWidget(bridgeStyleGroup);
 
 	/*
@@ -1122,16 +1144,14 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * is drawn whenever the row's subtitles are on and there is something in it to draw, which
 	 * is what the entry's own cell already says.
 	 */
-	rowSubtitleStyleGroup = new QGroupBox(moduleText("Designer.RowSubtitleStyle"), this);
-	auto *rowSubtitleLayout = new QVBoxLayout(rowSubtitleStyleGroup);
-	rowSubtitleStyle = new StyleEditor(rowSubtitleStyleGroup);
-	rowSubtitleLayout->addWidget(rowSubtitleStyle);
+	rowSubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSubtitleStyle"), this);
+	rowSubtitleStyle = new StyleEditor(rowSubtitleStyleGroup->content());
+	rowSubtitleStyleGroup->addWidget(rowSubtitleStyle);
 	outer->addWidget(rowSubtitleStyleGroup);
 
-	rowSecondarySubtitleStyleGroup = new QGroupBox(moduleText("Designer.RowSecondarySubtitleStyle"), this);
-	auto *rowSecondarySubtitleLayout = new QVBoxLayout(rowSecondarySubtitleStyleGroup);
-	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup);
-	rowSecondarySubtitleLayout->addWidget(rowSecondarySubtitleStyle);
+	rowSecondarySubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSecondarySubtitleStyle"), this);
+	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup->content());
+	rowSecondarySubtitleStyleGroup->addWidget(rowSecondarySubtitleStyle);
 	outer->addWidget(rowSecondarySubtitleStyleGroup);
 
 	entriesGroup = new QGroupBox(moduleText("Designer.Entries"), this);
@@ -1246,9 +1266,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		 * follows from the row it is pointed at: a logo piece wants an image, a custom
 		 * ornament an SVG.
 		 */
-		pieceFileButtons[index] =
-			addPieceButton(makeLabelledButton(page, moduleText("Designer.SetPieceFile")),
-				       [this, slot] { browseForPieceFile(slot); });
+		pieceFileButtons[index] = addPieceButton(makeLabelledButton(page, moduleText("Designer.SetPieceFile")),
+							 [this, slot] { browseForPieceFile(slot); });
 		buttonRow->addStretch();
 
 		pageLayout->addLayout(buttonRow);
@@ -1258,7 +1277,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	}
 
 	outer->addWidget(dividerPiecesGroup, 1);
-
 
 	/*
 	 * Whatever height is left over when the editor is shorter than the pane it sits in. A
@@ -1279,12 +1297,10 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * Every one of them is a thing somebody eventually wants -- which is why the switch shows
 	 * them rather than the editor deciding they do not exist.
 	 */
-	for (QWidget *field : std::initializer_list<QWidget *>{marginX, logoAnimatedShadow, bridgeOffset,
-							      bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
-							      bridgeSizing, dividerPieceGap, dividerRuleGap,
-							      dividerRuleInset, dividerTint, bridgeTint,
-							      subtitleOrder, fillOrder, stickyOffset,
-							      stickyBackdropPadding})
+	for (QWidget *field : std::initializer_list<QWidget *>{
+		     marginX, logoAnimatedShadow, bridgeOffset, bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
+		     bridgeSizing, dividerPieceGap, dividerRuleGap, dividerRuleInset, dividerTint, bridgeTint,
+		     subtitleOrder, fillOrder, stickyOffset, stickyBackdropPadding})
 		markAdvanced(field);
 
 	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
@@ -1299,9 +1315,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 */
 	connect(columns, &QSpinBox::valueChanged, this, &SectionEditor::onTypeSwitchChanged);
 
-	connect(showAdvanced, &QCheckBox::toggled, this, [this] {
-		applyTypeVisibility(composedType());
-	});
+	connect(showAdvanced, &QCheckBox::toggled, this, [this] { applyTypeVisibility(composedType()); });
 
 	connect(labelEdit, &QLineEdit::textChanged, this, notify);
 	connect(visibleBox, &QCheckBox::toggled, this, notify);
@@ -1376,6 +1390,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	connect(dividerMirrorEnds, &QCheckBox::toggled, this, revisitVisibility);
 	connect(dividerTint, &QCheckBox::toggled, this, revisitVisibility);
+	/* Joining the parts leaves the arm gap with nothing to hold apart, so the row goes with it. */
+	connect(dividerConnect, &QCheckBox::toggled, this, revisitVisibility);
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(entryGap, &QSpinBox::valueChanged, this, notify);
@@ -1398,8 +1414,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * on. `presetOrigin` marks the editor mid-signal so the synchronous round trip back
 	 * through setPresets() leaves the fields being typed into alone.
 	 */
-	for (StyleEditor *editor : {primaryStyle, secondaryStyle, bridgeStyle, rowSubtitleStyle,
-				    rowSecondarySubtitleStyle}) {
+	for (StyleEditor *editor :
+	     {primaryStyle, secondaryStyle, bridgeStyle, rowSubtitleStyle, rowSecondarySubtitleStyle}) {
 		connect(editor, &StyleEditor::presetSaveRequested, this,
 			[this, editor](const QString &name, const TextStyle &style) {
 				presetOrigin = editor;
@@ -1412,7 +1428,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 			presetOrigin = nullptr;
 		});
 	}
-	connect(secondaryGroup, &QGroupBox::toggled, this, notify);
+	connect(secondaryGroup, &CollapsibleGroup::toggled, this, notify);
 	/*
 	 * The subtitle columns of the entry table come and go with this, so it rebuilds the table
 	 * rather than only re-rendering. Reading the section back first is what carries what is
@@ -1427,7 +1443,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		relayoutEntryTable(type);
 		emitChanged();
 	});
-	connect(bridgeStyleGroup, &QGroupBox::toggled, this, notify);
+	connect(bridgeStyleGroup, &CollapsibleGroup::toggled, this, notify);
 	connect(entryTable, &QTableWidget::cellChanged, this, notify);
 	connect(logoBrowse, &QToolButton::clicked, this, &SectionEditor::browseForSectionLogo);
 	connect(bridgeSvgBrowse, &QToolButton::clicked, this, &SectionEditor::browseForBridgeSvg);
@@ -1482,6 +1498,7 @@ void SectionEditor::setSection(const Section &source)
 	selectByData(dividerArm, static_cast<int>(source.dividerArm));
 	dividerArmSvgPath->setText(source.dividerArmSvg);
 	dividerThickness->setValue(qRound(source.dividerThickness));
+	dividerConnect->setChecked(source.dividerConnect);
 	dividerGap->setValue(qRound(source.dividerGap));
 	dividerPieceGap->setValue(qRound(source.dividerPieceGap));
 	dividerRules->setValue(source.dividerRules);
@@ -1499,7 +1516,8 @@ void SectionEditor::setSection(const Section &source)
 	entryGap->setValue(source.entryGap);
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
-	spacerHeight->setValue(source.spacerHeight);	selectByData(stickyAnchor, static_cast<int>(source.stickyAnchor));
+	spacerHeight->setValue(source.spacerHeight);
+	selectByData(stickyAnchor, static_cast<int>(source.stickyAnchor));
 	stickyCanvasPosition->setValue(qRound(source.stickyCanvasPosition * 100.0));
 	stickyOffset->setValue(qRound(source.stickyOffset));
 	stickyHold->setValue(source.stickyHold);
@@ -1587,6 +1605,7 @@ Section SectionEditor::section() const
 	result.dividerArm = static_cast<DividerShape>(dividerArm->currentData().toInt());
 	result.dividerArmSvg = dividerArmSvgPath->text();
 	result.dividerThickness = dividerThickness->value();
+	result.dividerConnect = dividerConnect->isChecked();
 	result.dividerGap = dividerGap->value();
 	result.dividerPieceGap = dividerPieceGap->value();
 	result.dividerRules = dividerRules->value();
@@ -1910,7 +1929,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(dividerArm, divider);
 	setRowVisible(dividerArmSvgPath->parentWidget(), armFromFile);
 	setRowVisible(dividerThickness, divider);
-	setRowVisible(dividerGap, divider);
+	setRowVisible(dividerConnect, divider);
+	/*
+	 * The arm gap is what holds the rule clear of the cap and the centre, and a connected
+	 * divider has it clear of neither. Nothing is switched off by hiding it -- the setting keeps
+	 * its value and comes straight back when the parts are unjoined.
+	 */
+	setRowVisible(dividerGap, divider && !dividerConnect->isChecked());
 	setRowVisible(dividerPieceGap, divider);
 	setRowVisible(dividerRules, divider);
 	/* One rule has nothing to be spaced from and nothing to taper against. */
@@ -1972,7 +1997,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(stickyHoldForever, sticky);
 	setRowVisible(stickyRelease, sticky);
 	setRowVisible(stickyForeverWarning,
-			    sticky && stickyHoldForever->isChecked() && stickyReleaseEndsAtHold(release));
+		      sticky && stickyHoldForever->isChecked() && stickyReleaseEndsAtHold(release));
 	setRowVisible(stickyBackdrop, sticky);
 	setRowVisible(stickyBackdropColour, backdrop);
 	setRowVisible(stickyBackdropPadding, backdrop);
@@ -1981,7 +2006,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * A divider has a style even though it carries no section text: the artwork is inked from
 	 * it, and a word or a mark in the centre stack is drawn with it.
 	 */
-	primaryStyle->parentWidget()->setVisible(hasText || hasLogos || divider);
+	styleGroup->setVisible(hasText || hasLogos || divider);
 	/*
 	 * The same style serves whichever second text the type carries, so the group is titled
 	 * after the one being edited rather than after the Bridged section it was written for.
@@ -2045,10 +2070,9 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		 */
 		if (rowSubtitles) {
 			entryTable->setColumnCount(4);
-			entryTable->setHorizontalHeaderLabels({moduleText("Designer.Column.Left"),
-							       moduleText("Designer.Column.LeftSubtitle"),
-							       moduleText("Designer.Column.Right"),
-							       moduleText("Designer.Column.RightSubtitle")});
+			entryTable->setHorizontalHeaderLabels(
+				{moduleText("Designer.Column.Left"), moduleText("Designer.Column.LeftSubtitle"),
+				 moduleText("Designer.Column.Right"), moduleText("Designer.Column.RightSubtitle")});
 			break;
 		}
 

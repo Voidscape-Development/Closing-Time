@@ -338,8 +338,7 @@ SectionType composeSectionType(const SectionTypeSwitches &switches)
 		if (switches.logoOnly)
 			return title ? SectionType::LogoTitle : SectionType::LogoHeader;
 		if (switches.subtitle && switches.logo)
-			return title ? SectionType::TitleWithSubtitleAndLogo
-				     : SectionType::HeaderWithSubtitleAndLogo;
+			return title ? SectionType::TitleWithSubtitleAndLogo : SectionType::HeaderWithSubtitleAndLogo;
 		if (switches.subtitle)
 			return title ? SectionType::TitleWithSubtitle : SectionType::HeaderWithSubtitle;
 		if (switches.logo)
@@ -924,6 +923,7 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "divider_thickness", dividerThickness);
 	obs_data_set_double(data, "divider_gap", dividerGap);
 	obs_data_set_double(data, "divider_piece_gap", dividerPieceGap);
+	obs_data_set_bool(data, "divider_connect", dividerConnect);
 	obs_data_set_int(data, "divider_rules", dividerRules);
 	obs_data_set_double(data, "divider_rule_gap", dividerRuleGap);
 	obs_data_set_double(data, "divider_rule_inset", dividerRuleInset);
@@ -1058,7 +1058,7 @@ void Section::load(obs_data_t *data)
 	 * the empty bridge existed gets the default rather than a gap of nothing.
 	 */
 	bridgeMinGap = obs_data_has_user_value(data, "bridge_min_gap") ? obs_data_get_double(data, "bridge_min_gap")
-								      : 24.0;
+								       : 24.0;
 	bridgeMinGap = std::max(0.0, bridgeMinGap);
 	/* A thickness of zero would draw nothing at all, which no document ever means. */
 	bridgeThickness = obs_data_get_double(data, "bridge_thickness");
@@ -1108,6 +1108,8 @@ void Section::load(obs_data_t *data)
 	dividerPieceGap = obs_data_has_user_value(data, "divider_piece_gap")
 				  ? obs_data_get_double(data, "divider_piece_gap")
 				  : 10.0;
+	/* Absent in every document written before the parts could be joined, which drew them apart. */
+	dividerConnect = obs_data_get_bool(data, "divider_connect");
 	dividerRuleGap =
 		obs_data_has_user_value(data, "divider_rule_gap") ? obs_data_get_double(data, "divider_rule_gap") : 6.0;
 	dividerRules = static_cast<int>(obs_data_get_int(data, "divider_rules"));
@@ -1156,8 +1158,8 @@ void Section::load(obs_data_t *data)
 	stickyRelease = stickyReleaseFromId(obs_data_get_string(data, "sticky_release"), StickyRelease::EndAtHold);
 	stickyBackdrop = obs_data_get_bool(data, "sticky_backdrop");
 	if (obs_data_has_user_value(data, "sticky_backdrop_color")) {
-		stickyBackdropColor = QColor::fromRgba(
-			static_cast<QRgb>(obs_data_get_int(data, "sticky_backdrop_color")));
+		stickyBackdropColor =
+			QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "sticky_backdrop_color")));
 	}
 	stickyBackdropPadding = obs_data_has_user_value(data, "sticky_backdrop_padding")
 					? obs_data_get_double(data, "sticky_backdrop_padding")
@@ -1179,8 +1181,15 @@ void Section::load(obs_data_t *data)
 	/* One rule is a divider; none is nothing at all, and the stack is bounded for the same
 	 * reason the tile runs are -- a rule count read off a file decides how much gets drawn. */
 	dividerRules = std::clamp(dividerRules, 1, 16);
-	dividerGap = std::max(0.0, dividerGap);
-	dividerPieceGap = std::max(0.0, dividerPieceGap);
+	/*
+	 * Both of these may be negative -- that is a join rather than a gap, and is how the parts of
+	 * a divider are made to touch. Bounded on that side only, and at the same figure the
+	 * designer's spin boxes offer, so a value read off a file cannot ask for an overlap wider
+	 * than any divider it could sit in. The layout still holds the arms inside the section's own
+	 * box whatever arrives here.
+	 */
+	dividerGap = std::max(-kMaxDividerJoin, dividerGap);
+	dividerPieceGap = std::max(-kMaxDividerJoin, dividerPieceGap);
 	dividerRuleGap = std::max(0.0, dividerRuleGap);
 	dividerRuleInset = std::max(0.0, dividerRuleInset);
 	if (spacerHeight < 0)
@@ -1435,7 +1444,8 @@ Section Section::makeDefault(SectionType type)
 			section.marginX = 120;
 		}
 		for (int i = 0; i < count; ++i)
-			section.entries.append(Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}, {}, {}});
+			section.entries.append(
+				Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}, {}, {}});
 		break;
 	}
 

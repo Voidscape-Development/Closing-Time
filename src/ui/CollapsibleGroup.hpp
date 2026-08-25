@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QWidget>
 
+class QCheckBox;
+class QHBoxLayout;
 class QLayout;
 class QToolButton;
 class QVBoxLayout;
@@ -39,7 +41,15 @@ namespace closingtime {
  * mean (a secondary style either applies or it does not). A disclosure triangle says "there is more
  * here" and nothing else, which is the whole of what this does.
  *
- * The fold state is per group and per window; nothing about it is written to the document.
+ * Those two readings are both wanted on the style groups, so a group can carry both: a checkbox
+ * saying whether the settings apply and, beside it, the triangle saying whether they are on screen.
+ * They are deliberately independent -- folding a group away never switches it off, and switching a
+ * group off never hides the settings somebody may be about to come back to. Each has its own
+ * signal, `toggled` and `expandedChanged`, so a caller listening for a document change is not woken
+ * by somebody tidying the pane.
+ *
+ * The fold state is per group and per window; nothing about it is written to the document. The
+ * checked state is a document setting and belongs to whoever put the checkbox there.
  */
 class CollapsibleGroup : public QWidget {
 	Q_OBJECT
@@ -53,13 +63,37 @@ public:
 	void addLayout(QLayout *layout);
 
 	void setTitle(const QString &title);
+	/*
+	 * A tooltip for the header row itself. Setting one on the group reaches only the strip of
+	 * it no child covers, which on an expanded group is almost nowhere -- and the title is the
+	 * part somebody hovers when they want to know what the group is for.
+	 */
+	void setHeaderToolTip(const QString &tip);
 
 	bool isExpanded() const;
 	void setExpanded(bool expanded);
 
+	/*
+	 * Whether the group carries a checkbox, and what it says. A group without one is never off,
+	 * so `isChecked` answers true for it: "these settings apply" is the truth about a group that
+	 * was never given a way to be switched off.
+	 */
+	void setCheckable(bool checkable);
+	bool isCheckable() const { return enable != nullptr; }
+	bool isChecked() const;
+	void setChecked(bool checked);
+
+signals:
+	/* The checkbox only. Folding is `expandedChanged`. */
+	void toggled(bool checked);
+	void expandedChanged(bool expanded);
+
 private:
 	void refreshHeader();
 
+	QHBoxLayout *headerRow = nullptr;
+	/* Null until setCheckable(true); see the note on the two readings above. */
+	QCheckBox *enable = nullptr;
 	QToolButton *header = nullptr;
 	QWidget *body = nullptr;
 	QString titleText;
