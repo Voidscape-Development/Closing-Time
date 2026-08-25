@@ -438,6 +438,37 @@ one want with two names: a divider whose rule carries the title's gold sweep whi
 stays white is the same edit as yellow leader dots under white names. The designer retitles the
 group by section type, the way it already retitles the secondary style group.
 
+**The parts can be joined into one piece rather than merely set beside each other.** Every join in
+a divider used to be a gap, floored at zero, so a composed divider read as a row of separate marks
+however carefully the shapes were chosen. Two settings answer that, and they compose:
+
+- `dividerGap` and `dividerPieceGap` **reach below zero**, where they stop holding two parts apart
+  and push them into each other instead. That is not a second setting with its own name: a cap
+  overlapping its rule by six pixels is the same edit as one clearing it by six, and one spin box
+  running through zero is what says so. A piece join is bounded at half the narrower of the two
+  pieces it sits between — pieces may be pushed together, never through each other, since a stack
+  whose width counts *down* as the setting goes up is not a design anybody asked for. The bound is
+  worked out once, in the measure pass, and carried on `MeasuredStack::gaps` to the place pass:
+  two passes computing it separately would be two chances to disagree about a width the section
+  below is positioned from.
+- `dividerConnect` **runs the rule the whole way through**. One unbroken arm from the middle of one
+  end cap to the middle of the other, passing behind the centre stack rather than breaking either
+  side of it, so a diamond sits *on* the line the way an ornamental rule is actually composed. The
+  middle of the outermost piece rather than the stack's outer edge, because that point is inside
+  every cap's silhouette whatever the cap is — run to the edge instead and the rule pokes a blunt
+  nose out of a tapering arrowhead. `dividerGap` is not consulted while it is on, and the designer
+  takes the row away with it.
+
+None of this needed new painting machinery, which is the point: the silhouette below is what makes
+an overlap union seamlessly instead of showing a seam, a doubled outline or a restarted gradient.
+What it did need was the arms placed into `DividerLayout::art` **before** the stacks rather than
+after, so a piece is drawn over the rule it sits on. That is invisible for tinted artwork — it all
+goes into the one silhouette — but a custom picture left in its own colours is painted straight to
+the strip, and a rule running across the front of it is not the ornament anybody placed.
+
+Whatever a join is set to, the arms are held inside the section's own box. A setting somebody can
+drag to its end is one that will be, and past that edge the rule paints over its neighbours.
+
 Every tinted part of a divider is rasterised into **one** silhouette and inked once — not part by
 part — so an outline surrounds the divider rather than each diamond in it, and one gradient runs
 the whole way across instead of restarting at every piece. That is what `render/SvgArt.{hpp,cpp}`
@@ -1392,6 +1423,11 @@ same reason: reporting it would send the user after a font nothing uses.
 - A divider's ends are the same stack of pieces its middle has always been, from the same library
   of shapes: an arrowhead can break a rule as well as cap one, and a word can cap one as well as
   break one.
+- A divider's parts can be joined into one figure rather than set beside each other: the rule runs
+  the whole way through, and every gap in a divider reaches below zero to push two parts together.
+- The section editor's style groups fold away like the rows above them, and a group can now be both
+  switched off and folded — the checkbox and the disclosure triangle side by side, saying different
+  things.
 - The section editor asks for a base type and a few switches rather than one of twenty types, and
   its rows are gathered into groups that fold away, with the rarely-used ones behind a switch.
 - Deleting a section asks first.
@@ -1522,6 +1558,15 @@ outward; custom artwork taking the section's colour with `dividerTint` on and ke
 with it off, and a missing file leaving the rest of the divider drawn; and the degenerate cases
 — a divider with no cap, no arm and no centre, one narrower than its own parts, one whose only
 centre piece is an empty word, and a hidden one taking no height at all.
+
+Joining the parts was checked the same way, and by the absence it is for: a composed divider held
+apart has columns with no ink in them, and the same divider joined has none — the figure staying
+exactly as wide and as tall either way, since a section that grew when its parts were joined would
+move everything under it, and the end gap making no difference at all once it is not consulted.
+Overlap was measured on a centre stack with no arm drawn, where the ink *is* the stack's width:
+three equal diamonds opening by exactly the gap asked for, and an unbounded overlap taking back
+exactly one piece width across the two joins rather than however much was typed. A join dragged to
+its far end leaves no ink outside the section's own box.
 
 Row geometry and the section box were checked the same way, against the previous build as well
 as the new one so that each case is known to fail before it passes: every bridged row staying on

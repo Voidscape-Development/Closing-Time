@@ -469,6 +469,14 @@ struct StylePreset {
 constexpr double kMinLogoSpeed = 0.1;
 constexpr double kMaxLogoSpeed = 8.0;
 
+/*
+ * How far a divider's parts may be pushed into each other, in pixels -- the far end of
+ * Section::dividerGap and Section::dividerPieceGap once they are allowed to go negative. Shared by
+ * the loader and the designer's spin boxes, so a document cannot arrive asking for an overlap the
+ * window has no way to type.
+ */
+constexpr double kMaxDividerJoin = 2048.0;
+
 struct LogoPlayback {
 	/* Repeat for as long as the logo is on screen, rather than holding the last frame. */
 	bool loop = true;
@@ -787,10 +795,35 @@ struct Section {
 	 * Space left clear where an arm meets something, in pixels: the cap outside it and the
 	 * centre stack inside it. One number rather than two, because a divider whose gaps differ
 	 * at the two ends of the same arm reads as a mistake rather than as a setting.
+	 *
+	 * Negative is a join rather than a gap: the arm runs *under* what it meets by that much, and
+	 * because every tinted part of a divider is rasterised into one silhouette and inked once,
+	 * an overlap unions into a single continuous ornament instead of showing a seam or a second
+	 * outline. That is the whole of what makes the parts connectable rather than merely adjacent.
 	 */
 	double dividerGap = 12.0;
-	/* Space between consecutive pieces of the centre stack, in pixels. */
+	/*
+	 * Space between consecutive pieces of a stack, in pixels. Negative overlaps them, and is
+	 * bounded per join at half the narrower of the two pieces it sits between, so pieces may be
+	 * pushed into each other but never through each other.
+	 */
 	double dividerPieceGap = 10.0;
+	/*
+	 * Run the rule the whole way through instead of stopping at what it meets.
+	 *
+	 * The arm becomes one unbroken span from the middle of one end cap to the middle of the
+	 * other, passing behind the centre stack rather than breaking either side of it -- so a
+	 * diamond sits *on* the line the way an ornamental rule is actually drawn, rather than
+	 * beside two lines that stop short of it. The middle of the outermost piece rather than the
+	 * stack's outer edge, because that point is inside every cap's silhouette whatever the cap
+	 * is: run to the edge instead and the rule pokes a blunt nose out of a tapering arrowhead.
+	 *
+	 * `dividerGap` is not consulted while this is on -- there is nothing left for it to hold
+	 * apart -- and the piece gaps within each stack still are.
+	 *
+	 * Off by default, which is the divider every existing document already draws.
+	 */
+	bool dividerConnect = false;
 
 	/* What sits between the two arms, in order, left to right. Empty is an unbroken rule. */
 	QVector<DividerPiece> dividerCentre;

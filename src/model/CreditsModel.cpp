@@ -924,6 +924,7 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "divider_thickness", dividerThickness);
 	obs_data_set_double(data, "divider_gap", dividerGap);
 	obs_data_set_double(data, "divider_piece_gap", dividerPieceGap);
+	obs_data_set_bool(data, "divider_connect", dividerConnect);
 	obs_data_set_int(data, "divider_rules", dividerRules);
 	obs_data_set_double(data, "divider_rule_gap", dividerRuleGap);
 	obs_data_set_double(data, "divider_rule_inset", dividerRuleInset);
@@ -1108,6 +1109,8 @@ void Section::load(obs_data_t *data)
 	dividerPieceGap = obs_data_has_user_value(data, "divider_piece_gap")
 				  ? obs_data_get_double(data, "divider_piece_gap")
 				  : 10.0;
+	/* Absent in every document written before the parts could be joined, which drew them apart. */
+	dividerConnect = obs_data_get_bool(data, "divider_connect");
 	dividerRuleGap =
 		obs_data_has_user_value(data, "divider_rule_gap") ? obs_data_get_double(data, "divider_rule_gap") : 6.0;
 	dividerRules = static_cast<int>(obs_data_get_int(data, "divider_rules"));
@@ -1179,8 +1182,15 @@ void Section::load(obs_data_t *data)
 	/* One rule is a divider; none is nothing at all, and the stack is bounded for the same
 	 * reason the tile runs are -- a rule count read off a file decides how much gets drawn. */
 	dividerRules = std::clamp(dividerRules, 1, 16);
-	dividerGap = std::max(0.0, dividerGap);
-	dividerPieceGap = std::max(0.0, dividerPieceGap);
+	/*
+	 * Both of these may be negative -- that is a join rather than a gap, and is how the parts of
+	 * a divider are made to touch. Bounded on that side only, and at the same figure the
+	 * designer's spin boxes offer, so a value read off a file cannot ask for an overlap wider
+	 * than any divider it could sit in. The layout still holds the arms inside the section's own
+	 * box whatever arrives here.
+	 */
+	dividerGap = std::max(-kMaxDividerJoin, dividerGap);
+	dividerPieceGap = std::max(-kMaxDividerJoin, dividerPieceGap);
 	dividerRuleGap = std::max(0.0, dividerRuleGap);
 	dividerRuleInset = std::max(0.0, dividerRuleInset);
 	if (spacerHeight < 0)

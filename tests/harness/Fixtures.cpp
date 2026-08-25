@@ -380,6 +380,46 @@ const QVector<Scene> &scenes()
 			    documentWith({plain, stacked, labelled}));
 		}
 
+		/* --- joined dividers ---------------------------------------------------------- */
+
+		{
+			/*
+			 * The same composed divider three ways, because the whole of what joining
+			 * does is visible only against the divider it was: held apart, run through,
+			 * and pushed together by hand. One ornament and one cap, so what the picture
+			 * shows is the joins rather than the shapes either side of them.
+			 */
+			const auto composed = [] {
+				Section section = Section::makeDefault(SectionType::SectionDivider);
+				section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament,
+								   DividerShape::Arrow,
+								   {},
+								   1.0,
+								   {},
+								   {}}};
+				section.dividerCentre = {DividerPiece{DividerPiece::Kind::Ornament,
+								      DividerShape::Diamond,
+								      {},
+								      1.0,
+								      {},
+								      {}}};
+				section.dividerGap = 24.0;
+				return section;
+			};
+
+			Section apart = composed();
+
+			Section joined = composed();
+			joined.dividerConnect = true;
+
+			Section overlapped = composed();
+			overlapped.dividerGap = -12.0;
+
+			add(QStringLiteral("dividers-joined"),
+			    QStringLiteral("One composed divider held apart, run through, and overlapped"),
+			    documentWith({apart, joined, overlapped}));
+		}
+
 		/* --- everything -------------------------------------------------------------- */
 
 		add(QStringLiteral("every-section-type"),

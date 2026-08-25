@@ -65,6 +65,7 @@ Section distinctive(SectionType type)
 	section.dividerEndCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}}};
 	section.dividerArm = DividerShape::Rule;
 	section.dividerThickness = 6.5;
+	section.dividerConnect = true;
 	section.dividerGap = 15.5;
 	section.dividerPieceGap = 9.5;
 	section.dividerRules = 3;
@@ -150,6 +151,7 @@ void compare(const Section &loaded, const Section &original)
 		check(loaded.dividerEndCap.first().shape == original.dividerEndCap.first().shape, "dividerEndCap shape");
 	check(loaded.dividerArm == original.dividerArm, "dividerArm");
 	checkNear(loaded.dividerThickness, original.dividerThickness, 0.001, "dividerThickness");
+	check(loaded.dividerConnect == original.dividerConnect, "dividerConnect");
 	checkNear(loaded.dividerGap, original.dividerGap, 0.001, "dividerGap");
 	checkNear(loaded.dividerPieceGap, original.dividerPieceGap, 0.001, "dividerPieceGap");
 	checkEq(loaded.dividerRules, original.dividerRules, "dividerRules");
@@ -274,6 +276,7 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	check(legacy.dividerCap.isEmpty(), "an absent divider cap is an end with nothing on it");
 	check(legacy.dividerArm == DividerShape::Rule, "an absent divider arm is the plain rule, not None");
 	check(legacy.dividerMirrorEnds, "divider ends are mirrored by default");
+	check(!legacy.dividerConnect, "and its parts are drawn apart, which is the divider it was written as");
 	check(legacy.children.empty(), "a section from before sticky blocks holds nothing");
 	check(legacy.stickyAnchor == StickyAnchor::Center, "a sticky block pins by its middle unless told otherwise");
 	checkNear(legacy.stickyCanvasPosition, 0.5, 0.001, "halfway down the frame");
@@ -341,6 +344,8 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	obs_data_set_double(hostile, "divider_thickness", -1.0);
 	obs_data_set_double(hostile, "section_width", 17.0);
 	obs_data_set_int(hostile, "entry_gap", -50);
+	obs_data_set_double(hostile, "divider_gap", -1e9);
+	obs_data_set_double(hostile, "divider_piece_gap", -1e9);
 
 	Section clamped;
 	clamped.load(hostile);
@@ -350,4 +355,10 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	check(clamped.dividerThickness > 0.0, "a thickness off a file is drawable");
 	check(clamped.sectionWidth <= 1.0, "a section width off a file is a real share");
 	check(clamped.entryGap >= 0, "an entry gap off a file is not negative");
+	/*
+	 * A join is allowed to be negative -- that is what makes the parts touch -- so what is
+	 * bounded is how far, not which side of zero.
+	 */
+	check(clamped.dividerGap >= -kMaxDividerJoin, "a join off a file cannot overlap without bound");
+	check(clamped.dividerPieceGap >= -kMaxDividerJoin, "and neither can a piece join");
 }

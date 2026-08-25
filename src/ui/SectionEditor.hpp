@@ -369,6 +369,8 @@ private:
 	QCheckBox *rowSubtitles = nullptr;
 
 	QCheckBox *dividerMirrorEnds = nullptr;
+	/* Runs the rule through the ends and the centre rather than stopping at them. */
+	QCheckBox *dividerConnect = nullptr;
 	QComboBox *dividerArm = nullptr;
 	QLineEdit *dividerArmSvgPath = nullptr;
 	QSpinBox *dividerThickness = nullptr;

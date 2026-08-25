@@ -920,15 +920,30 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	dividerThickness->setToolTip(moduleText("Designer.DividerThickness.Tip"));
 	addRow(moduleText("Designer.DividerThickness"), dividerThickness);
 
+	/*
+	 * Joining the parts is the first question about them, so it sits above the two gaps it
+	 * makes most of the difference to rather than down among the fine spacing.
+	 */
+	dividerConnect = new QCheckBox(moduleText("Designer.DividerConnect"), this);
+	dividerConnect->setToolTip(moduleText("Designer.DividerConnect.Tip"));
+	addRow(QString(), dividerConnect);
+
+	/*
+	 * Both gaps reach below zero, where they stop holding two parts apart and start pushing
+	 * them into each other. That is not a second setting: a divider whose cap overlaps its rule
+	 * by six pixels is the same edit as one that clears it by six, and one spin box running
+	 * through zero is what says so.
+	 */
 	dividerGap = new QSpinBox(this);
-	dividerGap->setRange(0, 2048);
+	dividerGap->setRange(-static_cast<int>(kMaxDividerJoin), 2048);
 	dividerGap->setSuffix(QStringLiteral(" px"));
 	dividerGap->setToolTip(moduleText("Designer.DividerGap.Tip"));
 	addRow(moduleText("Designer.DividerGap"), dividerGap);
 
 	dividerPieceGap = new QSpinBox(this);
-	dividerPieceGap->setRange(0, 2048);
+	dividerPieceGap->setRange(-static_cast<int>(kMaxDividerJoin), 2048);
 	dividerPieceGap->setSuffix(QStringLiteral(" px"));
+	dividerPieceGap->setToolTip(moduleText("Designer.DividerPieceGap.Tip"));
 	addRow(moduleText("Designer.DividerPieceGap"), dividerPieceGap);
 
 	dividerRules = new QSpinBox(this);
@@ -1384,6 +1399,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 	connect(dividerMirrorEnds, &QCheckBox::toggled, this, revisitVisibility);
 	connect(dividerTint, &QCheckBox::toggled, this, revisitVisibility);
+	/* Joining the parts leaves the arm gap with nothing to hold apart, so the row goes with it. */
+	connect(dividerConnect, &QCheckBox::toggled, this, revisitVisibility);
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(entryGap, &QSpinBox::valueChanged, this, notify);
@@ -1490,6 +1507,7 @@ void SectionEditor::setSection(const Section &source)
 	selectByData(dividerArm, static_cast<int>(source.dividerArm));
 	dividerArmSvgPath->setText(source.dividerArmSvg);
 	dividerThickness->setValue(qRound(source.dividerThickness));
+	dividerConnect->setChecked(source.dividerConnect);
 	dividerGap->setValue(qRound(source.dividerGap));
 	dividerPieceGap->setValue(qRound(source.dividerPieceGap));
 	dividerRules->setValue(source.dividerRules);
@@ -1595,6 +1613,7 @@ Section SectionEditor::section() const
 	result.dividerArm = static_cast<DividerShape>(dividerArm->currentData().toInt());
 	result.dividerArmSvg = dividerArmSvgPath->text();
 	result.dividerThickness = dividerThickness->value();
+	result.dividerConnect = dividerConnect->isChecked();
 	result.dividerGap = dividerGap->value();
 	result.dividerPieceGap = dividerPieceGap->value();
 	result.dividerRules = dividerRules->value();
@@ -1918,7 +1937,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(dividerArm, divider);
 	setRowVisible(dividerArmSvgPath->parentWidget(), armFromFile);
 	setRowVisible(dividerThickness, divider);
-	setRowVisible(dividerGap, divider);
+	setRowVisible(dividerConnect, divider);
+	/*
+	 * The arm gap is what holds the rule clear of the cap and the centre, and a connected
+	 * divider has it clear of neither. Nothing is switched off by hiding it -- the setting keeps
+	 * its value and comes straight back when the parts are unjoined.
+	 */
+	setRowVisible(dividerGap, divider && !dividerConnect->isChecked());
 	setRowVisible(dividerPieceGap, divider);
 	setRowVisible(dividerRules, divider);
 	/* One rule has nothing to be spaced from and nothing to taper against. */
