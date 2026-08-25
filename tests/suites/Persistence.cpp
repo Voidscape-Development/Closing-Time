@@ -58,9 +58,14 @@ Section distinctive(SectionType type)
 	section.bridgeSpanEmpty = true;
 	section.bridgeMinGap = 33.5;
 	section.rowSubtitles = true;
-	section.dividerCap = {
-		DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 2.25, {}, {}},
-		DividerPiece{DividerPiece::Kind::Text, DividerShape::None, {}, 1.0, QStringLiteral("MMXXVI"), {}}};
+	section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 2.25, {}, {}, 37.5},
+			      DividerPiece{DividerPiece::Kind::Text,
+					   DividerShape::None,
+					   {},
+					   1.0,
+					   QStringLiteral("MMXXVI"),
+					   {},
+					   -12.0}};
 	section.dividerMirrorEnds = false;
 	section.dividerEndCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}}};
 	section.dividerArm = DividerShape::Rule;
@@ -143,6 +148,7 @@ void compare(const Section &loaded, const Section &original)
 		check(piece.kind == was.kind, QStringLiteral("dividerCap %1 kind").arg(i));
 		check(piece.shape == was.shape, QStringLiteral("dividerCap %1 shape").arg(i));
 		checkNear(piece.scale, was.scale, 0.001, QStringLiteral("dividerCap %1 scale").arg(i));
+		checkNear(piece.rotation, was.rotation, 0.001, QStringLiteral("dividerCap %1 rotation").arg(i));
 		checkEq(piece.text, was.text, QStringLiteral("dividerCap %1 text").arg(i));
 	}
 	check(loaded.dividerMirrorEnds == original.dividerMirrorEnds, "dividerMirrorEnds");
@@ -305,6 +311,7 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 		check(migrated.dividerCap.first().kind == DividerPiece::Kind::Ornament, "and it is an ornament");
 		check(migrated.dividerCap.first().shape == DividerShape::Arrow, "carrying the shape it named");
 		checkNear(migrated.dividerCap.first().scale, 1.0, 0.001, "at its own size");
+		checkNear(migrated.dividerCap.first().rotation, 0.0, 0.001, "and standing square");
 	}
 	checkEq(migrated.dividerEndCap.size(), 1, "so does the far end");
 	if (!migrated.dividerEndCap.isEmpty()) {

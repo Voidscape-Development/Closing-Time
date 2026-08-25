@@ -74,16 +74,21 @@ running inward from it, and a middle — then the same again mirrored, so the tw
 cannot drift apart while you work on it. The ends and the middle are the same kind of thing and
 draw on the same library of vector shapes — arrowheads, spearpoints, teardrops, scrolled ends,
 deco steps and chevrons; diamonds, nested diamonds, four- and five-point stars, dots, hearts,
-scrolls, filigree curls and deco interlocks — so an arrowhead can break a rule as readily as it
-caps one, and any of them can instead be an SVG of your own. The rule between them has a library
+scrolls, filigree curls and deco interlocks; and the plain geometry under all of it — circles,
+squares, rounded squares, triangles, pentagons, hexagons and octagons, each filled or as an
+outline — so an arrowhead can break a rule as readily as it caps one, and any of them can instead
+be an SVG of your own. The rule between them has a library
 of its own: plain, double, tapered, dotted, dashed, diamond-chained and ticked.
 
 Each end, and the middle, is a *list* rather than a single choice, because the figures that turn
 up there are compounds: a diamond with a dot either side of it, `PART II` between two curls, a
 monogram between a pair of scrolls, `MMXXVI` set against the end of the rule. Pieces can be
-ornaments, a word set in the section's own font, or an image, each at a size of its own and in
-whatever order you put them; leave a list empty and you get an end with nothing on it, or an
-unbroken rule. Two
+ornaments, a word set in the section's own font, or an image, each at a size and an angle of its
+own and in whatever order you put them; leave a list empty and you get an end with nothing on it,
+or an unbroken rule. A turned piece keeps the room along the rule that its untilted shape had, so
+its neighbours stay where they are while you dial an angle in — a square set on its corner, a
+triangle pointing up out of the line, a year set sideways — and the far end of a mirrored rule
+leans the other way, so the two ends stay each other's reflection. Two
 or three rules can run in parallel with a single ornament breaking all of them, and they can be
 tapered so the stack forms a wedge. One thickness sizes the whole thing — every shape knows its
 own proportion to the rule it belongs to, so an arrowhead stays an arrowhead when a divider is

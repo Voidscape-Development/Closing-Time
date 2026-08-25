@@ -22,6 +22,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -34,6 +36,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -195,12 +198,34 @@ enum PieceColumn {
 	PieceValue,
 	/* Ornament pieces only: a multiplier on the size its shape asks for. */
 	PieceSize,
+	/* Degrees clockwise about the piece's own centre; every kind reads it. */
+	PieceRotation,
 	PieceColumnCount,
 };
 
-/* Width of the centre table's two narrow columns, neither of which holds a long word. */
+/* Width of the centre table's three narrow columns, none of which holds a long word. */
 constexpr int kPieceKindColumnWidth = 110;
 constexpr int kPieceSizeColumnWidth = 70;
+constexpr int kPieceRotationColumnWidth = 80;
+
+/*
+ * Written after every angle in the table and taken off again when one is read, so the column
+ * says what its numbers are without a spin box in every row saying it a second time.
+ */
+constexpr QChar kDegreeSign(0x00b0);
+
+/* An angle as typed, in degrees: the number in the cell, with or without the sign after it. */
+double degreesFromCell(const QString &cell)
+{
+	QString text = cell.trimmed();
+	text.remove(kDegreeSign);
+
+	/*
+	 * Whatever will not read as a number is nothing turned, which is what an emptied cell and a
+	 * mistyped one both plainly mean.
+	 */
+	return text.trimmed().toDouble();
+}
 
 /*
  * The types the picker offers, from which the rest are composed by the switches beside it.
@@ -682,6 +707,16 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		typeBox->addItem(baseTypeLabel(type), static_cast<int>(type));
 	addRow(moduleText("Designer.SectionType"), typeBox);
 
+	/*
+	 * What this section is called in the list, directly under what kind of thing it is: the two
+	 * together are how a section is found again in a roll of forty, and naming one is the next
+	 * thing done after picking the other.
+	 */
+	labelEdit = new QLineEdit(this);
+	labelEdit->setPlaceholderText(moduleText("Designer.LabelPlaceholder"));
+	addRow(moduleText("Designer.Label"), labelEdit);
+
+	/* The chosen type in a sentence, under the pair it describes. */
 	typeHelp = new QLabel(this);
 	typeHelp->setWordWrap(true);
 	typeHelp->setEnabled(false);
@@ -704,10 +739,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
 	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
 	addRow(moduleText("Designer.ListContent"), typeListContent);
-
-	labelEdit = new QLineEdit(this);
-	labelEdit->setPlaceholderText(moduleText("Designer.LabelPlaceholder"));
-	addRow(moduleText("Designer.Label"), labelEdit);
 
 	visibleBox = new QCheckBox(moduleText("Designer.Visible"), this);
 	addRow(QString(), visibleBox);
@@ -1192,6 +1223,9 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	setLogoButton = addButton(makeLabelledButton(entriesGroup, moduleText("Designer.SetLogo")),
 				  &SectionEditor::browseForEntryLogo);
 	buttons->addStretch();
+	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ExpandTable"),
+				     moduleText("Designer.ExpandTable.Tip")),
+		  [this] { expandTable(entryTable, moduleText("Designer.Entries")); });
 	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ImportCsv")), &SectionEditor::importCsv);
 
 	entriesLayout->addLayout(buttons);
@@ -1229,7 +1263,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		table->setColumnCount(PieceColumnCount);
 		table->setHorizontalHeaderLabels(
 			{moduleText("Designer.Column.PieceKind"), moduleText("Designer.Column.PieceShape"),
-			 moduleText("Designer.Column.PieceValue"), moduleText("Designer.Column.PieceSize")});
+			 moduleText("Designer.Column.PieceValue"), moduleText("Designer.Column.PieceSize"),
+			 moduleText("Designer.Column.PieceRotation")});
 		table->setMinimumHeight(kCentreTableMinimumHeight);
 
 		/*
@@ -1243,6 +1278,9 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		header->setSectionResizeMode(PieceValue, QHeaderView::Stretch);
 		table->setColumnWidth(PieceKind, kPieceKindColumnWidth);
 		table->setColumnWidth(PieceSize, kPieceSizeColumnWidth);
+		table->setColumnWidth(PieceRotation, kPieceRotationColumnWidth);
+		if (QTableWidgetItem *rotationHeader = table->horizontalHeaderItem(PieceRotation))
+			rotationHeader->setToolTip(moduleText("Designer.Column.PieceRotation.Tip"));
 
 		pageLayout->addWidget(table);
 
@@ -1269,6 +1307,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		pieceFileButtons[index] = addPieceButton(makeLabelledButton(page, moduleText("Designer.SetPieceFile")),
 							 [this, slot] { browseForPieceFile(slot); });
 		buttonRow->addStretch();
+		addPieceButton(makeLabelledButton(page, moduleText("Designer.ExpandTable"),
+						  moduleText("Designer.ExpandTable.Tip")),
+			       [this, slot] {
+				       expandTable(pieceTable(slot),
+						   moduleText("Designer.DividerPieces") + QStringLiteral(" — ") +
+							   pieceTabs->tabText(static_cast<int>(slot)));
+			       });
 
 		pageLayout->addLayout(buttonRow);
 		pieceTabs->addTab(page, moduleText(kSlotTitles[index]));
@@ -1768,14 +1813,21 @@ void SectionEditor::relayoutEntryTable(SectionType type)
 	 * through the old columns and put them back through the new ones. Rebuilding without that
 	 * leaves an empty table for the next read to believe, which is a list of credits thrown away
 	 * by a change of type -- the one thing changing a type is documented never to do.
+	 *
+	 * Out through the columns the table is showing, then, and in through the ones it is about to
+	 * show. The subtitle switch adds and takes away columns of its own, so it is asked the same
+	 * way: reading a two-column table with the answer the switch has just been given put every
+	 * row's right-hand name into the left-hand subtitle the moment subtitles were switched on.
 	 */
 	Section held;
 	held.type = tableType;
-	held.rowSubtitles = rowSubtitles->isChecked();
+	held.rowSubtitles = tableRowSubtitles;
 	readEntriesFromTable(&held);
 
+	const bool subtitles = rowSubtitles->isChecked();
 	held.type = type;
-	rebuildEntryTable(type, held.rowSubtitles);
+	held.rowSubtitles = subtitles;
+	rebuildEntryTable(type, subtitles);
 	writeEntriesToTable(held);
 }
 
@@ -1919,6 +1971,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 
 	pieceTabs->setTabVisible(static_cast<int>(PieceSlot::RightEnd), separateEnds);
 	/*
+	 * With the right-hand end gone the one tab left is not the left end of anything -- it is
+	 * both ends of the rule, drawn twice -- so it says so rather than naming a side the reader
+	 * would then look for the opposite of.
+	 */
+	pieceTabs->setTabText(static_cast<int>(PieceSlot::LeftEnd),
+			      moduleText(separateEnds ? "Designer.DividerLeftEnd" : "Designer.DividerBothEnds"));
+	/*
 	 * A tab going away under the reader takes the selection with it, so the left-hand end --
 	 * which is what the right one mirrors -- is what they are left looking at.
 	 */
@@ -2057,6 +2116,7 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 	const QSignalBlocker blocker(entryTable);
 	/* What the columns now stand for, so the next relayout can read them back correctly. */
 	tableType = type;
+	tableRowSubtitles = rowSubtitles;
 
 	entryTable->clear();
 	entryTable->setRowCount(0);
@@ -2322,6 +2382,13 @@ void SectionEditor::writePiecesToTable(PieceSlot slot, const Section &source)
 
 		table->setItem(row, PieceValue, new QTableWidgetItem(value));
 		table->setItem(row, PieceSize, new QTableWidgetItem(size));
+		/*
+		 * An angle belongs to the piece rather than to any one kind of piece -- a word set
+		 * sideways is as ordinary as an arrowhead stood on end -- so this column is filled
+		 * and left editable whatever the row holds.
+		 */
+		table->setItem(row, PieceRotation,
+			       new QTableWidgetItem(QString::number(piece.rotation, 'g', 4) + kDegreeSign));
 
 		applyPieceRowVisibility(slot, row);
 	}
@@ -2352,6 +2419,7 @@ void SectionEditor::readPiecesFromTable(PieceSlot slot, Section *target) const
 		DividerPiece piece;
 		piece.kind = static_cast<DividerPiece::Kind>(kindBox->currentData().toInt());
 		piece.shape = static_cast<DividerShape>(shapeBox->currentData().toInt());
+		piece.rotation = degreesFromCell(cell(PieceRotation));
 
 		switch (piece.kind) {
 		case DividerPiece::Kind::Ornament: {
@@ -2415,6 +2483,50 @@ void SectionEditor::applyPieceRowVisibility(PieceSlot slot, int row)
 
 	setEditable(PieceValue, hasValue);
 	setEditable(PieceSize, hasSize);
+}
+
+void SectionEditor::expandTable(QTableWidget *table, const QString &title)
+{
+	/*
+	 * Where to put the table back: the layout it is in and the place it holds in it, taken
+	 * before it is moved rather than assumed, so this one call serves the entry table and the
+	 * divider's three piece tables alike.
+	 */
+	QWidget *home = table->parentWidget();
+	auto *homeLayout = home ? qobject_cast<QBoxLayout *>(home->layout()) : nullptr;
+	if (!homeLayout)
+		return;
+
+	const int homeIndex = homeLayout->indexOf(table);
+	if (homeIndex < 0)
+		return;
+
+	QDialog window(this);
+	window.setWindowTitle(title);
+
+	/*
+	 * Most of the screen, which is the whole point of the button: what it is for is the run of
+	 * credits too long to read a pane at a time.
+	 */
+	if (const QScreen *display = screen()) {
+		const QRect available = display->availableGeometry();
+		window.resize(available.width() * 3 / 4, available.height() * 3 / 4);
+	}
+
+	auto *layout = new QVBoxLayout(&window);
+	layout->addWidget(table);
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &window);
+	connect(buttons, &QDialogButtonBox::rejected, &window, &QDialog::reject);
+	layout->addWidget(buttons);
+
+	window.exec();
+
+	/*
+	 * Home before the window goes, and before anything else: a widget still parented to a dialog
+	 * being destroyed is destroyed with it, and the editor holds a pointer to this one.
+	 */
+	homeLayout->insertWidget(homeIndex, table);
 }
 
 bool SectionEditor::dividerUsesFile() const

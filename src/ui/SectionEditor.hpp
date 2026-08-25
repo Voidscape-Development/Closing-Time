@@ -282,6 +282,18 @@ private:
 
 	QTableWidget *pieceTable(PieceSlot slot) const { return pieceTables[static_cast<int>(slot)]; }
 
+	/*
+	 * Opens one of the editor's tables in a window of its own for as long as it is wanted there,
+	 * and puts it back where it came from afterwards.
+	 *
+	 * The table itself moves rather than a copy of it: a roll of two hundred credits is typed
+	 * into a pane a third of a designer wide, and the way to give that work room is a window,
+	 * not a taller pane. Moving the widget keeps every signal, selection and half-typed cell
+	 * exactly as it was, where a second table filled from the first would have to be kept in
+	 * step with it and would hand back stale rows the moment it was not.
+	 */
+	void expandTable(QTableWidget *table, const QString &title);
+
 	void addEntry();
 	void removeSelectedEntries();
 	void moveSelectedEntry(int delta);
@@ -458,6 +470,12 @@ private:
 	Section current;
 	/* The type the entry table's columns currently stand for; see relayoutEntryTable. */
 	SectionType tableType = SectionType::Title;
+	/*
+	 * Whether those columns include the two subtitle ones. Kept beside `tableType` and for the
+	 * same reason: the columns on screen are what a read has to be taken through, and the
+	 * checkbox has already moved on by the time the toggle is handled.
+	 */
+	bool tableRowSubtitles = false;
 	bool loading = false;
 };
 

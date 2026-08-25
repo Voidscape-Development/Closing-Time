@@ -186,6 +186,89 @@ const DividerShapeInfo kDividerShapes[] = {
 	 R"(<path d="M1.6 0.31 L1.94 0.5 L1.6 0.69 L1.26 0.5 Z" fill="#ffffff"/>)",
 	 3.2, 4.5, DividerStretch::Spread, kPiece},
 
+	/* --- Plain shapes ----------------------------------------------------------------- */
+
+	/*
+	 * The geometry, filled and outlined. Every one is drawn to the full unit height with the
+	 * midline through its centre, so a run of them sits on the rule at one size whatever mix of
+	 * shapes it is made of -- and `height` is the same 3.0 throughout for the same reason.
+	 *
+	 * An outline is the filled path scaled about its own centre rather than a second set of
+	 * coordinates: the stroke is centred on the line it traces, so art drawn to the edge of the
+	 * box would have the outer half of it clipped away by the viewBox. Scaling the whole shape
+	 * pulls the stroke inside, and keeps the outline the same figure as the fill it answers.
+	 */
+	{DividerShape::Circle, "circle", "Circle", R"(<circle cx="0.5" cy="0.5" r="0.5" fill="#ffffff"/>)", 1.0, 3.0,
+	 DividerStretch::Spread, kPiece},
+
+	{DividerShape::Ring, "ring", "Ring",
+	 R"(<circle cx="0.5" cy="0.5" r="0.435" fill="none" stroke="#ffffff" stroke-width="0.13"/>)", 1.0, 3.0,
+	 DividerStretch::Spread, kPiece},
+
+	{DividerShape::Square, "square", "Square", R"(<rect x="0" y="0" width="1" height="1" fill="#ffffff"/>)", 1.0,
+	 3.0, DividerStretch::Spread, kPiece},
+
+	{DividerShape::SquareOutline, "square_outline", "Square Outline",
+	 R"(<rect x="0.065" y="0.065" width="0.87" height="0.87" fill="none" stroke="#ffffff" stroke-width="0.13"/>)",
+	 1.0, 3.0, DividerStretch::Spread, kPiece},
+
+	{DividerShape::RoundedSquare, "rounded_square", "Rounded Square",
+	 R"(<rect x="0" y="0" width="1" height="1" rx="0.22" fill="#ffffff"/>)", 1.0, 3.0, DividerStretch::Spread,
+	 kPiece},
+
+	{DividerShape::RoundedSquareOutline, "rounded_square_outline", "Rounded Square Outline",
+	 R"(<rect x="0.065" y="0.065" width="0.87" height="0.87" rx="0.19" fill="none" stroke="#ffffff")"
+	 R"( stroke-width="0.13"/>)",
+	 1.0, 3.0, DividerStretch::Spread, kPiece},
+
+	/* Equilateral, so its width follows its height rather than being chosen: 2/sqrt(3). */
+	{DividerShape::Triangle, "triangle", "Triangle", R"(<path d="M0.577 0 L1.155 1 L0 1 Z" fill="#ffffff"/>)",
+	 1.155, 3.0, DividerStretch::Spread, kPiece},
+
+	{DividerShape::TriangleOutline, "triangle_outline", "Triangle Outline",
+	 R"svg(<g transform="translate(0.577 0.667) scale(0.84) translate(-0.577 -0.667)">)svg"
+	 R"(<path d="M0.577 0 L1.155 1 L0 1 Z" fill="none" stroke="#ffffff" stroke-width="0.155" )"
+	 R"(stroke-linejoin="round"/>)"
+	 R"(</g>)",
+	 1.155, 3.0, DividerStretch::Spread, kPiece},
+
+	{DividerShape::Pentagon, "pentagon", "Pentagon",
+	 R"(<path d="M0.526 0 L1.051 0.382 L0.851 1 L0.201 1 L0 0.382 Z" fill="#ffffff"/>)", 1.051, 3.0,
+	 DividerStretch::Spread, kPiece},
+
+	{DividerShape::PentagonOutline, "pentagon_outline", "Pentagon Outline",
+	 R"svg(<g transform="translate(0.526 0.553) scale(0.87) translate(-0.526 -0.553)">)svg"
+	 R"(<path d="M0.526 0 L1.051 0.382 L0.851 1 L0.201 1 L0 0.382 Z" fill="none" stroke="#ffffff")"
+	 R"( stroke-width="0.15" stroke-linejoin="round"/>)"
+	 R"(</g>)",
+	 1.051, 3.0, DividerStretch::Spread, kPiece},
+
+	/*
+	 * Flat-topped rather than pointed: a hexagon standing on a vertex is taller than it is wide,
+	 * which is the wrong way round for something sitting on a horizontal rule.
+	 */
+	{DividerShape::Hexagon, "hexagon", "Hexagon",
+	 R"(<path d="M0.289 0 L0.866 0 L1.155 0.5 L0.866 1 L0.289 1 L0 0.5 Z" fill="#ffffff"/>)", 1.155, 3.0,
+	 DividerStretch::Spread, kPiece},
+
+	{DividerShape::HexagonOutline, "hexagon_outline", "Hexagon Outline",
+	 R"svg(<g transform="translate(0.577 0.5) scale(0.87) translate(-0.577 -0.5)">)svg"
+	 R"(<path d="M0.289 0 L0.866 0 L1.155 0.5 L0.866 1 L0.289 1 L0 0.5 Z" fill="none" stroke="#ffffff")"
+	 R"( stroke-width="0.15" stroke-linejoin="round"/>)"
+	 R"(</g>)",
+	 1.155, 3.0, DividerStretch::Spread, kPiece},
+
+	{DividerShape::Octagon, "octagon", "Octagon",
+	 R"(<path d="M0.293 0 L0.707 0 L1 0.293 L1 0.707 L0.707 1 L0.293 1 L0 0.707 L0 0.293 Z" fill="#ffffff"/>)", 1.0,
+	 3.0, DividerStretch::Spread, kPiece},
+
+	{DividerShape::OctagonOutline, "octagon_outline", "Octagon Outline",
+	 R"svg(<g transform="translate(0.5 0.5) scale(0.87) translate(-0.5 -0.5)">)svg"
+	 R"(<path d="M0.293 0 L0.707 0 L1 0.293 L1 0.707 L0.707 1 L0.293 1 L0 0.707 L0 0.293 Z" fill="none")"
+	 R"( stroke="#ffffff" stroke-width="0.15" stroke-linejoin="round"/>)"
+	 R"(</g>)",
+	 1.0, 3.0, DividerStretch::Spread, kPiece},
+
 	/*
 	 * Custom art is measured from the file's own viewBox rather than from `aspect`, and it
 	 * spreads rather than scales in an arm: stretching artwork nobody here drew is far more

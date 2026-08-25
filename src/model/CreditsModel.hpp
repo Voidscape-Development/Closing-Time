@@ -596,6 +596,25 @@ struct DividerPiece {
 	/* Logo pieces only. */
 	LogoRef logo;
 
+	/*
+	 * How far the piece is turned, in degrees clockwise, about its own centre. Read for every
+	 * kind: an arrowhead stood on end, a year set sideways, a mark tilted to match it.
+	 *
+	 * Turned where it stands rather than turned and re-measured: along the rule a piece keeps
+	 * the room its untilted shape took, so its neighbours and the arms keep still while the angle
+	 * is dialled in. A wide shape turned a quarter of the way round therefore reaches out over
+	 * the gaps beside it, which is what makes an angle something that can be nudged rather than
+	 * something that shuffles the whole divider every time it moves.
+	 *
+	 * Its height is the exception, and has to be: the divider grows to hold whatever its parts
+	 * sweep out, because a section is only as tall as it says it is and a square set on its
+	 * corner would otherwise have the corners cut off by the section below.
+	 *
+	 * A mirrored end turns the other way with the rest of the flip -- see placeDividerStack --
+	 * so the two ends of a rule stay each other's reflection.
+	 */
+	double rotation = 0.0;
+
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
 };

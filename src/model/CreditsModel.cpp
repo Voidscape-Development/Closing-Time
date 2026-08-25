@@ -871,6 +871,7 @@ void DividerPiece::save(obs_data_t *data) const
 	obs_data_set_string(data, "shape", dividerShapeId(shape));
 	obs_data_set_string(data, "svg", svgPath.toUtf8().constData());
 	obs_data_set_double(data, "scale", scale);
+	obs_data_set_double(data, "rotation", rotation);
 	obs_data_set_string(data, "text", text.toUtf8().constData());
 
 	OBSDataAutoRelease logoData = obs_data_create();
@@ -887,6 +888,8 @@ void DividerPiece::load(obs_data_t *data)
 	scale = obs_data_get_double(data, "scale");
 	if (scale <= 0.0)
 		scale = 1.0;
+	/* Absent from anything written before pieces could be turned, which read as untilted. */
+	rotation = obs_data_get_double(data, "rotation");
 	text = QString::fromUtf8(obs_data_get_string(data, "text"));
 
 	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");

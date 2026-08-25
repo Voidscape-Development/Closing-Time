@@ -1170,6 +1170,40 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 const auto kIgnoreBoxes = [](LayoutBox::Kind, const QRectF &) { /* deliberately nothing */ };
 
 /*
+ * Turns the painter about a rectangle's centre for as long as it is in scope, so a divider piece
+ * drawn by the very helpers that draw a section's own title and its own logo comes out at the
+ * angle its row asked for without either of them learning what an angle is.
+ *
+ * Nothing at all at zero degrees, which is what every piece in most rolls is set to.
+ */
+class TurnedPainter {
+public:
+	TurnedPainter(QPainter *painter, const QRectF &rect, qreal degrees)
+		: target(painter && degrees != 0.0 ? painter : nullptr)
+	{
+		if (!target)
+			return;
+
+		target->save();
+		target->translate(rect.center());
+		target->rotate(degrees);
+		target->translate(-rect.center());
+	}
+
+	~TurnedPainter()
+	{
+		if (target)
+			target->restore();
+	}
+
+	TurnedPainter(const TurnedPainter &) = delete;
+	TurnedPainter &operator=(const TurnedPainter &) = delete;
+
+private:
+	QPainter *target = nullptr;
+};
+
+/*
  * Where every part of one Section Divider goes, in strip space.
  *
  * The artwork is separated from the text and the logos because the three are painted by
@@ -1181,6 +1215,8 @@ struct DividerLayout {
 	struct TextPiece {
 		QString text;
 		QRectF rect;
+		/* Degrees clockwise about the rect's centre; see DividerPiece::rotation. */
+		qreal rotation = 0.0;
 	};
 	struct LogoPiece {
 		LogoArt art;
@@ -1190,6 +1226,8 @@ struct DividerLayout {
 		 */
 		const LogoRef *ref = nullptr;
 		QRect rect;
+		/* Degrees clockwise about the rect's centre; see DividerPiece::rotation. */
+		qreal rotation = 0.0;
 	};
 
 	QVector<DividerArtPlacement> art;
@@ -1233,6 +1271,25 @@ struct MeasuredStack {
 	 */
 	qreal outerHalfWidth() const { return isEmpty() ? 0.0 : pieces.first().size.width() / 2.0; }
 };
+
+/*
+ * How tall a measured piece reaches once it is turned: the height of its own box while it stands
+ * square, and the height that box sweeps out once it does not.
+ *
+ * Height only. A turn moves nothing along the rule -- the piece keeps the width its untilted shape
+ * asked for, so its neighbours and the arms stay where they were while an angle is dialled in (see
+ * DividerPiece::rotation) -- but the divider still has to be tall enough to hold what it draws, or
+ * a square set on its corner would have the corners cut off by the section's own box.
+ */
+qreal turnedHeight(const MeasuredPiece &piece)
+{
+	const qreal degrees = piece.piece->rotation;
+	if (degrees == 0.0)
+		return piece.size.height();
+
+	const qreal radians = qDegreesToRadians(degrees);
+	return std::abs(piece.size.width() * std::sin(radians)) + std::abs(piece.size.height() * std::cos(radians));
+}
 
 /*
  * Measures a run of divider pieces laid side by side, `pieceGap` apart.
@@ -1305,7 +1362,7 @@ MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const Tex
 		}
 
 		stack.width += pieceWidth;
-		stack.height = std::max(stack.height, stack.pieces.at(i).size.height());
+		stack.height = std::max(stack.height, turnedHeight(stack.pieces.at(i)));
 	}
 
 	return stack;
@@ -1344,17 +1401,26 @@ void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal 
 		const QRectF box(cursor, midY - measured.size.height() / 2.0, measured.size.width(),
 				 measured.size.height());
 
+		/*
+		 * A word and a mark are not flipped, so the lean they were given is reflected instead:
+		 * that is what keeps a tilted year or badge at one end the answering figure to the one
+		 * at the other without setting any of it backwards. Artwork needs no such arrangement --
+		 * its flip is a true mirror, and reflects whatever angle it carries with it.
+		 */
+		const qreal turn = mirrored ? -piece.rotation : piece.rotation;
+
 		switch (piece.kind) {
 		case DividerPiece::Kind::Ornament:
-			layout->art.append(DividerArtPlacement{box, piece.shape, piece.svgPath, mirrored});
+			layout->art.append(
+				DividerArtPlacement{box, piece.shape, piece.svgPath, mirrored, piece.rotation});
 			break;
 
 		case DividerPiece::Kind::Text:
-			layout->texts.append(DividerLayout::TextPiece{piece.text, box});
+			layout->texts.append(DividerLayout::TextPiece{piece.text, box, turn});
 			break;
 
 		case DividerPiece::Kind::Logo:
-			layout->logos.append(DividerLayout::LogoPiece{measured.art, &piece.logo, box.toRect()});
+			layout->logos.append(DividerLayout::LogoPiece{measured.art, &piece.logo, box.toRect(), turn});
 			break;
 		}
 
@@ -1745,12 +1811,16 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * style's gradient, outline and shadow without a second implementation of
 			 * any of it.
 			 */
-			for (const DividerLayout::TextPiece &piece : divider.texts)
+			for (const DividerLayout::TextPiece &piece : divider.texts) {
+				const TurnedPainter turned(painter, piece.rect, piece.rotation);
 				layoutText(painter, piece.text, style, piece.rect.left(), piece.rect.top(),
 					   piece.rect.width());
+			}
 
-			for (const DividerLayout::LogoPiece &piece : divider.logos)
+			for (const DividerLayout::LogoPiece &piece : divider.logos) {
+				const TurnedPainter turned(painter, piece.rect, piece.rotation);
 				paintLogo(painter, piece.art, piece.rect, style, piece.ref->playback);
+			}
 		}
 
 		for (const DividerLayout::TextPiece &piece : divider.texts)
