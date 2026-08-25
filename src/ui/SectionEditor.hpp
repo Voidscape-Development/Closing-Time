@@ -407,12 +407,14 @@ private:
 	QSpinBox *columnGap = nullptr;
 	QComboBox *fillOrder = nullptr;
 	QSpinBox *entryGap = nullptr;
+	QSpinBox *indentStep = nullptr;
 	QSpinBox *subtitleGap = nullptr;
 	QComboBox *subtitleOrder = nullptr;
 
 	QSpinBox *paddingTop = nullptr;
 	QSpinBox *paddingBottom = nullptr;
 	QSpinBox *marginX = nullptr;
+	QSpinBox *contentOffsetX = nullptr;
 	QSpinBox *sectionWidth = nullptr;
 	QComboBox *sectionAlign = nullptr;
 	QSpinBox *spacerHeight = nullptr;

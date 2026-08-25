@@ -845,6 +845,7 @@ void Entry::save(obs_data_t *data) const
 	obs_data_set_string(data, "secondary_text", secondaryText.toUtf8().constData());
 	obs_data_set_string(data, "subtitle", subtitle.toUtf8().constData());
 	obs_data_set_string(data, "secondary_subtitle", secondarySubtitle.toUtf8().constData());
+	obs_data_set_int(data, "indent", indent);
 
 	OBSDataAutoRelease logoData = obs_data_create();
 	logo.save(logoData);
@@ -859,6 +860,8 @@ void Entry::load(obs_data_t *data)
 	 * subtitle is an empty one: nothing is drawn and nothing has to be migrated. */
 	subtitle = QString::fromUtf8(obs_data_get_string(data, "subtitle"));
 	secondarySubtitle = QString::fromUtf8(obs_data_get_string(data, "secondary_subtitle"));
+	/* Absent from anything written before entries could be tabbed, which read as flush. */
+	indent = static_cast<int>(obs_data_get_int(data, "indent"));
 
 	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");
 	if (logoData)
@@ -940,6 +943,8 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_int(data, "padding_top", paddingTop);
 	obs_data_set_int(data, "padding_bottom", paddingBottom);
 	obs_data_set_int(data, "margin_x", marginX);
+	obs_data_set_int(data, "content_offset_x", contentOffsetX);
+	obs_data_set_int(data, "indent_step", indentStep);
 	obs_data_set_double(data, "section_width", sectionWidth);
 	obs_data_set_string(data, "section_align", hAlignId(sectionAlign));
 	obs_data_set_int(data, "spacer_height", spacerHeight);
@@ -1135,6 +1140,15 @@ void Section::load(obs_data_t *data)
 	paddingTop = static_cast<int>(obs_data_get_int(data, "padding_top"));
 	paddingBottom = static_cast<int>(obs_data_get_int(data, "padding_bottom"));
 	marginX = static_cast<int>(obs_data_get_int(data, "margin_x"));
+	/* Absent from anything written before a section could be nudged, which sat where its box put it. */
+	contentOffsetX = static_cast<int>(obs_data_get_int(data, "content_offset_x"));
+	/*
+	 * A step of zero is a tab that tabs nothing, which no stored list means: absent, it is the
+	 * documented default rather than the number an unset key reads as.
+	 */
+	indentStep = obs_data_has_user_value(data, "indent_step")
+			     ? static_cast<int>(obs_data_get_int(data, "indent_step"))
+			     : 24;
 	/*
 	 * Absent in every document written before the section box existed, all of which were laid
 	 * out across the full canvas width. A stored 0 would collapse the section to nothing, so a

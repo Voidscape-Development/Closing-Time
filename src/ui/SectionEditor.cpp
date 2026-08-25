@@ -88,6 +88,9 @@ constexpr int kEntryTableMinimumHeight = 260;
 /* Width of a logo list's height column, which never holds more than four digits and a suffix. */
 constexpr int kEntryHeightColumnWidth = 80;
 
+/* And of the tab column beside it, which holds a step count and never more than two digits. */
+constexpr int kEntryIndentColumnWidth = 70;
+
 /*
  * Where an entry row keeps the whole of the entry it was written from.
  *
@@ -109,6 +112,7 @@ QVariant entryStash(const Entry &entry)
 	stash.insert(QStringLiteral("secondary_subtitle"), entry.secondarySubtitle);
 	stash.insert(QStringLiteral("logo"), entry.logo.path);
 	stash.insert(QStringLiteral("logo_height"), entry.logo.maxHeight);
+	stash.insert(QStringLiteral("indent"), entry.indent);
 	return stash;
 }
 
@@ -128,6 +132,8 @@ Entry entryFromStash(const QVariant &value)
 	const int height = stash.value(QStringLiteral("logo_height")).toInt();
 	if (height > 0)
 		entry.logo.maxHeight = height;
+
+	entry.indent = stash.value(QStringLiteral("indent")).toInt();
 
 	return entry;
 }
@@ -1012,6 +1018,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	entryGap->setSuffix(QStringLiteral(" px"));
 	addRow(moduleText("Designer.EntryGap"), entryGap);
 
+	indentStep = new QSpinBox(this);
+	indentStep->setRange(0, 2048);
+	indentStep->setSuffix(QStringLiteral(" px"));
+	indentStep->setToolTip(moduleText("Designer.IndentStep.Tip"));
+	addRow(moduleText("Designer.IndentStep"), indentStep);
+
 	subtitleGap = new QSpinBox(this);
 	subtitleGap->setRange(0, 2048);
 	subtitleGap->setSuffix(QStringLiteral(" px"));
@@ -1119,6 +1131,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	marginX->setRange(0, 4096);
 	marginX->setSuffix(QStringLiteral(" px"));
 	addRow(moduleText("Designer.MarginX"), marginX);
+
+	contentOffsetX = new QSpinBox(this);
+	contentOffsetX->setRange(-4096, 4096);
+	contentOffsetX->setSuffix(QStringLiteral(" px"));
+	contentOffsetX->setToolTip(moduleText("Designer.ContentOffsetX.Tip"));
+	addRow(moduleText("Designer.ContentOffsetX"), contentOffsetX);
 
 	sectionWidth = new QSpinBox(this);
 	sectionWidth->setRange(1, 100);
@@ -1345,7 +1363,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	for (QWidget *field : std::initializer_list<QWidget *>{
 		     marginX, logoAnimatedShadow, bridgeOffset, bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
 		     bridgeSizing, dividerPieceGap, dividerRuleGap, dividerRuleInset, dividerTint, bridgeTint,
-		     subtitleOrder, fillOrder, stickyOffset, stickyBackdropPadding})
+		     subtitleOrder, fillOrder, stickyOffset, stickyBackdropPadding, indentStep})
 		markAdvanced(field);
 
 	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
@@ -1440,6 +1458,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(entryGap, &QSpinBox::valueChanged, this, notify);
+	connect(indentStep, &QSpinBox::valueChanged, this, notify);
+	connect(contentOffsetX, &QSpinBox::valueChanged, this, notify);
 	connect(subtitleGap, &QSpinBox::valueChanged, this, notify);
 	connect(subtitleOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(spacerHeight, &QSpinBox::valueChanged, this, notify);
@@ -1559,6 +1579,7 @@ void SectionEditor::setSection(const Section &source)
 	columnGap->setValue(source.columnGap);
 	selectByData(fillOrder, source.fillAcross ? 1 : 0);
 	entryGap->setValue(source.entryGap);
+	indentStep->setValue(source.indentStep);
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
 	spacerHeight->setValue(source.spacerHeight);
@@ -1575,6 +1596,7 @@ void SectionEditor::setSection(const Section &source)
 	paddingTop->setValue(source.paddingTop);
 	paddingBottom->setValue(source.paddingBottom);
 	marginX->setValue(source.marginX);
+	contentOffsetX->setValue(source.contentOffsetX);
 	sectionWidth->setValue(std::clamp(qRound(source.sectionWidth * 100.0), 1, 100));
 	selectByData(sectionAlign, static_cast<int>(source.sectionAlign));
 
@@ -1661,6 +1683,7 @@ Section SectionEditor::section() const
 	result.columnGap = columnGap->value();
 	result.fillAcross = fillOrder->currentData().toInt() == 1;
 	result.entryGap = entryGap->value();
+	result.indentStep = indentStep->value();
 	result.subtitleGap = subtitleGap->value();
 	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
@@ -1676,6 +1699,7 @@ Section SectionEditor::section() const
 	result.paddingTop = paddingTop->value();
 	result.paddingBottom = paddingBottom->value();
 	result.marginX = marginX->value();
+	result.contentOffsetX = contentOffsetX->value();
 	result.sectionWidth = sectionWidth->value() / 100.0;
 	result.sectionAlign = static_cast<HAlign>(sectionAlign->currentData().toInt());
 	result.style = primaryStyle->style();
@@ -2018,6 +2042,8 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(columnGap, hasColumns);
 	setRowVisible(fillOrder, hasColumns);
 	setRowVisible(entryGap, hasEntries);
+	/* A step with no row to step is a setting for nothing: the tabs live in the entry table. */
+	setRowVisible(indentStep, hasEntries);
 	/*
 	 * The pair's own two settings apply wherever anything is really stacked, which for a bridged
 	 * row is a choice rather than a property of the type -- so this asks about the section
@@ -2037,6 +2063,8 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	const bool placeable = type != SectionType::StickyBlock;
 	setRowVisible(marginX, placeable);
+	/* A spacer draws nothing, so there is nothing of it to nudge sideways. */
+	setRowVisible(contentOffsetX, placeable && type != SectionType::Spacer);
 	setRowVisible(sectionWidth, placeable);
 	setRowVisible(sectionAlign, placeable);
 
@@ -2121,6 +2149,8 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 	entryTable->clear();
 	entryTable->setRowCount(0);
 
+	QStringList headers;
+
 	switch (type) {
 	case SectionType::Bridged:
 		/*
@@ -2128,17 +2158,12 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		 * with the pair kept side by side rather than the two subtitles gathered at the end:
 		 * a row is read across, and a subtitle belongs beside the line it sits under.
 		 */
-		if (rowSubtitles) {
-			entryTable->setColumnCount(4);
-			entryTable->setHorizontalHeaderLabels(
-				{moduleText("Designer.Column.Left"), moduleText("Designer.Column.LeftSubtitle"),
-				 moduleText("Designer.Column.Right"), moduleText("Designer.Column.RightSubtitle")});
-			break;
-		}
-
-		entryTable->setColumnCount(2);
-		entryTable->setHorizontalHeaderLabels(
-			{moduleText("Designer.Column.Left"), moduleText("Designer.Column.Right")});
+		headers = rowSubtitles ? QStringList{moduleText("Designer.Column.Left"),
+						     moduleText("Designer.Column.LeftSubtitle"),
+						     moduleText("Designer.Column.Right"),
+						     moduleText("Designer.Column.RightSubtitle")}
+				       : QStringList{moduleText("Designer.Column.Left"),
+						     moduleText("Designer.Column.Right")};
 		break;
 
 	case SectionType::TitleSubtitleList:
@@ -2147,40 +2172,50 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		 * Headed by what the two texts are rather than by where they end up, so swapping the
 		 * order does not relabel the columns the entries were typed into.
 		 */
-		entryTable->setColumnCount(2);
-		entryTable->setHorizontalHeaderLabels(
-			{moduleText("Designer.Column.EntryTitle"), moduleText("Designer.Column.Subtitle")});
+		headers = {moduleText("Designer.Column.EntryTitle"), moduleText("Designer.Column.Subtitle")};
 		break;
 
 	case SectionType::LogoList:
 	case SectionType::MultiLogoList:
-		entryTable->setColumnCount(2);
-		entryTable->setHorizontalHeaderLabels(
-			{moduleText("Designer.Column.Logo"), moduleText("Designer.Column.Height")});
+		headers = {moduleText("Designer.Column.Logo"), moduleText("Designer.Column.Height")};
 		break;
 
 	default:
-		entryTable->setColumnCount(1);
-		entryTable->setHorizontalHeaderLabels({moduleText("Designer.Column.Text")});
+		headers = {moduleText("Designer.Column.Text")};
 		break;
 	}
 
 	/*
-	 * The last column takes the slack everywhere except a logo list, where the last column is a
-	 * pixel height -- three digits' worth of table given to it while the file path beside it,
-	 * the one thing in the row long enough to need reading, is squeezed into what is left.
-	 * There the path column takes the width instead and the height keeps only what it needs.
+	 * The tab column is last in every list, because it is the one column that is not part of
+	 * what the entry says: a row is read across for its words and only then, if at all, for how
+	 * far in it sits.
+	 */
+	const int indentColumn = headers.size();
+	headers.append(moduleText("Designer.Column.Indent"));
+
+	entryTable->setColumnCount(headers.size());
+	entryTable->setHorizontalHeaderLabels(headers);
+	if (QTableWidgetItem *indentHeader = entryTable->horizontalHeaderItem(indentColumn))
+		indentHeader->setToolTip(moduleText("Designer.Column.Indent.Tip"));
+
+	/*
+	 * One column takes the slack and the narrow ones keep what they need. It is the file path in
+	 * a logo list -- the one thing in the row long enough to need reading, where the column
+	 * beside it is a three-digit pixel height -- and the last of the text columns everywhere
+	 * else. Never the tab column, which holds a number of steps and would be a wide box of white
+	 * space with the words it belongs to squeezed up beside it.
 	 */
 	const bool logoEntries = sectionUsesLogos(type) && sectionUsesEntries(type);
 	QHeaderView *header = entryTable->horizontalHeader();
 
-	header->setStretchLastSection(!logoEntries);
+	header->setStretchLastSection(false);
 	header->setSectionResizeMode(QHeaderView::Interactive);
+	header->setSectionResizeMode(logoEntries ? 0 : indentColumn - 1, QHeaderView::Stretch);
 
-	if (logoEntries) {
-		header->setSectionResizeMode(0, QHeaderView::Stretch);
+	if (logoEntries)
 		entryTable->setColumnWidth(1, kEntryHeightColumnWidth);
-	}
+
+	entryTable->setColumnWidth(indentColumn, kEntryIndentColumnWidth);
 }
 
 void SectionEditor::writeEntriesToTable(const Section &source)
@@ -2197,6 +2232,10 @@ void SectionEditor::writeEntriesToTable(const Section &source)
 		/* The whole entry travels with the row; see kEntryStashRole. */
 		first->setData(kEntryStashRole, entryStash(entry));
 		entryTable->setItem(row, 0, first);
+
+		/* Last in every layout the table has; see rebuildEntryTable. */
+		entryTable->setItem(row, entryTable->columnCount() - 1,
+				    new QTableWidgetItem(QString::number(entry.indent)));
 
 		if (logoMode) {
 			entryTable->setItem(row, 1, new QTableWidgetItem(QString::number(entry.logo.maxHeight)));
@@ -2238,6 +2277,8 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 		 */
 		const QTableWidgetItem *first = entryTable->item(row, 0);
 		Entry entry = first ? entryFromStash(first->data(kEntryStashRole)) : Entry();
+
+		entry.indent = cell(entryTable->columnCount() - 1).toInt();
 
 		if (logoMode) {
 			entry.logo.path = cell(0);

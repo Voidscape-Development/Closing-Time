@@ -94,6 +94,8 @@ Section distinctive(SectionType type)
 	section.paddingTop = 21;
 	section.paddingBottom = 23;
 	section.marginX = 29;
+	section.contentOffsetX = -37;
+	section.indentStep = 33;
 	section.sectionWidth = 0.75;
 	section.sectionAlign = HAlign::Right;
 	section.spacerHeight = 313;
@@ -109,7 +111,7 @@ Section distinctive(SectionType type)
 	section.children.push_back(Section::makeDefault(SectionType::Header));
 	section.visible = false;
 	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), QStringLiteral("three"),
-				 QStringLiteral("four"), LogoRef{QStringLiteral("/e.png"), 61}}};
+				 QStringLiteral("four"), LogoRef{QStringLiteral("/e.png"), 61}, 2}};
 
 	return section;
 }
@@ -183,6 +185,8 @@ void compare(const Section &loaded, const Section &original)
 	checkEq(loaded.paddingTop, original.paddingTop, "paddingTop");
 	checkEq(loaded.paddingBottom, original.paddingBottom, "paddingBottom");
 	checkEq(loaded.marginX, original.marginX, "marginX");
+	checkEq(loaded.contentOffsetX, original.contentOffsetX, "contentOffsetX");
+	checkEq(loaded.indentStep, original.indentStep, "indentStep");
 	checkNear(loaded.sectionWidth, original.sectionWidth, 0.001, "sectionWidth");
 	check(loaded.sectionAlign == original.sectionAlign, "sectionAlign");
 	checkEq(loaded.spacerHeight, original.spacerHeight, "spacerHeight");
@@ -211,6 +215,8 @@ void compare(const Section &loaded, const Section &original)
 			QStringLiteral("entry %1 subtitle").arg(i));
 		checkEq(loaded.entries.at(i).secondarySubtitle, original.entries.at(i).secondarySubtitle,
 			QStringLiteral("entry %1 secondarySubtitle").arg(i));
+		checkEq(loaded.entries.at(i).indent, original.entries.at(i).indent,
+			QStringLiteral("entry %1 indent").arg(i));
 		checkEq(loaded.entries.at(i).logo.path, original.entries.at(i).logo.path,
 			QStringLiteral("entry %1 logo").arg(i));
 	}
@@ -280,6 +286,8 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	checkNear(legacy.bridgeThickness, 4.0, 0.001, "bridgeThickness falls back to something drawable");
 	check(legacy.bridgeTint, "bridgeTint falls back to on");
 	checkNear(legacy.bridgeSplit, 0.5, 0.001, "bridgeSplit falls back to an even split");
+	checkEq(legacy.contentOffsetX, 0, "a section from before the nudge sits where its box puts it");
+	checkEq(legacy.indentStep, 24, "and its entries tab by the documented step rather than by nothing");
 	check(legacy.dividerCap.isEmpty(), "an absent divider cap is an end with nothing on it");
 	check(legacy.dividerArm == DividerShape::Rule, "an absent divider arm is the plain rule, not None");
 	check(legacy.dividerMirrorEnds, "divider ends are mirrored by default");

@@ -101,7 +101,11 @@ be inked separately from a word in its middle, the same way a bridge can be inke
 the names either side of it.
 
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
-plus padding and side margins. Text can be filled with a flat colour or with a **linear or
+plus padding and side margins. It can also be **nudged sideways** — everything the section draws
+slides left or right together, keeping the arrangement inside it, which is how a heading sits
+deliberately off centre where a margin can only ever inset both edges at once. Within a list,
+individual entries can be **tabbed in** by a step you set once for the list: a department over the
+names under it, a sub-heading inside a run, or an entry hung back the other way. Text can be filled with a flat colour or with a **linear or
 radial gradient** of as many colour stops as you like — a gold sweep down a title, a fade
 across a name — and can carry an **outline** and a soft or hard **drop shadow**, which is
 what keeps white credits legible over bright footage. The gradient runs across each block of
@@ -144,7 +148,9 @@ a roll is being written. Artwork is decoded whole and up front, which puts a cei
 
 A **sticky ending block** is a run of sections that stops scrolling. It travels up the frame like
 any other part of the roll, and when it reaches the place you pinned it to, it stays there while
-the rest of the credits carries on past behind it. You pick which part of the block is pinned —
+the rest of the credits carries on past behind it. In the designer's section list a block's contents are drawn as
+branches off it, with a count of what it holds and an arrow that folds them away while you work on
+the rest of the roll. You pick which part of the block is pinned —
 its top edge, its middle, its bottom — and where down the frame that lands, so "centred in the
 frame" and "top edge a third of the way down" are both one setting rather than a number to work
 out. It can hold for a set time or until something else stops the roll, and when the hold ends it

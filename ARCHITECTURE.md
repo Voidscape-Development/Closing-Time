@@ -102,6 +102,23 @@ so a margin large enough to push a block towards one edge pushes it in from the 
 as much. Splitting "how wide" from "where" is what lets a run of credits sit hard against one
 side of the frame while still keeping a margin's worth of clear space off that side.
 
+`contentOffsetX` is the third of those and the crudest on purpose: the content's left edge plus a
+number of pixels, either way. It **translates**, and translates *everything the section draws* — a
+heading and the logo beside it move together, keeping the arrangement they were given — where
+narrowing the column instead would reflow the text and move each alignment by a different amount.
+Content nudged past the edge of its own box is drawn there rather than wrapped back inside it: the
+offset is a nudge, and one large enough to leave the canvas is one the preview shows immediately.
+A spacer draws nothing and a sticky block spans the canvas — its children carry offsets of their
+own — so neither reads it.
+
+`Entry::indent` is the same idea one level down: a count of steps, each `Section::indentStep` wide,
+that translates one entry's column within the list. Steps rather than pixels because what an indent
+is *for* is a list with a shape to it — a department over the names under it — and several entries
+line up only if the step is one decision about the list rather than a number typed into each row.
+It translates rather than narrows for the same reason the offset does, so a tab means the same
+thing in a centred list as in a left-aligned one. Every list shape reads it, the multi-column ones
+stepping the entry within its own column rather than off it.
+
 ### Section types
 
 | Type | Content | Notes |
@@ -1067,6 +1084,23 @@ is left over: a `QVBoxLayout` with nothing to give its slack to shares it out be
 it has, which spread a short type's handful of rows down the pane with gaps between them. The
 entry table is the one thing worth growing, so it takes the slack instead whenever the selected
 type has one, and asks for enough height to read a run of entries at a glance.
+
+**A sticky block's children are branches off it, and fold away.** The list stays a `QListWidget`:
+a roll is a run of sections with one shallow exception in it, and a tree would trade the
+drag-and-drop reordering that already works for one that has to be taught which drops mean what.
+So a child row is drawn with a `├─`/`└─` branch, a block's own row carries a `▾`/`▸` and a count of
+what it holds, and every other top-level row takes a blank of the same width so the names line up.
+Folding hides the child rows rather than removing them, so every row index still means the path it
+always did. The fold lives on the section (`Section::childrenCollapsed`) and is deliberately
+neither saved nor loaded: it is view state like a settings group's fold, but keeping it on the
+section is what carries it through a move, a duplicate and an undo step without a table of row
+numbers to remap at each of them. Two consequences are handled where they arise: a selection folded
+away moves up to the block that folded it, since the editor must never be working on a row the list
+is not showing; and a drop just under a *folded* block lands after the block rather than inside it,
+because one row standing for the whole block is not an invitation into a fold the user has just put
+away. The click is caught in `SectionListWidget::mousePressEvent` — a press is where a drag starts,
+so there is nothing later to ask — and which rows carry an arrow is marked on the item, leaving the
+list knowing nothing about what a section is.
 
 **A table can be taken out into a window of its own.** The editor pane is a third of a designer
 wide and a cast list is two hundred rows long, so the entry table and each of the divider's three

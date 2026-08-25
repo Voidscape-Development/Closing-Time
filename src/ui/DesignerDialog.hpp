@@ -62,7 +62,15 @@ signals:
 	/* `to` is where the dragged row lands, counted after it has been lifted out. */
 	void rowMoved(int from, int to);
 
+	/*
+	 * A click on the fold arrow of a sticky block's row. Which rows carry one is the dialog's
+	 * business and is marked on the item itself, so the list needs to know nothing about what a
+	 * section is to keep the click off the selection and out of a drag.
+	 */
+	void blockFoldToggled(int row);
+
 protected:
+	void mousePressEvent(QMouseEvent *event) override;
 	void dropEvent(QDropEvent *event) override;
 };
 
@@ -293,6 +301,12 @@ private:
 
 		bool isValid() const { return index >= 0; }
 	};
+
+	/* How one row of the section list reads: its branch or fold arrow, its name, and its count. */
+	QString rowLabel(const SectionPath &path, const Section &section) const;
+
+	/* Folds a sticky block's children away in the list, and back. View state only; see Section. */
+	void toggleBlockFold(int row);
 
 	/* The section a path names, or null when the path does not resolve. */
 	Section *sectionAt(const SectionPath &path);

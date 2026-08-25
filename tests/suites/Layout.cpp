@@ -182,3 +182,130 @@ CT_SUITE(layout_tiling, "A roll long enough to be cut into several tiles")
 	 */
 	checkEq(boxesOutsideContent(document), 0, "nothing escapes its section across a tile boundary");
 }
+
+CT_SUITE(layout_content_offset, "A section nudged sideways inside its own box")
+{
+	/*
+	 * The nudge translates what the section draws and changes nothing else about it: the text is
+	 * laid out in the column it always had, then that column is moved. So the box of a heading
+	 * moves by exactly the offset, at every alignment, and the section is no taller for it.
+	 */
+	for (HAlign align : {HAlign::Left, HAlign::Center, HAlign::Right}) {
+		const Context context(QString::fromUtf8(hAlignId(align)));
+
+		Section section = unpadded(SectionType::Title);
+		section.text = QStringLiteral("Closing Time");
+		section.style.align = align;
+		/* Room either side, so a nudge in either direction has somewhere to go. */
+		section.marginX = 200;
+
+		Section shifted = section;
+		shifted.contentOffsetX = 120;
+
+		Section pulled = section;
+		pulled.contentOffsetX = -80;
+
+		checkEq(measure(documentWith(shifted)), measure(documentWith(section)),
+			"a nudged section is exactly as tall as it was");
+
+		const QRectF content = boxOf(documentWith(section), LayoutBox::Kind::Content);
+		checkNear(boxOf(documentWith(shifted), LayoutBox::Kind::Content).left(), content.left() + 120, 1.0,
+			  "a positive offset moves the content area right");
+		checkNear(boxOf(documentWith(pulled), LayoutBox::Kind::Content).left(), content.left() - 80, 1.0,
+			  "and a negative one moves it left");
+		checkNear(boxOf(documentWith(shifted), LayoutBox::Kind::Content).width(), content.width(), 1.0,
+			  "and neither narrows it");
+
+		/* And the words really move with it, whatever the alignment inside that area. */
+		const Ink flush = inkOf(renderImage(documentWith(section)));
+		checkNear(inkOf(renderImage(documentWith(shifted))).left, flush.left + 120, 2.0,
+			  "the ink moves right with it");
+		checkNear(inkOf(renderImage(documentWith(pulled))).left, flush.left - 80, 2.0, "and left with it");
+	}
+
+	/*
+	 * A heading and the logo beside it move together: what the offset shifts is the section's
+	 * content, not its text, so the arrangement inside it is the one thing it cannot disturb.
+	 */
+	Section withArt = unpadded(SectionType::TitleWithLogo);
+	withArt.text = QStringLiteral("Closing Time");
+	withLogo(withArt);
+
+	Section movedArt = withArt;
+	movedArt.contentOffsetX = 90;
+
+	const QRectF logoBox = boxOf(documentWith(withArt), LayoutBox::Kind::Logo);
+	const QRectF movedLogoBox = boxOf(documentWith(movedArt), LayoutBox::Kind::Logo);
+	const QRectF textBox = boxOf(documentWith(withArt), LayoutBox::Kind::Text);
+	const QRectF movedTextBox = boxOf(documentWith(movedArt), LayoutBox::Kind::Text);
+
+	checkNear(movedLogoBox.left(), logoBox.left() + 90, 1.0, "the logo moves with the section");
+	checkNear(movedTextBox.left(), textBox.left() + 90, 1.0, "and so does the text beside it");
+}
+
+CT_SUITE(layout_entry_indent, "Entries tabbed in from the rest of their list")
+{
+	/*
+	 * One step is the section's own, so a list is tabbed by setting a step once and counting
+	 * steps per row. The column is translated rather than narrowed, which is what makes a step
+	 * mean the same thing at every alignment -- so this measures the ink rather than the box.
+	 */
+	Section list = unpadded(SectionType::TextList);
+	list.style.align = HAlign::Left;
+	list.indentStep = 30;
+	list.entries = {Entry{QStringLiteral("Department")}, Entry{QStringLiteral("Someone")},
+			Entry{QStringLiteral("Someone Else")}};
+	list.entries[1].indent = 1;
+	list.entries[2].indent = 2;
+
+	const QVector<QRectF> boxes = boxesOf(documentWith(list), LayoutBox::Kind::Text);
+	checkEq(boxes.size(), 3, "every entry is laid out");
+
+	if (boxes.size() == 3) {
+		checkNear(boxes.at(1).left() - boxes.at(0).left(), 30.0, 0.5, "one step is one step wide");
+		checkNear(boxes.at(2).left() - boxes.at(0).left(), 60.0, 0.5, "and two are twice that");
+		checkNear(boxes.at(1).width(), boxes.at(0).width(), 0.5,
+			  "a tabbed entry keeps its column rather than being squeezed into what is left");
+	}
+
+	/* Below zero it steps out the other way, for an entry hung back off the run above it. */
+	Section hung = list;
+	hung.entries[1].indent = -1;
+	hung.entries[2].indent = 0;
+
+	const QVector<QRectF> hungBoxes = boxesOf(documentWith(hung), LayoutBox::Kind::Text);
+	if (hungBoxes.size() == 3)
+		checkNear(hungBoxes.at(1).left() - hungBoxes.at(0).left(), -30.0, 0.5, "a negative step hangs back");
+
+	/* A step of nothing is a list with no tabs in it, whatever the rows say. */
+	Section flat = list;
+	flat.indentStep = 0;
+
+	const QVector<QRectF> flatBoxes = boxesOf(documentWith(flat), LayoutBox::Kind::Text);
+	if (flatBoxes.size() == 3)
+		checkNear(flatBoxes.at(2).left(), flatBoxes.at(0).left(), 0.5, "no step, no tab");
+
+	/*
+	 * The same tab in a multi-column list steps the entry inside its own column, rather than
+	 * off the column it belongs to -- the two are laid out by the same call, and this is what
+	 * says so.
+	 */
+	Section grid = unpadded(SectionType::MultiTextList);
+	grid.style.align = HAlign::Left;
+	grid.columns = 2;
+	grid.indentStep = 30;
+	grid.fillAcross = true;
+	grid.entries = {Entry{QStringLiteral("One")}, Entry{QStringLiteral("Two")}, Entry{QStringLiteral("Three")},
+			Entry{QStringLiteral("Four")}};
+
+	Section tabbedGrid = grid;
+	tabbedGrid.entries[1].indent = 1;
+
+	const QVector<QRectF> plain = boxesOf(documentWith(grid), LayoutBox::Kind::Text);
+	const QVector<QRectF> tabbed = boxesOf(documentWith(tabbedGrid), LayoutBox::Kind::Text);
+
+	if (plain.size() == 4 && tabbed.size() == 4) {
+		checkNear(tabbed.at(1).left() - plain.at(1).left(), 30.0, 0.5, "the entry steps in from its column");
+		checkNear(tabbed.at(0).left(), plain.at(0).left(), 0.5, "and the column beside it does not move");
+	}
+}

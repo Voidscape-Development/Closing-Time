@@ -1170,6 +1170,18 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 const auto kIgnoreBoxes = [](LayoutBox::Kind, const QRectF &) { /* deliberately nothing */ };
 
 /*
+ * Where one entry's own column starts, once its indent is counted in.
+ *
+ * The column is translated rather than narrowed, so every alignment steps by the same amount and
+ * an indent means one thing whatever the list is set to -- see Entry::indent. A list with no
+ * indents anywhere is arithmetic on a zero and lands exactly where it always did.
+ */
+qreal indentedX(const Section &section, const Entry &entry, qreal x)
+{
+	return x + entry.indent * section.indentStep;
+}
+
+/*
  * Turns the painter about a rectangle's centre for as long as it is in scope, so a divider piece
  * drawn by the very helpers that draw a section's own title and its own logo comes out at the
  * angle its row asked for without either of them learning what an angle is.
@@ -1689,7 +1701,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					   : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
 	const int boxX = spansCanvas ? 0 : qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
 
-	const int contentX = spansCanvas ? 0 : boxX + section.marginX;
+	/*
+	 * The nudge is added to the content's left edge and taken out of nothing: the whole of what
+	 * the section draws slides with it, keeping the arrangement inside the box rather than
+	 * reflowing into a narrower one. A block spans the canvas and its children carry offsets of
+	 * their own, so it takes none of its own -- see Section::contentOffsetX.
+	 */
+	const int contentX = spansCanvas ? 0 : boxX + section.marginX + section.contentOffsetX;
 	const int contentWidth = spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
 
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
@@ -1972,8 +1990,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 						section.rowSubtitles ? &entry.secondarySubtitle : &noSubtitle,
 						&rightStyle, &rightSubtitleStyle};
 
-			const BridgedRow row =
-				placeBridgedRow(section, left, right, contentX, contentWidth, naturalBridge);
+			const BridgedRow row = placeBridgedRow(
+				section, left, right, indentedX(section, entry, contentX), contentWidth, naturalBridge);
 			const PreparedBridge bridge = prepareBridge(section, bridgeStyle, bridges, row.bridgeWidth);
 
 			/*
@@ -2038,8 +2056,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::TextList: {
 		for (const Entry &entry : section.entries) {
-			const int height = layoutText(painter, entry.text, style, contentX, y, contentWidth);
-			record(LayoutBox::Kind::Text, QRectF(contentX, y, contentWidth, height));
+			const qreal x = indentedX(section, entry, contentX);
+			const int height = layoutText(painter, entry.text, style, x, y, contentWidth);
+			record(LayoutBox::Kind::Text, QRectF(x, y, contentWidth, height));
 			y += height;
 			y += section.entryGap;
 		}
@@ -2053,7 +2072,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		for (const Entry &entry : section.entries) {
 			y += layoutTitleSubtitle(painter, section, style, subtitleStyle, entry.text,
-						 entry.secondaryText, contentX, y, contentWidth, record);
+						 entry.secondaryText, indentedX(section, entry, contentX), y,
+						 contentWidth, record);
 			y += section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -2065,7 +2085,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		for (const Entry &entry : section.entries) {
 			const LogoArt art = logos.resolve(entry.logo);
 			const QSize size = logoDrawSize(art.poster, entry.logo, contentWidth);
-			const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
+			const int x = qRound(indentedX(section, entry, contentX) +
+					     alignOffset(style.align, contentWidth, size.width()));
 			const QRect box(QPoint(x, y), size);
 			paintLogo(painter, art, box, style, entry.logo.playback);
 			recordLogo(art, entry.logo, box, style);
@@ -2104,7 +2125,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					continue;
 
 				const Entry &entry = section.entries.at(index);
-				const int x = contentX + column * (columnWidth + section.columnGap);
+				const int x = qRound(indentedX(section, entry,
+							       contentX + column * (columnWidth + section.columnGap)));
 
 				if (logoMode) {
 					const LogoArt art = logos.resolve(entry.logo);

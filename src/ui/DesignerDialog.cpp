@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDropEvent>
+#include <QMouseEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -79,6 +80,29 @@ constexpr int kLibraryWriteDebounceMs = 400;
 
 /* Milliseconds of quiet before a run of small edits becomes its own undo step. */
 constexpr int kEditBurstMs = 900;
+
+/*
+ * Set on the row of a sticky block that has children, and read by the list to tell a click on the
+ * fold arrow from a click on the row. The list has to answer that itself -- a press is where a
+ * drag starts, so there is nothing later to ask.
+ */
+constexpr int kBlockRowRole = Qt::UserRole + 1;
+
+/* What a row of a block's children is drawn with: the branch, and the last of them. */
+const QString kChildBranch = QStringLiteral("   \u251c\u2500 ");
+const QString kChildBranchLast = QStringLiteral("   \u2514\u2500 ");
+
+/*
+ * The fold arrows, and the blank that stands in for one on a row that does not fold. Every
+ * top-level row carries one of the three, so their labels start at the same place whether or not
+ * the row is a block.
+ */
+const QString kFoldOpen = QStringLiteral("\u25be ");
+const QString kFoldClosed = QStringLiteral("\u25b8 ");
+const QString kFoldNone = QStringLiteral("  ");
+
+/* Slack either side of the arrow glyph, so the target is a comfortable one to hit. */
+constexpr int kFoldHitPadding = 6;
 
 /* How many steps back the designer can go before the oldest is forgotten. */
 constexpr int kUndoDepth = 100;
@@ -299,6 +323,34 @@ SectionListWidget::SectionListWidget(QWidget *parent) : QListWidget(parent)
 	setSelectionMode(QAbstractItemView::SingleSelection);
 }
 
+void SectionListWidget::mousePressEvent(QMouseEvent *event)
+{
+	/*
+	 * A press on a block's fold arrow folds it and does nothing else: it does not select the
+	 * row, and it does not start a drag. Answered here rather than on release because a press
+	 * is where the drag machinery starts from, and a fold that only happened when nothing was
+	 * dragged would be a fold that sometimes did not happen.
+	 */
+	const QModelIndex index = indexAt(event->position().toPoint());
+
+	if (event->button() == Qt::LeftButton && index.data(kBlockRowRole).toBool()) {
+		const QRect row = visualRect(index);
+		/*
+		 * The arrow and the space after it, plus the small inset a view puts before an item's
+		 * text. Measured from the font rather than fixed, so the target follows a themed or
+		 * scaled list instead of drifting off the glyph it belongs to.
+		 */
+		const int arrow = fontMetrics().horizontalAdvance(kFoldOpen) + kFoldHitPadding;
+
+		if (event->position().x() - row.left() <= arrow) {
+			emit blockFoldToggled(index.row());
+			return;
+		}
+	}
+
+	QListWidget::mousePressEvent(event);
+}
+
 void SectionListWidget::dropEvent(QDropEvent *event)
 {
 	const int from = currentRow();
@@ -356,7 +408,6 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	listLayout->addLayout(listHeader);
 
 	sectionList = new SectionListWidget(listPane);
-	sectionList->setToolTip(moduleText("Designer.Sections.Tip"));
 	listLayout->addWidget(sectionList, 1);
 
 	listButtonRow = new QWidget(listPane);
@@ -537,6 +588,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	connect(redoButton, &QPushButton::clicked, this, &DesignerDialog::redo);
 	connect(sectionList, &QListWidget::currentRowChanged, this, &DesignerDialog::onSelectionChanged);
 	connect(sectionList, &SectionListWidget::rowMoved, this, &DesignerDialog::moveSectionTo);
+	connect(sectionList, &SectionListWidget::blockFoldToggled, this, &DesignerDialog::toggleBlockFold);
 	connect(editor, &SectionEditor::changed, this, &DesignerDialog::onSectionEdited);
 	connect(editor, &SectionEditor::presetSaveRequested, this, &DesignerDialog::savePreset);
 	connect(editor, &SectionEditor::presetDeleteRequested, this, &DesignerDialog::deletePreset);
@@ -829,6 +881,58 @@ int DesignerDialog::highlightFor(const SectionPath &path) const
 	return path.parent >= 0 ? path.parent : path.index;
 }
 
+QString DesignerDialog::rowLabel(const SectionPath &path, const Section &section) const
+{
+	/*
+	 * Children are drawn with a branch off their block rather than by a delegate or a tree: a
+	 * list is the right widget for a roll that is a run of sections with one shallow exception
+	 * in it, and a tree would trade the drag-and-drop reordering that works for one that has to
+	 * be taught which drops mean what. The branch is what says the row belongs to the block above
+	 * it -- an indent alone reads as a wider margin as readily as it reads as a child.
+	 */
+	if (path.parent >= 0) {
+		const Section *block = sectionAt(SectionPath{-1, path.parent});
+		const bool last = block && path.index + 1 == static_cast<int>(block->children.size());
+		return (last ? kChildBranchLast : kChildBranch) + section.displayLabel();
+	}
+
+	/*
+	 * A block says how many sections it holds, which is the one thing about it a folded row
+	 * cannot show for itself, and carries the arrow that folds it. A block holding nothing has
+	 * nothing to fold, so it takes the same blank every other top-level row does.
+	 */
+	if (section.type == SectionType::StickyBlock) {
+		const int held = static_cast<int>(section.children.size());
+		const QString fold = held == 0 ? kFoldNone : (section.childrenCollapsed ? kFoldClosed : kFoldOpen);
+		return fold + section.displayLabel() + QStringLiteral(" (%1)").arg(held);
+	}
+
+	return kFoldNone + section.displayLabel();
+}
+
+void DesignerDialog::toggleBlockFold(int row)
+{
+	if (row < 0 || row >= rowPaths.size())
+		return;
+
+	const SectionPath path = rowPaths.at(row);
+	Section *section = sectionAt(path);
+	if (path.parent >= 0 || !section || section->type != SectionType::StickyBlock || section->children.empty())
+		return;
+
+	/* Whatever is half-typed into the editor belongs to the document before the list is rebuilt. */
+	commitCurrentSection();
+
+	section->childrenCollapsed = !section->childrenCollapsed;
+
+	/*
+	 * No undo step and no re-render: this is what the list is showing, not what the roll says.
+	 * The selection follows a child that has just been folded away up to the block itself, which
+	 * refreshSectionList does for any hidden row it is handed.
+	 */
+	refreshSectionList(currentRow);
+}
+
 void DesignerDialog::refreshSectionList(int selectRow)
 {
 	const QSignalBlocker blocker(sectionList);
@@ -841,22 +945,30 @@ void DesignerDialog::refreshSectionList(int selectRow)
 		if (!section)
 			continue;
 
-		/*
-		 * Children are indented by their label rather than by a delegate: a list is the right
-		 * widget for a roll that is a run of sections with one shallow exception in it, and a
-		 * tree would trade the drag-and-drop reordering that works for one that has to be
-		 * taught which drops mean what.
-		 */
-		const QString label = path.parent >= 0 ? QStringLiteral("      ") + section->displayLabel()
-						       : section->displayLabel();
-
-		auto *item = new QListWidgetItem(label, sectionList);
+		auto *item = new QListWidgetItem(rowLabel(path, *section), sectionList);
 		item->setToolTip(QString::fromUtf8(sectionTypeName(section->type)));
 		if (!section->visible)
 			item->setForeground(Qt::gray);
+
+		/* Only a block with something in it folds, and only its row answers a click on one. */
+		if (path.parent < 0 && section->type == SectionType::StickyBlock && !section->children.empty())
+			item->setData(kBlockRowRole, true);
+
+		/* A folded block's children stay in the list, and out of sight; see toggleBlockFold. */
+		if (path.parent >= 0) {
+			const Section *block = sectionAt(SectionPath{-1, path.parent});
+			item->setHidden(block && block->childrenCollapsed);
+		}
 	}
 
-	const int row = std::clamp(selectRow, -1, static_cast<int>(rowPaths.size()) - 1);
+	int row = std::clamp(selectRow, -1, static_cast<int>(rowPaths.size()) - 1);
+
+	/*
+	 * Never a row nothing can see: a selection folded away leaves the editor working on a
+	 * section the list is not showing, so it moves up to the block that folded it.
+	 */
+	if (row >= 0 && row < sectionList->count() && sectionList->item(row)->isHidden())
+		row = rowOf(SectionPath{-1, rowPaths.at(row).parent});
 	sectionList->setCurrentRow(row);
 	currentRow = row;
 	currentPath = row >= 0 ? rowPaths.at(row) : SectionPath{};
@@ -1067,8 +1179,7 @@ void DesignerDialog::onSectionEdited()
 	if (section && currentRow >= 0 && currentRow < sectionList->count()) {
 		const QSignalBlocker blocker(sectionList);
 		QListWidgetItem *item = sectionList->item(currentRow);
-		item->setText(currentPath.parent >= 0 ? QStringLiteral("      ") + section->displayLabel()
-						      : section->displayLabel());
+		item->setText(rowLabel(currentPath, *section));
 		item->setForeground(section->visible ? QBrush() : QBrush(Qt::gray));
 	}
 
@@ -1210,8 +1321,15 @@ void DesignerDialog::moveSectionTo(int from, int to)
 
 		if (before.parent >= 0) {
 			at = SectionPath{before.parent, before.index + 1};
-		} else if (precedes && precedes->type == SectionType::StickyBlock) {
+		} else if (precedes && precedes->type == SectionType::StickyBlock && !precedes->childrenCollapsed) {
 			at = SectionPath{before.index, 0};
+		} else if (precedes && precedes->type == SectionType::StickyBlock) {
+			/*
+			 * Folded, the block is one row that stands for all of it, so the gap under that
+			 * row is the gap under the block -- not the way into a fold the user has just
+			 * put away. Unfolding it is how something is dropped inside it.
+			 */
+			at = SectionPath{-1, before.index + 1};
 		} else {
 			at = SectionPath{-1, before.index + 1};
 		}

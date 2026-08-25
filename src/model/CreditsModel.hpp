@@ -553,6 +553,20 @@ struct Entry {
 	QString secondarySubtitle;
 	LogoRef logo;
 
+	/*
+	 * How many steps this entry is tabbed in from the rest of the list, each step
+	 * `Section::indentStep` wide. Negative steps out the other way, for an entry hung back
+	 * off the run above it.
+	 *
+	 * A step rather than a number of pixels because what an indent is for is a list that reads
+	 * as having a shape -- a department over the names under it, a sub-heading inside a run --
+	 * and steps of one size are what make several entries line up without each one being
+	 * measured. The whole entry moves: its column is translated rather than narrowed, so a
+	 * centred or right-aligned list steps by exactly as much as a left-aligned one and an
+	 * indent means the same thing whatever the list is set to.
+	 */
+	int indent = 0;
+
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
 };
@@ -941,6 +955,28 @@ struct Section {
 	/* Horizontal inset applied to both edges of the section's own box, in pixels. */
 	int marginX = 0;
 	/*
+	 * Everything the section draws, slid sideways by this many pixels: negative to the left,
+	 * positive to the right.
+	 *
+	 * A translation rather than a narrowing, and applied to the whole content rather than to the
+	 * text alone -- a heading and the logo beside it shift together, keeping the arrangement they
+	 * were given. That is what the setting is for: a section deliberately off its own centre,
+	 * where `marginX` insets both edges equally and `sectionAlign` only ever picks one of three
+	 * places. Content pushed past the edge of the section's box is drawn there rather than
+	 * wrapped back inside it; the offset is a nudge, and a nudge large enough to leave the canvas
+	 * is one the preview shows immediately.
+	 *
+	 * Read for every type but the two with no content box of their own: a spacer draws nothing,
+	 * and a sticky block spans the canvas while each of its children carries a box -- and an
+	 * offset -- of its own.
+	 */
+	int contentOffsetX = 0;
+	/*
+	 * How wide one step of `Entry::indent` is, in pixels. Per section, so the tabs of a list are
+	 * one decision about that list rather than a number typed again into every row of it.
+	 */
+	int indentStep = 24;
+	/*
 	 * The share of the canvas width the section's box occupies, 0.0 to 1.0, and where that
 	 * box sits within the canvas.
 	 *
@@ -1020,6 +1056,19 @@ struct Section {
 
 	/* The text shown for this section in the designer's list pane. */
 	QString displayLabel() const;
+
+	/*
+	 * Sticky blocks only, and the designer's business alone: whether the block's children are
+	 * folded away in the section list.
+	 *
+	 * Deliberately neither saved nor loaded. It is view state, like a settings group's fold, and
+	 * a roll should open showing what it holds. It lives on the section rather than beside the
+	 * list because it then travels with the block through every move, duplicate and undo step
+	 * for free -- where a set of folded row numbers kept next to the list would have to be
+	 * remapped by hand at each of them, and would fold the wrong block the first time that was
+	 * missed.
+	 */
+	bool childrenCollapsed = false;
 };
 
 struct Document {

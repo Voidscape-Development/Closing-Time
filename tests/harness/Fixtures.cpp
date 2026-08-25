@@ -359,6 +359,40 @@ const QVector<Scene> &scenes()
 			    documentWith({bridged, pairs}));
 		}
 
+		/* --- offsets and tabs ---------------------------------------------------------- */
+
+		{
+			/*
+			 * The two ways a section is moved sideways without touching its margins: the
+			 * whole of it nudged off its own centre, and single entries tabbed in from the
+			 * rest of the list they belong to.
+			 */
+			Section heading = Section::makeDefault(SectionType::Header);
+			heading.text = QStringLiteral("Nudged Left");
+			heading.contentOffsetX = -160;
+
+			Section tabbed = Section::makeDefault(SectionType::TextList);
+			tabbed.style.align = HAlign::Left;
+			tabbed.marginX = 320;
+			tabbed.indentStep = 40;
+			tabbed.entries = {Entry{QStringLiteral("Art Department")},
+					  Entry{QStringLiteral("Ada Lovelace")}, Entry{QStringLiteral("Grace Hopper")},
+					  Entry{QStringLiteral("Assistants")},
+					  Entry{QStringLiteral("Karen Sparck Jones")}};
+			tabbed.entries[1].indent = 1;
+			tabbed.entries[2].indent = 1;
+			tabbed.entries[3].indent = 1;
+			tabbed.entries[4].indent = 2;
+
+			Section shifted = Section::makeDefault(SectionType::Header);
+			shifted.text = QStringLiteral("Nudged Right");
+			shifted.contentOffsetX = 160;
+
+			add(QStringLiteral("offsets-and-tabs"),
+			    QStringLiteral("A section nudged either way, and a list tabbed into a hierarchy"),
+			    documentWith({heading, tabbed, shifted}));
+		}
+
 		/* --- dividers ---------------------------------------------------------------- */
 
 		{
