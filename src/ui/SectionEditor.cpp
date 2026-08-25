@@ -1088,17 +1088,28 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	sectionAlign->setToolTip(moduleText("Designer.SectionAlign.Tip"));
 	addRow(moduleText("Designer.SectionAlign"), sectionAlign);
 
-	auto *styleGroup = new QGroupBox(moduleText("Designer.TextStyle"), this);
-	auto *styleLayout = new QVBoxLayout(styleGroup);
-	primaryStyle = new StyleEditor(styleGroup);
-	styleLayout->addWidget(primaryStyle);
+	/*
+	 * The style groups fold away like the three above them.
+	 *
+	 * A StyleEditor is the tallest thing in this pane -- a font, a size, a fill with its stops,
+	 * an outline, a shadow, an alignment -- and a bridged row with subtitles puts five of them
+	 * one under the next. Somebody working on the words of a section scrolls past all of it to
+	 * reach the entry table, which is the whole complaint the folding groups were added to
+	 * answer; these were simply left out of that first pass.
+	 *
+	 * Two of them keep their checkbox, which is now carried in the fold header beside the title
+	 * rather than by a QGroupBox: the checkbox still says whether the style applies, and the
+	 * triangle beside it says only whether it is on screen. See CollapsibleGroup.
+	 */
+	styleGroup = new CollapsibleGroup(moduleText("Designer.TextStyle"), this);
+	primaryStyle = new StyleEditor(styleGroup->content());
+	styleGroup->addWidget(primaryStyle);
 	outer->addWidget(styleGroup);
 
-	secondaryGroup = new QGroupBox(moduleText("Designer.SecondaryStyle"), this);
+	secondaryGroup = new CollapsibleGroup(moduleText("Designer.SecondaryStyle"), this);
 	secondaryGroup->setCheckable(true);
-	auto *secondaryLayout = new QVBoxLayout(secondaryGroup);
-	secondaryStyle = new StyleEditor(secondaryGroup);
-	secondaryLayout->addWidget(secondaryStyle);
+	secondaryStyle = new StyleEditor(secondaryGroup->content());
+	secondaryGroup->addWidget(secondaryStyle);
 	outer->addWidget(secondaryGroup);
 
 	/*
@@ -1106,13 +1117,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * read as part of the row. Checked, it keeps the row's font and takes its ink from here --
 	 * yellow dots under white names, or a gradient across a run of diamonds.
 	 */
-	bridgeStyleGroup = new QGroupBox(moduleText("Designer.BridgeStyle"), this);
+	bridgeStyleGroup = new CollapsibleGroup(moduleText("Designer.BridgeStyle"), this);
 	bridgeStyleGroup->setCheckable(true);
-	bridgeStyleGroup->setToolTip(moduleText("Designer.BridgeStyle.Tip"));
-	auto *bridgeStyleLayout = new QVBoxLayout(bridgeStyleGroup);
-	bridgeStyle = new StyleEditor(bridgeStyleGroup);
+	bridgeStyleGroup->setHeaderToolTip(moduleText("Designer.BridgeStyle.Tip"));
+	bridgeStyle = new StyleEditor(bridgeStyleGroup->content());
 	bridgeStyle->setInkOnly(true);
-	bridgeStyleLayout->addWidget(bridgeStyle);
+	bridgeStyleGroup->addWidget(bridgeStyle);
 	outer->addWidget(bridgeStyleGroup);
 
 	/*
@@ -1122,16 +1132,14 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * is drawn whenever the row's subtitles are on and there is something in it to draw, which
 	 * is what the entry's own cell already says.
 	 */
-	rowSubtitleStyleGroup = new QGroupBox(moduleText("Designer.RowSubtitleStyle"), this);
-	auto *rowSubtitleLayout = new QVBoxLayout(rowSubtitleStyleGroup);
-	rowSubtitleStyle = new StyleEditor(rowSubtitleStyleGroup);
-	rowSubtitleLayout->addWidget(rowSubtitleStyle);
+	rowSubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSubtitleStyle"), this);
+	rowSubtitleStyle = new StyleEditor(rowSubtitleStyleGroup->content());
+	rowSubtitleStyleGroup->addWidget(rowSubtitleStyle);
 	outer->addWidget(rowSubtitleStyleGroup);
 
-	rowSecondarySubtitleStyleGroup = new QGroupBox(moduleText("Designer.RowSecondarySubtitleStyle"), this);
-	auto *rowSecondarySubtitleLayout = new QVBoxLayout(rowSecondarySubtitleStyleGroup);
-	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup);
-	rowSecondarySubtitleLayout->addWidget(rowSecondarySubtitleStyle);
+	rowSecondarySubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSecondarySubtitleStyle"), this);
+	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup->content());
+	rowSecondarySubtitleStyleGroup->addWidget(rowSecondarySubtitleStyle);
 	outer->addWidget(rowSecondarySubtitleStyleGroup);
 
 	entriesGroup = new QGroupBox(moduleText("Designer.Entries"), this);
@@ -1412,7 +1420,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 			presetOrigin = nullptr;
 		});
 	}
-	connect(secondaryGroup, &QGroupBox::toggled, this, notify);
+	connect(secondaryGroup, &CollapsibleGroup::toggled, this, notify);
 	/*
 	 * The subtitle columns of the entry table come and go with this, so it rebuilds the table
 	 * rather than only re-rendering. Reading the section back first is what carries what is
@@ -1427,7 +1435,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		relayoutEntryTable(type);
 		emitChanged();
 	});
-	connect(bridgeStyleGroup, &QGroupBox::toggled, this, notify);
+	connect(bridgeStyleGroup, &CollapsibleGroup::toggled, this, notify);
 	connect(entryTable, &QTableWidget::cellChanged, this, notify);
 	connect(logoBrowse, &QToolButton::clicked, this, &SectionEditor::browseForSectionLogo);
 	connect(bridgeSvgBrowse, &QToolButton::clicked, this, &SectionEditor::browseForBridgeSvg);
@@ -1981,7 +1989,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * A divider has a style even though it carries no section text: the artwork is inked from
 	 * it, and a word or a mark in the centre stack is drawn with it.
 	 */
-	primaryStyle->parentWidget()->setVisible(hasText || hasLogos || divider);
+	styleGroup->setVisible(hasText || hasLogos || divider);
 	/*
 	 * The same style serves whichever second text the type carries, so the group is titled
 	 * after the one being edited rather than after the Bridged section it was written for.

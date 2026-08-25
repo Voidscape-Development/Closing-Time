@@ -988,6 +988,18 @@ what the checkable groups already in this editor mean. A group whose every row i
 with them, which is asked of the layout rather than of the widgets in it — a child of a window that
 has not been shown yet reads as hidden whether or not anything hid it.
 
+**The style groups fold away too, and the two that switch off carry both controls in one header.**
+A `StyleEditor` is the tallest thing in the pane — a font, a size, a fill with its stops, an
+outline, a shadow, an alignment — and a bridged row with subtitles stacks five of them between the
+placement rows and the entry table, which is the scroll the folding groups were added to end. So
+`CollapsibleGroup` grew the checkbox it was originally written to avoid: it sits *beside* the
+title rather than replacing the disclosure triangle, and the two readings stay apart — the checkbox
+says whether the style applies, the triangle says whether it is on screen, and neither moves the
+other. A group switched off greys its settings where they are rather than hiding them, exactly as
+the checkable `QGroupBox` it replaces did: taking them away at the moment somebody is deciding
+whether they want them is the opposite of helpful. They have separate signals (`toggled`,
+`expandedChanged`) so that tidying the pane never marks the document dirty.
+
 **The settings reached for rarely sit behind one switch.** Nothing is switched off by it: a
 held-back row still comes and goes with the type exactly as it did, and `setRowVisible` simply ands
 the two together. The section box is deliberately not among them — it is the setting that places a

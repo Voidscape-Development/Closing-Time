@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "ui/CollapsibleGroup.hpp"
 
+#include <QCheckBox>
+#include <QHBoxLayout>
 #include <QLayout>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -30,7 +32,18 @@ CollapsibleGroup::CollapsibleGroup(const QString &title, QWidget *parent) : QWid
 	layout->setContentsMargins(0, 0, 0, 0);
 	layout->setSpacing(2);
 
-	header = new QToolButton(this);
+	/*
+	 * A row rather than the button alone, because a checkable group puts a checkbox beside the
+	 * title and the two have to read as one heading. The checkbox is added to the front of this
+	 * when one is asked for; until then the row holds only the button and looks exactly as it
+	 * did before.
+	 */
+	auto *headerWidget = new QWidget(this);
+	headerRow = new QHBoxLayout(headerWidget);
+	headerRow->setContentsMargins(0, 0, 0, 0);
+	headerRow->setSpacing(0);
+
+	header = new QToolButton(headerWidget);
 	header->setCheckable(true);
 	header->setChecked(true);
 	header->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -42,7 +55,8 @@ CollapsibleGroup::CollapsibleGroup(const QString &title, QWidget *parent) : QWid
 	 */
 	header->setAutoRaise(true);
 	header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-	layout->addWidget(header);
+	headerRow->addWidget(header);
+	layout->addWidget(headerWidget);
 
 	body = new QWidget(this);
 	auto *bodyLayout = new QVBoxLayout(body);
@@ -52,6 +66,7 @@ CollapsibleGroup::CollapsibleGroup(const QString &title, QWidget *parent) : QWid
 	connect(header, &QToolButton::toggled, this, [this](bool expanded) {
 		body->setVisible(expanded);
 		refreshHeader();
+		emit expandedChanged(expanded);
 	});
 
 	refreshHeader();
@@ -73,6 +88,13 @@ void CollapsibleGroup::setTitle(const QString &title)
 	refreshHeader();
 }
 
+void CollapsibleGroup::setHeaderToolTip(const QString &tip)
+{
+	header->setToolTip(tip);
+	if (enable)
+		enable->setToolTip(tip);
+}
+
 bool CollapsibleGroup::isExpanded() const
 {
 	return header->isChecked();
@@ -81,6 +103,51 @@ bool CollapsibleGroup::isExpanded() const
 void CollapsibleGroup::setExpanded(bool expanded)
 {
 	header->setChecked(expanded);
+}
+
+void CollapsibleGroup::setCheckable(bool checkable)
+{
+	if (checkable == (enable != nullptr))
+		return;
+
+	if (!checkable) {
+		delete enable;
+		enable = nullptr;
+		body->setEnabled(true);
+		return;
+	}
+
+	enable = new QCheckBox(header->parentWidget());
+	enable->setChecked(true);
+	enable->setToolTip(header->toolTip());
+	/*
+	 * No text of its own: the title beside it is the group's name and saying it twice would
+	 * read as two settings. The checkbox is the whole of the control, and the fold arrow that
+	 * follows it belongs to the title.
+	 */
+	headerRow->insertWidget(0, enable);
+
+	connect(enable, &QCheckBox::toggled, this, [this](bool checked) {
+		/*
+		 * Switched off, the settings stay where they are and grey out, which is what the
+		 * checkable QGroupBox this replaces did. Folding is left alone deliberately: a group
+		 * that hid itself the moment it was switched off would take the settings away at
+		 * exactly the moment somebody is deciding whether they want them.
+		 */
+		body->setEnabled(checked);
+		emit toggled(checked);
+	});
+}
+
+bool CollapsibleGroup::isChecked() const
+{
+	return enable ? enable->isChecked() : true;
+}
+
+void CollapsibleGroup::setChecked(bool checked)
+{
+	if (enable)
+		enable->setChecked(checked);
 }
 
 void CollapsibleGroup::refreshHeader()
