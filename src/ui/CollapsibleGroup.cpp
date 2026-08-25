@@ -26,6 +26,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 namespace closingtime {
 
+namespace {
+
+/* What holds a group's title clear of the fold arrow beside it; see refreshHeader. */
+const QString kTitleIndent = QStringLiteral("  ");
+
+} // namespace
+
 CollapsibleGroup::CollapsibleGroup(const QString &title, QWidget *parent) : QWidget(parent), titleText(title)
 {
 	auto *layout = new QVBoxLayout(this);
@@ -152,7 +159,13 @@ void CollapsibleGroup::setChecked(bool checked)
 
 void CollapsibleGroup::refreshHeader()
 {
-	header->setText(titleText);
+	/*
+	 * A gap of its own between the arrow and the title. A QToolButton sets the two a couple of
+	 * pixels apart and offers no way to say otherwise -- neither the icon size, which is the
+	 * arrow's own size, nor a stylesheet's padding, which moves the pair together -- so the space
+	 * is written into the text, where it is the one thing that does sit between them.
+	 */
+	header->setText(kTitleIndent + titleText);
 	header->setArrowType(header->isChecked() ? Qt::DownArrow : Qt::RightArrow);
 }
 

@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QPainter>
 #include <QSvgRenderer>
+#include <QTransform>
 
 #include <algorithm>
 
@@ -45,24 +46,51 @@ qreal shapeAspect(DividerShape shape, QSvgRenderer *renderer)
 }
 
 /*
- * Renders one tile, mirrored along x about its own centre when asked. Qt has no flag for that,
- * so the painter is flipped around the rectangle and the tile drawn into it the usual way --
- * which means a mirrored piece is the same artwork rather than a second copy of it that has to
- * be kept in step.
+ * Renders one tile, mirrored along x and turned about its own centre when asked. Qt has no flag
+ * for either, so the painter is transformed around the rectangle and the tile drawn into it the
+ * usual way -- which means a mirrored piece is the same artwork rather than a second copy of it
+ * that has to be kept in step.
+ *
+ * The flip is applied outside the turn, so a mirrored end is the reflection of the other end
+ * whatever angle it was given rather than the same lean drawn twice.
  */
-void renderTile(QPainter *painter, QSvgRenderer *renderer, const QRectF &rect, bool mirrored)
+void renderTile(QPainter *painter, QSvgRenderer *renderer, const QRectF &rect, bool mirrored, qreal rotation)
 {
-	if (!mirrored) {
+	if (!mirrored && rotation == 0.0) {
 		renderer->render(painter, rect);
 		return;
 	}
 
 	painter->save();
 	painter->translate(rect.center());
-	painter->scale(-1.0, 1.0);
+	if (mirrored)
+		painter->scale(-1.0, 1.0);
+	if (rotation != 0.0)
+		painter->rotate(rotation);
 	painter->translate(-rect.center());
 	renderer->render(painter, rect);
 	painter->restore();
+}
+
+/*
+ * What a placement covers once it is turned: the box its artwork is drawn in, which is the rect
+ * itself while the piece stands square and its corners' swept extent once it does not.
+ *
+ * Only ever asked of the silhouette the tinted pieces are inked through, never of the layout: a
+ * turned piece reaches past the room it was given on purpose (see DividerPiece::rotation), and a
+ * stencil cut to the untilted rect would take the corners off it.
+ */
+QRectF placementBounds(const DividerArtPlacement &piece)
+{
+	if (piece.rotation == 0.0)
+		return piece.rect;
+
+	QTransform turn;
+	turn.translate(piece.rect.center().x(), piece.rect.center().y());
+	turn.rotate(piece.rotation);
+	turn.translate(-piece.rect.center().x(), -piece.rect.center().y());
+
+	return turn.mapRect(piece.rect);
 }
 
 /* True when this piece is painted through the section's ink rather than in its own colours. */
@@ -170,13 +198,15 @@ void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art,
 			continue;
 
 		if (QSvgRenderer *renderer = cache->get(piece.shape, piece.file))
-			renderTile(painter, renderer, piece.rect, piece.mirrored);
+			renderTile(painter, renderer, piece.rect, piece.mirrored, piece.rotation);
 	}
 
 	QRectF bounds;
 	for (const DividerArtPlacement &piece : art) {
-		if (isTinted(piece, section))
-			bounds = bounds.isNull() ? piece.rect : bounds.united(piece.rect);
+		if (isTinted(piece, section)) {
+			const QRectF box = placementBounds(piece);
+			bounds = bounds.isNull() ? box : bounds.united(box);
+		}
 	}
 
 	if (bounds.isEmpty())
@@ -192,7 +222,7 @@ void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art,
 				continue;
 
 			if (QSvgRenderer *renderer = cache->get(piece.shape, piece.file))
-				renderTile(target, renderer, piece.rect, piece.mirrored);
+				renderTile(target, renderer, piece.rect, piece.mirrored, piece.rotation);
 		}
 	});
 }

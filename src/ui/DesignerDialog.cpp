@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDropEvent>
+#include <QMouseEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -80,11 +81,41 @@ constexpr int kLibraryWriteDebounceMs = 400;
 /* Milliseconds of quiet before a run of small edits becomes its own undo step. */
 constexpr int kEditBurstMs = 900;
 
+/*
+ * Set on the row of a sticky block that has children, and read by the list to tell a click on the
+ * fold arrow from a click on the row. The list has to answer that itself -- a press is where a
+ * drag starts, so there is nothing later to ask.
+ */
+constexpr int kBlockRowRole = Qt::UserRole + 1;
+
+/* What a row of a block's children is drawn with: the branch, and the last of them. */
+const QString kChildBranch = QStringLiteral("   \u251c\u2500 ");
+const QString kChildBranchLast = QStringLiteral("   \u2514\u2500 ");
+
+/*
+ * The fold arrows, and the blank that stands in for one on a row that does not fold. Every
+ * top-level row carries one of the three, so their labels start at the same place whether or not
+ * the row is a block.
+ */
+const QString kFoldOpen = QStringLiteral("\u25be ");
+const QString kFoldClosed = QStringLiteral("\u25b8 ");
+const QString kFoldNone = QStringLiteral("  ");
+
+/* Slack either side of the arrow glyph, so the target is a comfortable one to hit. */
+constexpr int kFoldHitPadding = 6;
+
 /* How many steps back the designer can go before the oldest is forgotten. */
 constexpr int kUndoDepth = 100;
 
-/* Opening widths of the section list, the editor and the preview, in pixels. */
-const QList<int> kDefaultPaneSizes = {320, 560, 400};
+/*
+ * Opening widths of the section list, the editor and the preview, in pixels.
+ *
+ * The editor takes the lion's share: it is the pane the roll is actually built in, and the one
+ * carrying tables whose columns have to be read across. The list needs only enough width for a
+ * section's label and the preview only enough to show the shape of the roll -- and either can be
+ * folded away entirely when the editor wants even that.
+ */
+const QList<int> kDefaultPaneSizes = {260, 720, 300};
 
 /*
  * One designer window per source. Keyed by the raw pointer purely for identity; the
@@ -292,6 +323,34 @@ SectionListWidget::SectionListWidget(QWidget *parent) : QListWidget(parent)
 	setSelectionMode(QAbstractItemView::SingleSelection);
 }
 
+void SectionListWidget::mousePressEvent(QMouseEvent *event)
+{
+	/*
+	 * A press on a block's fold arrow folds it and does nothing else: it does not select the
+	 * row, and it does not start a drag. Answered here rather than on release because a press
+	 * is where the drag machinery starts from, and a fold that only happened when nothing was
+	 * dragged would be a fold that sometimes did not happen.
+	 */
+	const QModelIndex index = indexAt(event->position().toPoint());
+
+	if (event->button() == Qt::LeftButton && index.data(kBlockRowRole).toBool()) {
+		const QRect row = visualRect(index);
+		/*
+		 * The arrow and the space after it, plus the small inset a view puts before an item's
+		 * text. Measured from the font rather than fixed, so the target follows a themed or
+		 * scaled list instead of drifting off the glyph it belongs to.
+		 */
+		const int arrow = fontMetrics().horizontalAdvance(kFoldOpen) + kFoldHitPadding;
+
+		if (event->position().x() - row.left() <= arrow) {
+			emit blockFoldToggled(index.row());
+			return;
+		}
+	}
+
+	QListWidget::mousePressEvent(event);
+}
+
 void SectionListWidget::dropEvent(QDropEvent *event)
 {
 	const int from = currentRow();
@@ -349,7 +408,6 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	listLayout->addLayout(listHeader);
 
 	sectionList = new SectionListWidget(listPane);
-	sectionList->setToolTip(moduleText("Designer.Sections.Tip"));
 	listLayout->addWidget(sectionList, 1);
 
 	listButtonRow = new QWidget(listPane);
@@ -414,41 +472,61 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	splitter->addWidget(editorScroll);
 
 	/* --- right: live preview of the whole strip --- */
-	auto *previewPane = new QWidget(splitter);
+	previewPane = new QWidget(splitter);
 	auto *previewLayout = new QVBoxLayout(previewPane);
 	previewLayout->setContentsMargins(0, 0, 0, 0);
-	previewLayout->addWidget(new QLabel(moduleText("Designer.Preview"), previewPane));
-	preview = new PreviewWidget(previewPane);
+
+	/*
+	 * A header of its own, so the preview folds away to a button the way the section list does.
+	 * The button sits at the pane's inner edge -- the side it folds towards -- and stays on
+	 * screen when it does, since it is the one way back.
+	 */
+	auto *previewHeader = new QHBoxLayout();
+	previewCollapseButton = new QToolButton(previewPane);
+	previewCollapseButton->setAutoRaise(true);
+	previewCollapseButton->setArrowType(Qt::RightArrow);
+	previewCollapseButton->setToolTip(moduleText("Designer.Preview.Collapse"));
+	previewLabel = new QLabel(moduleText("Designer.Preview"), previewPane);
+	previewHeader->addWidget(previewCollapseButton);
+	previewHeader->addWidget(previewLabel, 1);
+	previewLayout->addLayout(previewHeader);
+
+	previewBody = new QWidget(previewPane);
+	auto *previewBodyLayout = new QVBoxLayout(previewBody);
+	previewBodyLayout->setContentsMargins(0, 0, 0, 0);
+	previewLayout->addWidget(previewBody, 1);
+
+	preview = new PreviewWidget(previewBody);
 	preview->setToolTip(moduleText("Designer.Preview.Tip"));
-	previewLayout->addWidget(preview, 1);
+	previewBodyLayout->addWidget(preview, 1);
 	/*
 	 * Off by default: this is a view of the layout rather than of the roll, wanted only while
 	 * a section is not landing where its settings say it should.
 	 */
-	layoutBoxesCheck = new QCheckBox(moduleText("Designer.LayoutBoxes"), previewPane);
+	layoutBoxesCheck = new QCheckBox(moduleText("Designer.LayoutBoxes"), previewBody);
 	layoutBoxesCheck->setToolTip(moduleText("Designer.LayoutBoxes.Tip"));
-	previewLayout->addWidget(layoutBoxesCheck);
+	previewBodyLayout->addWidget(layoutBoxesCheck);
 	/*
 	 * Off by default, like the overlay above it and for the same reason: this pane is what a roll
 	 * is written in, and something moving in the corner of it while a name is being typed is a
 	 * distraction rather than a feature. With it off every animated logo shows its first frame,
 	 * which is the frame the layout was measured from.
 	 */
-	animateCheck = new QCheckBox(moduleText("Designer.PlayAnimations"), previewPane);
+	animateCheck = new QCheckBox(moduleText("Designer.PlayAnimations"), previewBody);
 	animateCheck->setToolTip(moduleText("Designer.PlayAnimations.Tip"));
 	animateCheck->setEnabled(false);
-	previewLayout->addWidget(animateCheck);
-	durationLabel = new QLabel(previewPane);
-	previewLayout->addWidget(durationLabel);
-	fontWarningLabel = new QLabel(previewPane);
+	previewBodyLayout->addWidget(animateCheck);
+	durationLabel = new QLabel(previewBody);
+	previewBodyLayout->addWidget(durationLabel);
+	fontWarningLabel = new QLabel(previewBody);
 	fontWarningLabel->setWordWrap(true);
 	fontWarningLabel->setStyleSheet(QStringLiteral("color: #e0a030;"));
 	fontWarningLabel->hide();
-	previewLayout->addWidget(fontWarningLabel);
+	previewBodyLayout->addWidget(fontWarningLabel);
 	splitter->addWidget(previewPane);
 
 	splitter->setStretchFactor(0, 1);
-	splitter->setStretchFactor(1, 3);
+	splitter->setStretchFactor(1, 4);
 	splitter->setStretchFactor(2, 2);
 	/*
 	 * Wider than the stretch factors alone would open it: the list carries a section's own
@@ -505,10 +583,12 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	connect(editBurstTimer, &QTimer::timeout, this, [this] { editBurstOpen = false; });
 	connect(libraryWriteTimer, &QTimer::timeout, this, &DesignerDialog::flushLibraryEdits);
 	connect(collapseButton, &QToolButton::clicked, this, [this] { setSectionsCollapsed(!sectionsCollapsed); });
+	connect(previewCollapseButton, &QToolButton::clicked, this, [this] { setPreviewCollapsed(!previewCollapsed); });
 	connect(undoButton, &QPushButton::clicked, this, &DesignerDialog::undo);
 	connect(redoButton, &QPushButton::clicked, this, &DesignerDialog::redo);
 	connect(sectionList, &QListWidget::currentRowChanged, this, &DesignerDialog::onSelectionChanged);
 	connect(sectionList, &SectionListWidget::rowMoved, this, &DesignerDialog::moveSectionTo);
+	connect(sectionList, &SectionListWidget::blockFoldToggled, this, &DesignerDialog::toggleBlockFold);
 	connect(editor, &SectionEditor::changed, this, &DesignerDialog::onSectionEdited);
 	connect(editor, &SectionEditor::presetSaveRequested, this, &DesignerDialog::savePreset);
 	connect(editor, &SectionEditor::presetDeleteRequested, this, &DesignerDialog::deletePreset);
@@ -721,8 +801,7 @@ const Section *DesignerDialog::sectionAt(const SectionPath &path) const
 		return nullptr;
 
 	const std::vector<Section> &children = document.sections.at(path.parent).children;
-	return static_cast<size_t>(path.index) < children.size() ? &children[static_cast<size_t>(path.index)]
-								 : nullptr;
+	return static_cast<size_t>(path.index) < children.size() ? &children[static_cast<size_t>(path.index)] : nullptr;
 }
 
 QVector<DesignerDialog::SectionPath> DesignerDialog::pathsInOrder() const
@@ -801,6 +880,58 @@ int DesignerDialog::highlightFor(const SectionPath &path) const
 	return path.parent >= 0 ? path.parent : path.index;
 }
 
+QString DesignerDialog::rowLabel(const SectionPath &path, const Section &section) const
+{
+	/*
+	 * Children are drawn with a branch off their block rather than by a delegate or a tree: a
+	 * list is the right widget for a roll that is a run of sections with one shallow exception
+	 * in it, and a tree would trade the drag-and-drop reordering that works for one that has to
+	 * be taught which drops mean what. The branch is what says the row belongs to the block above
+	 * it -- an indent alone reads as a wider margin as readily as it reads as a child.
+	 */
+	if (path.parent >= 0) {
+		const Section *block = sectionAt(SectionPath{-1, path.parent});
+		const bool last = block && path.index + 1 == static_cast<int>(block->children.size());
+		return (last ? kChildBranchLast : kChildBranch) + section.displayLabel();
+	}
+
+	/*
+	 * A block says how many sections it holds, which is the one thing about it a folded row
+	 * cannot show for itself, and carries the arrow that folds it. A block holding nothing has
+	 * nothing to fold, so it takes the same blank every other top-level row does.
+	 */
+	if (section.type == SectionType::StickyBlock) {
+		const int held = static_cast<int>(section.children.size());
+		const QString fold = held == 0 ? kFoldNone : (section.childrenCollapsed ? kFoldClosed : kFoldOpen);
+		return fold + section.displayLabel() + QStringLiteral(" (%1)").arg(held);
+	}
+
+	return kFoldNone + section.displayLabel();
+}
+
+void DesignerDialog::toggleBlockFold(int row)
+{
+	if (row < 0 || row >= rowPaths.size())
+		return;
+
+	const SectionPath path = rowPaths.at(row);
+	Section *section = sectionAt(path);
+	if (path.parent >= 0 || !section || section->type != SectionType::StickyBlock || section->children.empty())
+		return;
+
+	/* Whatever is half-typed into the editor belongs to the document before the list is rebuilt. */
+	commitCurrentSection();
+
+	section->childrenCollapsed = !section->childrenCollapsed;
+
+	/*
+	 * No undo step and no re-render: this is what the list is showing, not what the roll says.
+	 * The selection follows a child that has just been folded away up to the block itself, which
+	 * refreshSectionList does for any hidden row it is handed.
+	 */
+	refreshSectionList(currentRow);
+}
+
 void DesignerDialog::refreshSectionList(int selectRow)
 {
 	const QSignalBlocker blocker(sectionList);
@@ -813,22 +944,30 @@ void DesignerDialog::refreshSectionList(int selectRow)
 		if (!section)
 			continue;
 
-		/*
-		 * Children are indented by their label rather than by a delegate: a list is the right
-		 * widget for a roll that is a run of sections with one shallow exception in it, and a
-		 * tree would trade the drag-and-drop reordering that works for one that has to be
-		 * taught which drops mean what.
-		 */
-		const QString label = path.parent >= 0 ? QStringLiteral("      ") + section->displayLabel()
-						       : section->displayLabel();
-
-		auto *item = new QListWidgetItem(label, sectionList);
+		auto *item = new QListWidgetItem(rowLabel(path, *section), sectionList);
 		item->setToolTip(QString::fromUtf8(sectionTypeName(section->type)));
 		if (!section->visible)
 			item->setForeground(Qt::gray);
+
+		/* Only a block with something in it folds, and only its row answers a click on one. */
+		if (path.parent < 0 && section->type == SectionType::StickyBlock && !section->children.empty())
+			item->setData(kBlockRowRole, true);
+
+		/* A folded block's children stay in the list, and out of sight; see toggleBlockFold. */
+		if (path.parent >= 0) {
+			const Section *block = sectionAt(SectionPath{-1, path.parent});
+			item->setHidden(block && block->childrenCollapsed);
+		}
 	}
 
-	const int row = std::clamp(selectRow, -1, static_cast<int>(rowPaths.size()) - 1);
+	int row = std::clamp(selectRow, -1, static_cast<int>(rowPaths.size()) - 1);
+
+	/*
+	 * Never a row nothing can see: a selection folded away leaves the editor working on a
+	 * section the list is not showing, so it moves up to the block that folded it.
+	 */
+	if (row >= 0 && row < sectionList->count() && sectionList->item(row)->isHidden())
+		row = rowOf(SectionPath{-1, rowPaths.at(row).parent});
 	sectionList->setCurrentRow(row);
 	currentRow = row;
 	currentPath = row >= 0 ? rowPaths.at(row) : SectionPath{};
@@ -920,10 +1059,6 @@ void DesignerDialog::setSectionsCollapsed(bool collapsed)
 	if (collapsed == sectionsCollapsed)
 		return;
 
-	/* Taken before anything is hidden, so the pane comes back the width it went away at. */
-	if (collapsed)
-		expandedSizes = splitter->sizes();
-
 	sectionsCollapsed = collapsed;
 
 	sectionsLabel->setVisible(!collapsed);
@@ -933,20 +1068,64 @@ void DesignerDialog::setSectionsCollapsed(bool collapsed)
 	collapseButton->setArrowType(collapsed ? Qt::RightArrow : Qt::LeftArrow);
 	collapseButton->setToolTip(moduleText(collapsed ? "Designer.Sections.Expand" : "Designer.Sections.Collapse"));
 
+	setPaneFolded(listPane, collapseButton, &listExpandedWidth, collapsed);
+}
+
+void DesignerDialog::setPreviewCollapsed(bool collapsed)
+{
+	if (collapsed == previewCollapsed)
+		return;
+
+	previewCollapsed = collapsed;
+
+	previewLabel->setVisible(!collapsed);
+	previewBody->setVisible(!collapsed);
+
+	/* Pointing the way the pane would go: out to the right to fold, back in to reopen. */
+	previewCollapseButton->setArrowType(collapsed ? Qt::LeftArrow : Qt::RightArrow);
+	previewCollapseButton->setToolTip(
+		moduleText(collapsed ? "Designer.Preview.Expand" : "Designer.Preview.Collapse"));
+
+	setPaneFolded(previewPane, previewCollapseButton, &previewExpandedWidth, collapsed);
+}
+
+void DesignerDialog::setPaneFolded(QWidget *pane, QToolButton *button, int *rememberedWidth, bool folded)
+{
+	const int index = splitter->indexOf(pane);
+	if (index < 0)
+		return;
+
+	QList<int> sizes = splitter->sizes();
+
 	/*
-	 * The pane is pinned to the width of the button rather than hidden outright: the button is
-	 * what reopens it, so it has to stay on screen and stay where it was.
+	 * The pane is pinned to the width of its own button rather than hidden outright: the button
+	 * is what reopens it, so it has to stay on screen and stay where it was.
 	 */
-	if (collapsed) {
+	if (folded) {
+		*rememberedWidth = sizes.value(index);
 		/* Re-laid out first, so the width asked for is the folded one and not the stale one. */
-		listPane->layout()->activate();
-		listPane->setMaximumWidth(
-			std::max(collapseButton->sizeHint().width(), listPane->layout()->minimumSize().width()));
+		pane->layout()->activate();
+		pane->setMaximumWidth(std::max(button->sizeHint().width(), pane->layout()->minimumSize().width()));
 		return;
 	}
 
-	listPane->setMaximumWidth(QWIDGETSIZE_MAX);
-	splitter->setSizes(expandedSizes.size() == splitter->count() ? expandedSizes : kDefaultPaneSizes);
+	pane->setMaximumWidth(QWIDGETSIZE_MAX);
+
+	const int width = *rememberedWidth > 0 ? *rememberedWidth : kDefaultPaneSizes.value(index);
+	const int editor = splitter->indexOf(editorScroll);
+	if (index == editor || editor < 0 || sizes.size() != splitter->count()) {
+		splitter->setSizes(kDefaultPaneSizes);
+		return;
+	}
+
+	/*
+	 * Taken out of the middle rather than shared around, so opening one pane leaves the other
+	 * where the user last put it. The editor is the pane with room to spare -- and never let
+	 * below nothing, which the splitter would only hand back at the next resize anyway.
+	 */
+	sizes[editor] = std::max(0, sizes.value(editor) - (width - sizes.value(index)));
+	sizes[index] = width;
+	splitter->setSizes(sizes);
 }
 
 void DesignerDialog::refreshUndoButtons()
@@ -999,8 +1178,7 @@ void DesignerDialog::onSectionEdited()
 	if (section && currentRow >= 0 && currentRow < sectionList->count()) {
 		const QSignalBlocker blocker(sectionList);
 		QListWidgetItem *item = sectionList->item(currentRow);
-		item->setText(currentPath.parent >= 0 ? QStringLiteral("      ") + section->displayLabel()
-						      : section->displayLabel());
+		item->setText(rowLabel(currentPath, *section));
 		item->setForeground(section->visible ? QBrush() : QBrush(Qt::gray));
 	}
 
@@ -1142,8 +1320,15 @@ void DesignerDialog::moveSectionTo(int from, int to)
 
 		if (before.parent >= 0) {
 			at = SectionPath{before.parent, before.index + 1};
-		} else if (precedes && precedes->type == SectionType::StickyBlock) {
+		} else if (precedes && precedes->type == SectionType::StickyBlock && !precedes->childrenCollapsed) {
 			at = SectionPath{before.index, 0};
+		} else if (precedes && precedes->type == SectionType::StickyBlock) {
+			/*
+			 * Folded, the block is one row that stands for all of it, so the gap under that
+			 * row is the gap under the block -- not the way into a fold the user has just
+			 * put away. Unfolding it is how something is dropped inside it.
+			 */
+			at = SectionPath{-1, before.index + 1};
 		} else {
 			at = SectionPath{-1, before.index + 1};
 		}

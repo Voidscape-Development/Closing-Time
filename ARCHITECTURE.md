@@ -102,6 +102,23 @@ so a margin large enough to push a block towards one edge pushes it in from the 
 as much. Splitting "how wide" from "where" is what lets a run of credits sit hard against one
 side of the frame while still keeping a margin's worth of clear space off that side.
 
+`contentOffsetX` is the third of those and the crudest on purpose: the content's left edge plus a
+number of pixels, either way. It **translates**, and translates *everything the section draws* — a
+heading and the logo beside it move together, keeping the arrangement they were given — where
+narrowing the column instead would reflow the text and move each alignment by a different amount.
+Content nudged past the edge of its own box is drawn there rather than wrapped back inside it: the
+offset is a nudge, and one large enough to leave the canvas is one the preview shows immediately.
+A spacer draws nothing and a sticky block spans the canvas — its children carry offsets of their
+own — so neither reads it.
+
+`Entry::indent` is the same idea one level down: a count of steps, each `Section::indentStep` wide,
+that translates one entry's column within the list. Steps rather than pixels because what an indent
+is *for* is a list with a shape to it — a department over the names under it — and several entries
+line up only if the step is one decision about the list rather than a number typed into each row.
+It translates rather than narrows for the same reason the offset does, so a tab means the same
+thing in a centred list as in a left-aligned one. Every list shape reads it, the multi-column ones
+stepping the entry within its own column rather than off it.
+
 ### Section types
 
 | Type | Content | Notes |
@@ -395,6 +412,18 @@ same mirror applies to the right-hand **arm**, unconditionally: a taper running 
 up to full thickness, or a rule ticked at one edge of each tile, would otherwise point the same
 way on both sides and leave the divider lopsided. Mirroring a symmetric tile costs a transform
 and changes nothing, which is why it is not a property each shape has to remember to declare.
+
+**A piece may be turned, and a turn moves nothing along the rule.** `DividerPiece::rotation` is
+degrees clockwise about the piece's own centre, read for all three kinds — the artwork through a
+painter transform, a word and an image through the same transform wrapped around the helpers that
+draw them. What it deliberately does *not* do is re-measure: the piece keeps the width its
+untilted shape asked for, so its neighbours and the arms stay put while an angle is dialled in,
+and a wide shape turned a quarter round reaches out over the gaps beside it. Height is the one
+exception and has to be — a section is only as tall as it says it is, so the measured stack takes
+each piece's *swept* height and the divider grows to hold what it draws rather than cutting the
+corners off it. On a mirrored end the flip is applied outside the turn for artwork, and the angle
+itself is negated for a word or an image, which are not flipped: either way the two ends of a rule
+stay each other's reflection.
 
 **Every shape declares its own height as a multiple of the rule it belongs to.** `height` in the
 table is that proportion — an arrowhead some four and a half times the rule, a centre diamond
@@ -991,11 +1020,16 @@ Ownership is split cleanly with the properties dialog — **the designer owns co
 action**. On Apply, the designer re-reads the live settings and writes back only its own
 half, so edits made in the properties window while the designer was open are not clobbered.
 
-The section list opens wider than its stretch factor alone would give it, and folds away to a
-button in its own header rather than to a splitter drag. Dragging a pane shut is easy to do by
-accident and leaves nothing on screen saying how to undo it, so the splitter no longer collapses
-its children at all: the button is the one way in, and because it stays put when the pane folds,
-the one way back out.
+The editor pane opens widest of the three, because it is where a roll is actually built and the
+one carrying tables whose columns have to be read across; the list needs only enough width for a
+section's label and the preview only enough to show the shape of the roll. Either of those two
+folds away to a button in its own header rather than to a splitter drag. Dragging a pane shut is
+easy to do by accident and leaves nothing on screen saying how to undo it, so the splitter no
+longer collapses its children at all: the button is the one way in, and because it stays put when
+the pane folds, the one way back out. What a folded pane gives up, and takes back, is the editor's
+share in the middle — each pane remembers its own width rather than a snapshot of the whole
+splitter, so folding one while the other is folded cannot hand the second one the first one's
+folded width when it is opened again.
 
 The editor keeps one widget set and hides the rows that do not apply to the selected type
 (`QFormLayout::setRowVisible`, Qt 6.4+) rather than rebuilding, which keeps focus and scroll
@@ -1011,8 +1045,8 @@ taking a type apart is a property of the type table rather than of this window, 
 mapping that has to be exactly reversible is worth a test that needs no window on screen. Nothing
 about persistence changes: the document still carries all twenty ids.
 
-**The rows are gathered into named groups that fold away** — what the section says, how this kind
-of section is put together, where it sits — with the middle one titled after the type in it, since
+**The rows are gathered into named groups that fold away** — *Content Properties*, the type's own
+settings, *Layout Properties* — with the middle one titled after the type in it, since
 "Bridge settings" and "Divider settings" are never on screen at once. A `CollapsibleGroup` rather
 than a checkable `QGroupBox`: a checkbox on a group reads as switching the group *off*, which is
 what the checkable groups already in this editor mean. A group whose every row is hidden goes away
@@ -1040,11 +1074,42 @@ the box was added to end.
 Because the entry table's columns follow the type, changing the type takes the entries out through
 the old columns and puts them back through the new ones (`relayoutEntryTable`). Rebuilding without
 that left an empty table for the next read to believe, which threw a cast list away on a change of
-type — the one thing changing a type is documented never to do. A trailing spacer takes whatever height
+type — the one thing changing a type is documented never to do. The columns are also what the
+bridged row's *subtitles* switch adds and takes away, so the editor remembers the answer the table
+was built with (`tableType`, `tableRowSubtitles`) and reads through that rather than through the
+switch: the same cell means a different field on each side of the rebuild, and reading a two-column
+table as a four-column one put every row's right-hand name into the left-hand subtitle the moment
+subtitles were switched on. A trailing spacer takes whatever height
 is left over: a `QVBoxLayout` with nothing to give its slack to shares it out between the items
 it has, which spread a short type's handful of rows down the pane with gaps between them. The
 entry table is the one thing worth growing, so it takes the slack instead whenever the selected
 type has one, and asks for enough height to read a run of entries at a glance.
+
+**A sticky block's children are branches off it, and fold away.** The list stays a `QListWidget`:
+a roll is a run of sections with one shallow exception in it, and a tree would trade the
+drag-and-drop reordering that already works for one that has to be taught which drops mean what.
+So a child row is drawn with a `├─`/`└─` branch, a block's own row carries a `▾`/`▸` and a count of
+what it holds, and every other top-level row takes a blank of the same width so the names line up.
+Folding hides the child rows rather than removing them, so every row index still means the path it
+always did. The fold lives on the section (`Section::childrenCollapsed`) and is deliberately
+neither saved nor loaded: it is view state like a settings group's fold, but keeping it on the
+section is what carries it through a move, a duplicate and an undo step without a table of row
+numbers to remap at each of them. Two consequences are handled where they arise: a selection folded
+away moves up to the block that folded it, since the editor must never be working on a row the list
+is not showing; and a drop just under a *folded* block lands after the block rather than inside it,
+because one row standing for the whole block is not an invitation into a fold the user has just put
+away. The click is caught in `SectionListWidget::mousePressEvent` — a press is where a drag starts,
+so there is nothing later to ask — and which rows carry an arrow is marked on the item, leaving the
+list knowing nothing about what a section is.
+
+**A table can be taken out into a window of its own.** The editor pane is a third of a designer
+wide and a cast list is two hundred rows long, so the entry table and each of the divider's three
+piece tables carry a *Bigger...* button that opens the table itself — reparented into a modal
+dialog sized to most of the screen, then put back where it came from when the dialog closes. The
+widget moves rather than a copy of it: every signal, selection and half-typed cell stays exactly as
+it was, where a second table filled from the first would have to be kept in step and would hand
+back stale rows the moment it was not. Nothing about the edit path changes, so what is typed in the
+window is in the section as it is typed, undo steps and preview refreshes included.
 
 The same rule reaches past the form rows: *Set Logo* is hidden for the types whose entries are
 lines of text rather than paths, and a logo list hands its width to the path column instead of to

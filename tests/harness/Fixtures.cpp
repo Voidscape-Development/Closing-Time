@@ -359,6 +359,40 @@ const QVector<Scene> &scenes()
 			    documentWith({bridged, pairs}));
 		}
 
+		/* --- offsets and tabs ---------------------------------------------------------- */
+
+		{
+			/*
+			 * The two ways a section is moved sideways without touching its margins: the
+			 * whole of it nudged off its own centre, and single entries tabbed in from the
+			 * rest of the list they belong to.
+			 */
+			Section heading = Section::makeDefault(SectionType::Header);
+			heading.text = QStringLiteral("Nudged Left");
+			heading.contentOffsetX = -160;
+
+			Section tabbed = Section::makeDefault(SectionType::TextList);
+			tabbed.style.align = HAlign::Left;
+			tabbed.marginX = 320;
+			tabbed.indentStep = 40;
+			tabbed.entries = {Entry{QStringLiteral("Art Department")},
+					  Entry{QStringLiteral("Ada Lovelace")}, Entry{QStringLiteral("Grace Hopper")},
+					  Entry{QStringLiteral("Assistants")},
+					  Entry{QStringLiteral("Karen Sparck Jones")}};
+			tabbed.entries[1].indent = 1;
+			tabbed.entries[2].indent = 1;
+			tabbed.entries[3].indent = 1;
+			tabbed.entries[4].indent = 2;
+
+			Section shifted = Section::makeDefault(SectionType::Header);
+			shifted.text = QStringLiteral("Nudged Right");
+			shifted.contentOffsetX = 160;
+
+			add(QStringLiteral("offsets-and-tabs"),
+			    QStringLiteral("A section nudged either way, and a list tabbed into a hierarchy"),
+			    documentWith({heading, tabbed, shifted}));
+		}
+
 		/* --- dividers ---------------------------------------------------------------- */
 
 		{
@@ -379,6 +413,47 @@ const QVector<Scene> &scenes()
 			add(QStringLiteral("dividers"),
 			    QStringLiteral("A plain rule, a tapered stack and a labelled break"),
 			    documentWith({plain, stacked, labelled}));
+		}
+
+		/* --- plain shapes and turned pieces -------------------------------------------- */
+
+		{
+			/*
+			 * The plain shapes, filled over outlined, and then the same square turned
+			 * through a run of angles: what the picture is for is that the geometry is
+			 * drawn as geometry -- an equilateral triangle, a regular pentagon -- and that
+			 * a turned piece leans without dragging the rule it sits on with it.
+			 */
+			const auto ornament = [](DividerShape shape, double rotation = 0.0) {
+				return DividerPiece{DividerPiece::Kind::Ornament, shape, {}, 1.0, {}, {}, rotation};
+			};
+
+			const auto row = [&](const QVector<DividerPiece> &centre) {
+				Section section = Section::makeDefault(SectionType::SectionDivider);
+				section.dividerPieceGap = 14.0;
+				section.dividerCentre = centre;
+				return section;
+			};
+
+			Section filled = row({ornament(DividerShape::Circle), ornament(DividerShape::Square),
+					      ornament(DividerShape::RoundedSquare), ornament(DividerShape::Triangle),
+					      ornament(DividerShape::Pentagon), ornament(DividerShape::Hexagon),
+					      ornament(DividerShape::Octagon)});
+
+			Section outlined =
+				row({ornament(DividerShape::Ring), ornament(DividerShape::SquareOutline),
+				     ornament(DividerShape::RoundedSquareOutline),
+				     ornament(DividerShape::TriangleOutline), ornament(DividerShape::PentagonOutline),
+				     ornament(DividerShape::HexagonOutline), ornament(DividerShape::OctagonOutline)});
+
+			Section turned =
+				row({ornament(DividerShape::Square, 0.0), ornament(DividerShape::Square, 15.0),
+				     ornament(DividerShape::Square, 30.0), ornament(DividerShape::Square, 45.0),
+				     ornament(DividerShape::Triangle, 90.0), ornament(DividerShape::Triangle, 180.0)});
+
+			add(QStringLiteral("dividers-shapes"),
+			    QStringLiteral("The plain shapes filled and outlined, and a run of turned pieces"),
+			    documentWith({filled, outlined, turned}));
 		}
 
 		/* --- joined dividers ---------------------------------------------------------- */

@@ -72,6 +72,27 @@ enum class DividerShape {
 	Filigree,
 	DecoStack,
 
+	/*
+	 * Plain shapes: the geometry every other ornament here is a flourish on. Each comes filled
+	 * and as an outline, because which of the two a divider wants is a question about the rule
+	 * it punctuates rather than about the shape -- a hairline rule takes an outline where a
+	 * heavy one takes the solid.
+	 */
+	Circle,
+	Ring,
+	Square,
+	SquareOutline,
+	RoundedSquare,
+	RoundedSquareOutline,
+	Triangle,
+	TriangleOutline,
+	Pentagon,
+	PentagonOutline,
+	Hexagon,
+	HexagonOutline,
+	Octagon,
+	OctagonOutline,
+
 	/* Artwork from a file the user picks, in any of the three slots. */
 	Custom,
 };

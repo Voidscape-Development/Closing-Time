@@ -22,6 +22,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -34,6 +36,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -85,6 +88,9 @@ constexpr int kEntryTableMinimumHeight = 260;
 /* Width of a logo list's height column, which never holds more than four digits and a suffix. */
 constexpr int kEntryHeightColumnWidth = 80;
 
+/* And of the tab column beside it, which holds a step count and never more than two digits. */
+constexpr int kEntryIndentColumnWidth = 70;
+
 /*
  * Where an entry row keeps the whole of the entry it was written from.
  *
@@ -106,6 +112,7 @@ QVariant entryStash(const Entry &entry)
 	stash.insert(QStringLiteral("secondary_subtitle"), entry.secondarySubtitle);
 	stash.insert(QStringLiteral("logo"), entry.logo.path);
 	stash.insert(QStringLiteral("logo_height"), entry.logo.maxHeight);
+	stash.insert(QStringLiteral("indent"), entry.indent);
 	return stash;
 }
 
@@ -125,6 +132,8 @@ Entry entryFromStash(const QVariant &value)
 	const int height = stash.value(QStringLiteral("logo_height")).toInt();
 	if (height > 0)
 		entry.logo.maxHeight = height;
+
+	entry.indent = stash.value(QStringLiteral("indent")).toInt();
 
 	return entry;
 }
@@ -195,12 +204,34 @@ enum PieceColumn {
 	PieceValue,
 	/* Ornament pieces only: a multiplier on the size its shape asks for. */
 	PieceSize,
+	/* Degrees clockwise about the piece's own centre; every kind reads it. */
+	PieceRotation,
 	PieceColumnCount,
 };
 
-/* Width of the centre table's two narrow columns, neither of which holds a long word. */
+/* Width of the centre table's three narrow columns, none of which holds a long word. */
 constexpr int kPieceKindColumnWidth = 110;
 constexpr int kPieceSizeColumnWidth = 70;
+constexpr int kPieceRotationColumnWidth = 80;
+
+/*
+ * Written after every angle in the table and taken off again when one is read, so the column
+ * says what its numbers are without a spin box in every row saying it a second time.
+ */
+constexpr QChar kDegreeSign(0x00b0);
+
+/* An angle as typed, in degrees: the number in the cell, with or without the sign after it. */
+double degreesFromCell(const QString &cell)
+{
+	QString text = cell.trimmed();
+	text.remove(kDegreeSign);
+
+	/*
+	 * Whatever will not read as a number is nothing turned, which is what an emptied cell and a
+	 * mistyped one both plainly mean.
+	 */
+	return text.trimmed().toDouble();
+}
 
 /*
  * The types the picker offers, from which the rest are composed by the switches beside it.
@@ -682,6 +713,16 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		typeBox->addItem(baseTypeLabel(type), static_cast<int>(type));
 	addRow(moduleText("Designer.SectionType"), typeBox);
 
+	/*
+	 * What this section is called in the list, directly under what kind of thing it is: the two
+	 * together are how a section is found again in a roll of forty, and naming one is the next
+	 * thing done after picking the other.
+	 */
+	labelEdit = new QLineEdit(this);
+	labelEdit->setPlaceholderText(moduleText("Designer.LabelPlaceholder"));
+	addRow(moduleText("Designer.Label"), labelEdit);
+
+	/* The chosen type in a sentence, under the pair it describes. */
 	typeHelp = new QLabel(this);
 	typeHelp->setWordWrap(true);
 	typeHelp->setEnabled(false);
@@ -704,10 +745,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
 	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
 	addRow(moduleText("Designer.ListContent"), typeListContent);
-
-	labelEdit = new QLineEdit(this);
-	labelEdit->setPlaceholderText(moduleText("Designer.LabelPlaceholder"));
-	addRow(moduleText("Designer.Label"), labelEdit);
 
 	visibleBox = new QCheckBox(moduleText("Designer.Visible"), this);
 	addRow(QString(), visibleBox);
@@ -981,6 +1018,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	entryGap->setSuffix(QStringLiteral(" px"));
 	addRow(moduleText("Designer.EntryGap"), entryGap);
 
+	indentStep = new QSpinBox(this);
+	indentStep->setRange(0, 2048);
+	indentStep->setSuffix(QStringLiteral(" px"));
+	indentStep->setToolTip(moduleText("Designer.IndentStep.Tip"));
+	addRow(moduleText("Designer.IndentStep"), indentStep);
+
 	subtitleGap = new QSpinBox(this);
 	subtitleGap->setRange(0, 2048);
 	subtitleGap->setSuffix(QStringLiteral(" px"));
@@ -1089,6 +1132,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	marginX->setSuffix(QStringLiteral(" px"));
 	addRow(moduleText("Designer.MarginX"), marginX);
 
+	contentOffsetX = new QSpinBox(this);
+	contentOffsetX->setRange(-4096, 4096);
+	contentOffsetX->setSuffix(QStringLiteral(" px"));
+	contentOffsetX->setToolTip(moduleText("Designer.ContentOffsetX.Tip"));
+	addRow(moduleText("Designer.ContentOffsetX"), contentOffsetX);
+
 	sectionWidth = new QSpinBox(this);
 	sectionWidth->setRange(1, 100);
 	sectionWidth->setSuffix(QStringLiteral(" %"));
@@ -1192,6 +1241,9 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	setLogoButton = addButton(makeLabelledButton(entriesGroup, moduleText("Designer.SetLogo")),
 				  &SectionEditor::browseForEntryLogo);
 	buttons->addStretch();
+	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ExpandTable"),
+				     moduleText("Designer.ExpandTable.Tip")),
+		  [this] { expandTable(entryTable, moduleText("Designer.Entries")); });
 	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ImportCsv")), &SectionEditor::importCsv);
 
 	entriesLayout->addLayout(buttons);
@@ -1229,7 +1281,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		table->setColumnCount(PieceColumnCount);
 		table->setHorizontalHeaderLabels(
 			{moduleText("Designer.Column.PieceKind"), moduleText("Designer.Column.PieceShape"),
-			 moduleText("Designer.Column.PieceValue"), moduleText("Designer.Column.PieceSize")});
+			 moduleText("Designer.Column.PieceValue"), moduleText("Designer.Column.PieceSize"),
+			 moduleText("Designer.Column.PieceRotation")});
 		table->setMinimumHeight(kCentreTableMinimumHeight);
 
 		/*
@@ -1243,6 +1296,9 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		header->setSectionResizeMode(PieceValue, QHeaderView::Stretch);
 		table->setColumnWidth(PieceKind, kPieceKindColumnWidth);
 		table->setColumnWidth(PieceSize, kPieceSizeColumnWidth);
+		table->setColumnWidth(PieceRotation, kPieceRotationColumnWidth);
+		if (QTableWidgetItem *rotationHeader = table->horizontalHeaderItem(PieceRotation))
+			rotationHeader->setToolTip(moduleText("Designer.Column.PieceRotation.Tip"));
 
 		pageLayout->addWidget(table);
 
@@ -1269,6 +1325,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		pieceFileButtons[index] = addPieceButton(makeLabelledButton(page, moduleText("Designer.SetPieceFile")),
 							 [this, slot] { browseForPieceFile(slot); });
 		buttonRow->addStretch();
+		addPieceButton(makeLabelledButton(page, moduleText("Designer.ExpandTable"),
+						  moduleText("Designer.ExpandTable.Tip")),
+			       [this, slot] {
+				       expandTable(pieceTable(slot),
+						   moduleText("Designer.DividerPieces") + QStringLiteral(" — ") +
+							   pieceTabs->tabText(static_cast<int>(slot)));
+			       });
 
 		pageLayout->addLayout(buttonRow);
 		pieceTabs->addTab(page, moduleText(kSlotTitles[index]));
@@ -1300,7 +1363,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	for (QWidget *field : std::initializer_list<QWidget *>{
 		     marginX, logoAnimatedShadow, bridgeOffset, bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
 		     bridgeSizing, dividerPieceGap, dividerRuleGap, dividerRuleInset, dividerTint, bridgeTint,
-		     subtitleOrder, fillOrder, stickyOffset, stickyBackdropPadding})
+		     subtitleOrder, fillOrder, stickyOffset, stickyBackdropPadding, indentStep})
 		markAdvanced(field);
 
 	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
@@ -1395,6 +1458,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(columnGap, &QSpinBox::valueChanged, this, notify);
 	connect(fillOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(entryGap, &QSpinBox::valueChanged, this, notify);
+	connect(indentStep, &QSpinBox::valueChanged, this, notify);
+	connect(contentOffsetX, &QSpinBox::valueChanged, this, notify);
 	connect(subtitleGap, &QSpinBox::valueChanged, this, notify);
 	connect(subtitleOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(spacerHeight, &QSpinBox::valueChanged, this, notify);
@@ -1514,6 +1579,7 @@ void SectionEditor::setSection(const Section &source)
 	columnGap->setValue(source.columnGap);
 	selectByData(fillOrder, source.fillAcross ? 1 : 0);
 	entryGap->setValue(source.entryGap);
+	indentStep->setValue(source.indentStep);
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
 	spacerHeight->setValue(source.spacerHeight);
@@ -1530,6 +1596,7 @@ void SectionEditor::setSection(const Section &source)
 	paddingTop->setValue(source.paddingTop);
 	paddingBottom->setValue(source.paddingBottom);
 	marginX->setValue(source.marginX);
+	contentOffsetX->setValue(source.contentOffsetX);
 	sectionWidth->setValue(std::clamp(qRound(source.sectionWidth * 100.0), 1, 100));
 	selectByData(sectionAlign, static_cast<int>(source.sectionAlign));
 
@@ -1616,6 +1683,7 @@ Section SectionEditor::section() const
 	result.columnGap = columnGap->value();
 	result.fillAcross = fillOrder->currentData().toInt() == 1;
 	result.entryGap = entryGap->value();
+	result.indentStep = indentStep->value();
 	result.subtitleGap = subtitleGap->value();
 	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
@@ -1631,6 +1699,7 @@ Section SectionEditor::section() const
 	result.paddingTop = paddingTop->value();
 	result.paddingBottom = paddingBottom->value();
 	result.marginX = marginX->value();
+	result.contentOffsetX = contentOffsetX->value();
 	result.sectionWidth = sectionWidth->value() / 100.0;
 	result.sectionAlign = static_cast<HAlign>(sectionAlign->currentData().toInt());
 	result.style = primaryStyle->style();
@@ -1768,14 +1837,21 @@ void SectionEditor::relayoutEntryTable(SectionType type)
 	 * through the old columns and put them back through the new ones. Rebuilding without that
 	 * leaves an empty table for the next read to believe, which is a list of credits thrown away
 	 * by a change of type -- the one thing changing a type is documented never to do.
+	 *
+	 * Out through the columns the table is showing, then, and in through the ones it is about to
+	 * show. The subtitle switch adds and takes away columns of its own, so it is asked the same
+	 * way: reading a two-column table with the answer the switch has just been given put every
+	 * row's right-hand name into the left-hand subtitle the moment subtitles were switched on.
 	 */
 	Section held;
 	held.type = tableType;
-	held.rowSubtitles = rowSubtitles->isChecked();
+	held.rowSubtitles = tableRowSubtitles;
 	readEntriesFromTable(&held);
 
+	const bool subtitles = rowSubtitles->isChecked();
 	held.type = type;
-	rebuildEntryTable(type, held.rowSubtitles);
+	held.rowSubtitles = subtitles;
+	rebuildEntryTable(type, subtitles);
 	writeEntriesToTable(held);
 }
 
@@ -1919,6 +1995,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 
 	pieceTabs->setTabVisible(static_cast<int>(PieceSlot::RightEnd), separateEnds);
 	/*
+	 * With the right-hand end gone the one tab left is not the left end of anything -- it is
+	 * both ends of the rule, drawn twice -- so it says so rather than naming a side the reader
+	 * would then look for the opposite of.
+	 */
+	pieceTabs->setTabText(static_cast<int>(PieceSlot::LeftEnd),
+			      moduleText(separateEnds ? "Designer.DividerLeftEnd" : "Designer.DividerBothEnds"));
+	/*
 	 * A tab going away under the reader takes the selection with it, so the left-hand end --
 	 * which is what the right one mirrors -- is what they are left looking at.
 	 */
@@ -1959,6 +2042,8 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(columnGap, hasColumns);
 	setRowVisible(fillOrder, hasColumns);
 	setRowVisible(entryGap, hasEntries);
+	/* A step with no row to step is a setting for nothing: the tabs live in the entry table. */
+	setRowVisible(indentStep, hasEntries);
 	/*
 	 * The pair's own two settings apply wherever anything is really stacked, which for a bridged
 	 * row is a choice rather than a property of the type -- so this asks about the section
@@ -1978,6 +2063,8 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	const bool placeable = type != SectionType::StickyBlock;
 	setRowVisible(marginX, placeable);
+	/* A spacer draws nothing, so there is nothing of it to nudge sideways. */
+	setRowVisible(contentOffsetX, placeable && type != SectionType::Spacer);
 	setRowVisible(sectionWidth, placeable);
 	setRowVisible(sectionAlign, placeable);
 
@@ -2057,9 +2144,12 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 	const QSignalBlocker blocker(entryTable);
 	/* What the columns now stand for, so the next relayout can read them back correctly. */
 	tableType = type;
+	tableRowSubtitles = rowSubtitles;
 
 	entryTable->clear();
 	entryTable->setRowCount(0);
+
+	QStringList headers;
 
 	switch (type) {
 	case SectionType::Bridged:
@@ -2068,17 +2158,12 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		 * with the pair kept side by side rather than the two subtitles gathered at the end:
 		 * a row is read across, and a subtitle belongs beside the line it sits under.
 		 */
-		if (rowSubtitles) {
-			entryTable->setColumnCount(4);
-			entryTable->setHorizontalHeaderLabels(
-				{moduleText("Designer.Column.Left"), moduleText("Designer.Column.LeftSubtitle"),
-				 moduleText("Designer.Column.Right"), moduleText("Designer.Column.RightSubtitle")});
-			break;
-		}
-
-		entryTable->setColumnCount(2);
-		entryTable->setHorizontalHeaderLabels(
-			{moduleText("Designer.Column.Left"), moduleText("Designer.Column.Right")});
+		headers = rowSubtitles ? QStringList{moduleText("Designer.Column.Left"),
+						     moduleText("Designer.Column.LeftSubtitle"),
+						     moduleText("Designer.Column.Right"),
+						     moduleText("Designer.Column.RightSubtitle")}
+				       : QStringList{moduleText("Designer.Column.Left"),
+						     moduleText("Designer.Column.Right")};
 		break;
 
 	case SectionType::TitleSubtitleList:
@@ -2087,40 +2172,50 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		 * Headed by what the two texts are rather than by where they end up, so swapping the
 		 * order does not relabel the columns the entries were typed into.
 		 */
-		entryTable->setColumnCount(2);
-		entryTable->setHorizontalHeaderLabels(
-			{moduleText("Designer.Column.EntryTitle"), moduleText("Designer.Column.Subtitle")});
+		headers = {moduleText("Designer.Column.EntryTitle"), moduleText("Designer.Column.Subtitle")};
 		break;
 
 	case SectionType::LogoList:
 	case SectionType::MultiLogoList:
-		entryTable->setColumnCount(2);
-		entryTable->setHorizontalHeaderLabels(
-			{moduleText("Designer.Column.Logo"), moduleText("Designer.Column.Height")});
+		headers = {moduleText("Designer.Column.Logo"), moduleText("Designer.Column.Height")};
 		break;
 
 	default:
-		entryTable->setColumnCount(1);
-		entryTable->setHorizontalHeaderLabels({moduleText("Designer.Column.Text")});
+		headers = {moduleText("Designer.Column.Text")};
 		break;
 	}
 
 	/*
-	 * The last column takes the slack everywhere except a logo list, where the last column is a
-	 * pixel height -- three digits' worth of table given to it while the file path beside it,
-	 * the one thing in the row long enough to need reading, is squeezed into what is left.
-	 * There the path column takes the width instead and the height keeps only what it needs.
+	 * The tab column is last in every list, because it is the one column that is not part of
+	 * what the entry says: a row is read across for its words and only then, if at all, for how
+	 * far in it sits.
+	 */
+	const int indentColumn = headers.size();
+	headers.append(moduleText("Designer.Column.Indent"));
+
+	entryTable->setColumnCount(headers.size());
+	entryTable->setHorizontalHeaderLabels(headers);
+	if (QTableWidgetItem *indentHeader = entryTable->horizontalHeaderItem(indentColumn))
+		indentHeader->setToolTip(moduleText("Designer.Column.Indent.Tip"));
+
+	/*
+	 * One column takes the slack and the narrow ones keep what they need. It is the file path in
+	 * a logo list -- the one thing in the row long enough to need reading, where the column
+	 * beside it is a three-digit pixel height -- and the last of the text columns everywhere
+	 * else. Never the tab column, which holds a number of steps and would be a wide box of white
+	 * space with the words it belongs to squeezed up beside it.
 	 */
 	const bool logoEntries = sectionUsesLogos(type) && sectionUsesEntries(type);
 	QHeaderView *header = entryTable->horizontalHeader();
 
-	header->setStretchLastSection(!logoEntries);
+	header->setStretchLastSection(false);
 	header->setSectionResizeMode(QHeaderView::Interactive);
+	header->setSectionResizeMode(logoEntries ? 0 : indentColumn - 1, QHeaderView::Stretch);
 
-	if (logoEntries) {
-		header->setSectionResizeMode(0, QHeaderView::Stretch);
+	if (logoEntries)
 		entryTable->setColumnWidth(1, kEntryHeightColumnWidth);
-	}
+
+	entryTable->setColumnWidth(indentColumn, kEntryIndentColumnWidth);
 }
 
 void SectionEditor::writeEntriesToTable(const Section &source)
@@ -2137,6 +2232,10 @@ void SectionEditor::writeEntriesToTable(const Section &source)
 		/* The whole entry travels with the row; see kEntryStashRole. */
 		first->setData(kEntryStashRole, entryStash(entry));
 		entryTable->setItem(row, 0, first);
+
+		/* Last in every layout the table has; see rebuildEntryTable. */
+		entryTable->setItem(row, entryTable->columnCount() - 1,
+				    new QTableWidgetItem(QString::number(entry.indent)));
 
 		if (logoMode) {
 			entryTable->setItem(row, 1, new QTableWidgetItem(QString::number(entry.logo.maxHeight)));
@@ -2178,6 +2277,8 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 		 */
 		const QTableWidgetItem *first = entryTable->item(row, 0);
 		Entry entry = first ? entryFromStash(first->data(kEntryStashRole)) : Entry();
+
+		entry.indent = cell(entryTable->columnCount() - 1).toInt();
 
 		if (logoMode) {
 			entry.logo.path = cell(0);
@@ -2322,6 +2423,13 @@ void SectionEditor::writePiecesToTable(PieceSlot slot, const Section &source)
 
 		table->setItem(row, PieceValue, new QTableWidgetItem(value));
 		table->setItem(row, PieceSize, new QTableWidgetItem(size));
+		/*
+		 * An angle belongs to the piece rather than to any one kind of piece -- a word set
+		 * sideways is as ordinary as an arrowhead stood on end -- so this column is filled
+		 * and left editable whatever the row holds.
+		 */
+		table->setItem(row, PieceRotation,
+			       new QTableWidgetItem(QString::number(piece.rotation, 'g', 4) + kDegreeSign));
 
 		applyPieceRowVisibility(slot, row);
 	}
@@ -2352,6 +2460,7 @@ void SectionEditor::readPiecesFromTable(PieceSlot slot, Section *target) const
 		DividerPiece piece;
 		piece.kind = static_cast<DividerPiece::Kind>(kindBox->currentData().toInt());
 		piece.shape = static_cast<DividerShape>(shapeBox->currentData().toInt());
+		piece.rotation = degreesFromCell(cell(PieceRotation));
 
 		switch (piece.kind) {
 		case DividerPiece::Kind::Ornament: {
@@ -2415,6 +2524,50 @@ void SectionEditor::applyPieceRowVisibility(PieceSlot slot, int row)
 
 	setEditable(PieceValue, hasValue);
 	setEditable(PieceSize, hasSize);
+}
+
+void SectionEditor::expandTable(QTableWidget *table, const QString &title)
+{
+	/*
+	 * Where to put the table back: the layout it is in and the place it holds in it, taken
+	 * before it is moved rather than assumed, so this one call serves the entry table and the
+	 * divider's three piece tables alike.
+	 */
+	QWidget *home = table->parentWidget();
+	auto *homeLayout = home ? qobject_cast<QBoxLayout *>(home->layout()) : nullptr;
+	if (!homeLayout)
+		return;
+
+	const int homeIndex = homeLayout->indexOf(table);
+	if (homeIndex < 0)
+		return;
+
+	QDialog window(this);
+	window.setWindowTitle(title);
+
+	/*
+	 * Most of the screen, which is the whole point of the button: what it is for is the run of
+	 * credits too long to read a pane at a time.
+	 */
+	if (const QScreen *display = screen()) {
+		const QRect available = display->availableGeometry();
+		window.resize(available.width() * 3 / 4, available.height() * 3 / 4);
+	}
+
+	auto *layout = new QVBoxLayout(&window);
+	layout->addWidget(table);
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &window);
+	connect(buttons, &QDialogButtonBox::rejected, &window, &QDialog::reject);
+	layout->addWidget(buttons);
+
+	window.exec();
+
+	/*
+	 * Home before the window goes, and before anything else: a widget still parented to a dialog
+	 * being destroyed is destroyed with it, and the editor holds a pointer to this one.
+	 */
+	homeLayout->insertWidget(homeIndex, table);
 }
 
 bool SectionEditor::dividerUsesFile() const

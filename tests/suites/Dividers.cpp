@@ -325,3 +325,115 @@ CT_SUITE(divider_join_stays_inside, "An overlap deep enough to push the rule out
 	check(ink.right <= qRound(box.right()) + 2, "and none to the right of it");
 	checkEq(boxesOutsideContent(document), 0, "nothing placed outside the content box");
 }
+
+CT_SUITE(divider_plain_shapes, "The plain shapes, filled and outlined")
+{
+	/*
+	 * A shape whose artwork will not parse measures to nothing and is silently not drawn, so a
+	 * typo in one of the tiles would otherwise cost a shape in the picker and nothing else. Each
+	 * of the plain ones is therefore asked for a size and then asked to draw.
+	 */
+	const QVector<DividerShape> plain = {DividerShape::Circle,        DividerShape::Ring,
+					     DividerShape::Square,        DividerShape::SquareOutline,
+					     DividerShape::RoundedSquare, DividerShape::RoundedSquareOutline,
+					     DividerShape::Triangle,      DividerShape::TriangleOutline,
+					     DividerShape::Pentagon,      DividerShape::PentagonOutline,
+					     DividerShape::Hexagon,       DividerShape::HexagonOutline,
+					     DividerShape::Octagon,       DividerShape::OctagonOutline};
+
+	const QVector<DividerShape> &pieces = dividerShapesForRole(DividerRolePiece);
+
+	for (DividerShape shape : plain) {
+		const QString name = QString::fromUtf8(dividerShapeName(shape));
+
+		check(pieces.contains(shape), QStringLiteral("%1 is offered wherever a piece can go").arg(name));
+		check(!dividerShapesForRole(DividerRoleArm).contains(shape),
+		      QStringLiteral("%1 is a piece rather than a rule").arg(name));
+
+		Section section = divider();
+		section.dividerCentre = {ornament(shape)};
+
+		const Document document = documentWith(section);
+		const QRectF box = boxOf(document, LayoutBox::Kind::Divider);
+		const Ink ink = inkOf(renderImage(document));
+
+		check(!ink.isEmpty(), QStringLiteral("%1 draws something").arg(name));
+		/*
+		 * A centrepiece is drawn taller than the rule it breaks, so a shape that came out as
+		 * nothing but the arms either side of it would leave the divider exactly one rule
+		 * high -- which is what this height is asking about.
+		 */
+		check(box.height() > section.dividerThickness + 1.0,
+		      QStringLiteral("%1 is drawn at a centrepiece's height").arg(name));
+		check(ink.left >= qRound(box.left()) - 2 && ink.right <= qRound(box.right()) + 2,
+		      QStringLiteral("%1 stays inside the section's box").arg(name));
+	}
+}
+
+CT_SUITE(divider_piece_rotation, "A part turned about its own centre")
+{
+	/*
+	 * Turned where it stands: along the rule the piece takes the room its untilted shape took,
+	 * so the arms either side of it do not move while an angle is dialled in. The divider's
+	 * height is the one thing that follows the angle, because a section is only as tall as it
+	 * says it is and the corners would otherwise be cut off.
+	 */
+	Section square = divider();
+	square.dividerCentre = {ornament(DividerShape::Square)};
+
+	Section turned = square;
+	turned.dividerCentre[0].rotation = 45.0;
+
+	const Document squareDocument = documentWith(square);
+	const Document turnedDocument = documentWith(turned);
+
+	const QRectF standingBox = boxOf(squareDocument, LayoutBox::Kind::Divider);
+	const QRectF turnedBox = boxOf(turnedDocument, LayoutBox::Kind::Divider);
+
+	checkNear(turnedBox.width(), standingBox.width(), 0.001, "the divider runs the same way across");
+
+	const Ink standing = inkOf(renderImage(squareDocument));
+	const Ink diamond = inkOf(renderImage(turnedDocument));
+
+	check(!diamond.isEmpty(), "a turned piece is still drawn");
+	/* A square's diagonal is half again its side, so a corner-on square is plainly taller. */
+	check(diamond.height() > standing.height() + 2, "a square set on its corner reaches further up and down");
+	check(turnedBox.height() > standingBox.height() + 2, "and the divider grew to hold it rather than cut it off");
+	checkNear(diamond.width(), standing.width(), 3.0, "while the run of the rule is untouched");
+
+	/* A quarter turn on a square is the square again, near enough to be worth checking. */
+	Section quarter = square;
+	quarter.dividerCentre[0].rotation = 90.0;
+	const Ink upright = inkOf(renderImage(documentWith(quarter)));
+	checkNear(upright.height(), standing.height(), 2.0, "a quarter turn of a square is the square");
+}
+
+CT_SUITE(divider_rotation_mirrors, "A turned end and its reflection at the other end")
+{
+	/*
+	 * The two ends of a mirrored rule are each other's reflection, angle and all: an arrowhead
+	 * leaning up at the left-hand end leans up at the right-hand one too rather than down, which
+	 * is what a flip about the divider's own axis does to it.
+	 */
+	Section section = divider();
+	section.marginX = 40;
+	section.dividerCap = {ornament(DividerShape::Arrow)};
+	section.dividerMirrorEnds = true;
+	section.dividerCentre = {ornament(DividerShape::Diamond)};
+	section.dividerCap[0].rotation = 30.0;
+
+	const Document document = documentWith(section);
+	const QImage image = renderImage(document);
+	const QRectF box = boxOf(document, LayoutBox::Kind::Divider);
+
+	const int middle = qRound(box.center().x());
+	const QRect leftHalf(qRound(box.left()), 0, middle - qRound(box.left()), image.height());
+	const QRect rightHalf(middle, 0, qRound(box.right()) - middle, image.height());
+
+	const Ink left = inkOf(image, leftHalf);
+	const Ink right = inkOf(image, rightHalf);
+
+	check(!left.isEmpty() && !right.isEmpty(), "both ends are drawn");
+	checkNear(left.height(), right.height(), 2.0, "each end reaches as far up and down as the other");
+	checkNear(left.top, right.top, 2.0, "and leans the same way about the rule");
+}

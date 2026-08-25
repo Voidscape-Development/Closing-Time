@@ -74,16 +74,21 @@ running inward from it, and a middle — then the same again mirrored, so the tw
 cannot drift apart while you work on it. The ends and the middle are the same kind of thing and
 draw on the same library of vector shapes — arrowheads, spearpoints, teardrops, scrolled ends,
 deco steps and chevrons; diamonds, nested diamonds, four- and five-point stars, dots, hearts,
-scrolls, filigree curls and deco interlocks — so an arrowhead can break a rule as readily as it
-caps one, and any of them can instead be an SVG of your own. The rule between them has a library
+scrolls, filigree curls and deco interlocks; and the plain geometry under all of it — circles,
+squares, rounded squares, triangles, pentagons, hexagons and octagons, each filled or as an
+outline — so an arrowhead can break a rule as readily as it caps one, and any of them can instead
+be an SVG of your own. The rule between them has a library
 of its own: plain, double, tapered, dotted, dashed, diamond-chained and ticked.
 
 Each end, and the middle, is a *list* rather than a single choice, because the figures that turn
 up there are compounds: a diamond with a dot either side of it, `PART II` between two curls, a
 monogram between a pair of scrolls, `MMXXVI` set against the end of the rule. Pieces can be
-ornaments, a word set in the section's own font, or an image, each at a size of its own and in
-whatever order you put them; leave a list empty and you get an end with nothing on it, or an
-unbroken rule. Two
+ornaments, a word set in the section's own font, or an image, each at a size and an angle of its
+own and in whatever order you put them; leave a list empty and you get an end with nothing on it,
+or an unbroken rule. A turned piece keeps the room along the rule that its untilted shape had, so
+its neighbours stay where they are while you dial an angle in — a square set on its corner, a
+triangle pointing up out of the line, a year set sideways — and the far end of a mirrored rule
+leans the other way, so the two ends stay each other's reflection. Two
 or three rules can run in parallel with a single ornament breaking all of them, and they can be
 tapered so the stack forms a wedge. One thickness sizes the whole thing — every shape knows its
 own proportion to the rule it belongs to, so an arrowhead stays an arrowhead when a divider is
@@ -96,7 +101,11 @@ be inked separately from a word in its middle, the same way a bridge can be inke
 the names either side of it.
 
 Each section carries its own font family, size, weight, colour, alignment and line spacing,
-plus padding and side margins. Text can be filled with a flat colour or with a **linear or
+plus padding and side margins. It can also be **nudged sideways** — everything the section draws
+slides left or right together, keeping the arrangement inside it, which is how a heading sits
+deliberately off centre where a margin can only ever inset both edges at once. Within a list,
+individual entries can be **tabbed in** by a step you set once for the list: a department over the
+names under it, a sub-heading inside a run, or an entry hung back the other way. Text can be filled with a flat colour or with a **linear or
 radial gradient** of as many colour stops as you like — a gold sweep down a title, a fade
 across a name — and can carry an **outline** and a soft or hard **drop shadow**, which is
 what keeps white credits legible over bright footage. The gradient runs across each block of
@@ -139,7 +148,9 @@ a roll is being written. Artwork is decoded whole and up front, which puts a cei
 
 A **sticky ending block** is a run of sections that stops scrolling. It travels up the frame like
 any other part of the roll, and when it reaches the place you pinned it to, it stays there while
-the rest of the credits carries on past behind it. You pick which part of the block is pinned —
+the rest of the credits carries on past behind it. In the designer's section list a block's contents are drawn as
+branches off it, with a count of what it holds and an arrow that folds them away while you work on
+the rest of the roll. You pick which part of the block is pinned —
 its top edge, its middle, its bottom — and where down the frame that lands, so "centred in the
 frame" and "top edge a third of the way down" are both one setting rather than a number to work
 out. It can hold for a set time or until something else stops the roll, and when the hold ends it

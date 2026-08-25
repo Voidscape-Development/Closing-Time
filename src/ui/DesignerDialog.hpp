@@ -62,7 +62,15 @@ signals:
 	/* `to` is where the dragged row lands, counted after it has been lifted out. */
 	void rowMoved(int from, int to);
 
+	/*
+	 * A click on the fold arrow of a sticky block's row. Which rows carry one is the dialog's
+	 * business and is marked on the item itself, so the list needs to know nothing about what a
+	 * section is to keep the click off the selection and out of a drag.
+	 */
+	void blockFoldToggled(int row);
+
 protected:
+	void mousePressEvent(QMouseEvent *event) override;
 	void dropEvent(QDropEvent *event) override;
 };
 
@@ -247,6 +255,24 @@ private:
 	void setSectionsCollapsed(bool collapsed);
 
 	/*
+	 * The same for the preview, which folds away to the right the way the list folds away to the
+	 * left. A roll spends long stretches being typed rather than looked at, and the pane the
+	 * words are typed into is the one that wants the room back.
+	 */
+	void setPreviewCollapsed(bool collapsed);
+
+	/*
+	 * The mechanics both of the above share: pinning a pane to the width of its own button, and
+	 * giving it back the width it had.
+	 *
+	 * `rememberedWidth` is that pane's own, rather than a snapshot of the whole splitter, so
+	 * folding one pane while the other is folded cannot hand the second one the first one's
+	 * folded width when it is opened again. What is given up and taken back is the editor's
+	 * share in the middle, which is the pane with room to spare.
+	 */
+	void setPaneFolded(QWidget *pane, QToolButton *button, int *rememberedWidth, bool folded);
+
+	/*
 	 * How a finished render finds its way back to a window that may since have closed.
 	 * Held by shared_ptr because the render thread needs something it can safely keep hold
 	 * of; the pointer inside is set in the constructor and cleared in the destructor, both
@@ -275,6 +301,12 @@ private:
 
 		bool isValid() const { return index >= 0; }
 	};
+
+	/* How one row of the section list reads: its branch or fold arrow, its name, and its count. */
+	QString rowLabel(const SectionPath &path, const Section &section) const;
+
+	/* Folds a sticky block's children away in the list, and back. View state only; see Section. */
+	void toggleBlockFold(int row);
 
 	/* The section a path names, or null when the path does not resolve. */
 	Section *sectionAt(const SectionPath &path);
@@ -328,12 +360,19 @@ private:
 	QWidget *listButtonRow = nullptr;
 	QToolButton *collapseButton = nullptr;
 	bool sectionsCollapsed = false;
-	/* The pane widths to come back to, taken the moment the list is folded away. */
-	QList<int> expandedSizes;
+	/* The width to come back to, taken the moment the list is folded away. */
+	int listExpandedWidth = 0;
 
 	SectionEditor *editor = nullptr;
 	QScrollArea *editorScroll = nullptr;
 	PreviewWidget *preview = nullptr;
+	QWidget *previewPane = nullptr;
+	QLabel *previewLabel = nullptr;
+	/* Everything under the preview's own header, folded away as one. */
+	QWidget *previewBody = nullptr;
+	QToolButton *previewCollapseButton = nullptr;
+	bool previewCollapsed = false;
+	int previewExpandedWidth = 0;
 	/* Switches the layout overlay on; the boxes themselves come with every render. */
 	QCheckBox *layoutBoxesCheck = nullptr;
 	/* Runs the animated logos in the preview. Disabled when the roll holds none. */

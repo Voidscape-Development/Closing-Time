@@ -58,9 +58,14 @@ Section distinctive(SectionType type)
 	section.bridgeSpanEmpty = true;
 	section.bridgeMinGap = 33.5;
 	section.rowSubtitles = true;
-	section.dividerCap = {
-		DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 2.25, {}, {}},
-		DividerPiece{DividerPiece::Kind::Text, DividerShape::None, {}, 1.0, QStringLiteral("MMXXVI"), {}}};
+	section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 2.25, {}, {}, 37.5},
+			      DividerPiece{DividerPiece::Kind::Text,
+					   DividerShape::None,
+					   {},
+					   1.0,
+					   QStringLiteral("MMXXVI"),
+					   {},
+					   -12.0}};
 	section.dividerMirrorEnds = false;
 	section.dividerEndCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}}};
 	section.dividerArm = DividerShape::Rule;
@@ -89,6 +94,8 @@ Section distinctive(SectionType type)
 	section.paddingTop = 21;
 	section.paddingBottom = 23;
 	section.marginX = 29;
+	section.contentOffsetX = -37;
+	section.indentStep = 33;
 	section.sectionWidth = 0.75;
 	section.sectionAlign = HAlign::Right;
 	section.spacerHeight = 313;
@@ -104,7 +111,7 @@ Section distinctive(SectionType type)
 	section.children.push_back(Section::makeDefault(SectionType::Header));
 	section.visible = false;
 	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), QStringLiteral("three"),
-				 QStringLiteral("four"), LogoRef{QStringLiteral("/e.png"), 61}}};
+				 QStringLiteral("four"), LogoRef{QStringLiteral("/e.png"), 61}, 2}};
 
 	return section;
 }
@@ -143,6 +150,7 @@ void compare(const Section &loaded, const Section &original)
 		check(piece.kind == was.kind, QStringLiteral("dividerCap %1 kind").arg(i));
 		check(piece.shape == was.shape, QStringLiteral("dividerCap %1 shape").arg(i));
 		checkNear(piece.scale, was.scale, 0.001, QStringLiteral("dividerCap %1 scale").arg(i));
+		checkNear(piece.rotation, was.rotation, 0.001, QStringLiteral("dividerCap %1 rotation").arg(i));
 		checkEq(piece.text, was.text, QStringLiteral("dividerCap %1 text").arg(i));
 	}
 	check(loaded.dividerMirrorEnds == original.dividerMirrorEnds, "dividerMirrorEnds");
@@ -177,6 +185,8 @@ void compare(const Section &loaded, const Section &original)
 	checkEq(loaded.paddingTop, original.paddingTop, "paddingTop");
 	checkEq(loaded.paddingBottom, original.paddingBottom, "paddingBottom");
 	checkEq(loaded.marginX, original.marginX, "marginX");
+	checkEq(loaded.contentOffsetX, original.contentOffsetX, "contentOffsetX");
+	checkEq(loaded.indentStep, original.indentStep, "indentStep");
 	checkNear(loaded.sectionWidth, original.sectionWidth, 0.001, "sectionWidth");
 	check(loaded.sectionAlign == original.sectionAlign, "sectionAlign");
 	checkEq(loaded.spacerHeight, original.spacerHeight, "spacerHeight");
@@ -205,6 +215,8 @@ void compare(const Section &loaded, const Section &original)
 			QStringLiteral("entry %1 subtitle").arg(i));
 		checkEq(loaded.entries.at(i).secondarySubtitle, original.entries.at(i).secondarySubtitle,
 			QStringLiteral("entry %1 secondarySubtitle").arg(i));
+		checkEq(loaded.entries.at(i).indent, original.entries.at(i).indent,
+			QStringLiteral("entry %1 indent").arg(i));
 		checkEq(loaded.entries.at(i).logo.path, original.entries.at(i).logo.path,
 			QStringLiteral("entry %1 logo").arg(i));
 	}
@@ -274,6 +286,8 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	checkNear(legacy.bridgeThickness, 4.0, 0.001, "bridgeThickness falls back to something drawable");
 	check(legacy.bridgeTint, "bridgeTint falls back to on");
 	checkNear(legacy.bridgeSplit, 0.5, 0.001, "bridgeSplit falls back to an even split");
+	checkEq(legacy.contentOffsetX, 0, "a section from before the nudge sits where its box puts it");
+	checkEq(legacy.indentStep, 24, "and its entries tab by the documented step rather than by nothing");
 	check(legacy.dividerCap.isEmpty(), "an absent divider cap is an end with nothing on it");
 	check(legacy.dividerArm == DividerShape::Rule, "an absent divider arm is the plain rule, not None");
 	check(legacy.dividerMirrorEnds, "divider ends are mirrored by default");
@@ -305,6 +319,7 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 		check(migrated.dividerCap.first().kind == DividerPiece::Kind::Ornament, "and it is an ornament");
 		check(migrated.dividerCap.first().shape == DividerShape::Arrow, "carrying the shape it named");
 		checkNear(migrated.dividerCap.first().scale, 1.0, 0.001, "at its own size");
+		checkNear(migrated.dividerCap.first().rotation, 0.0, 0.001, "and standing square");
 	}
 	checkEq(migrated.dividerEndCap.size(), 1, "so does the far end");
 	if (!migrated.dividerEndCap.isEmpty()) {

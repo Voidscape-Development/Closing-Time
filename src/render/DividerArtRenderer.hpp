@@ -61,6 +61,15 @@ struct DividerArtPlacement {
 	 * what makes a cap a single choice that cannot come out different at the two ends.
 	 */
 	bool mirrored = false;
+	/*
+	 * Degrees clockwise about the rect's own centre, from the piece that placed it. Applied
+	 * inside the mirror above, so a turned cap and its reflection at the other end lean away
+	 * from each other rather than both the same way.
+	 *
+	 * The rect is the room the untilted shape asked for and does not grow with the angle; see
+	 * DividerPiece::rotation for why the layout deliberately stays still.
+	 */
+	qreal rotation = 0.0;
 };
 
 /*

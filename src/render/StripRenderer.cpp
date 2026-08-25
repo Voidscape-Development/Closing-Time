@@ -1170,6 +1170,52 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 const auto kIgnoreBoxes = [](LayoutBox::Kind, const QRectF &) { /* deliberately nothing */ };
 
 /*
+ * Where one entry's own column starts, once its indent is counted in.
+ *
+ * The column is translated rather than narrowed, so every alignment steps by the same amount and
+ * an indent means one thing whatever the list is set to -- see Entry::indent. A list with no
+ * indents anywhere is arithmetic on a zero and lands exactly where it always did.
+ */
+qreal indentedX(const Section &section, const Entry &entry, qreal x)
+{
+	return x + entry.indent * section.indentStep;
+}
+
+/*
+ * Turns the painter about a rectangle's centre for as long as it is in scope, so a divider piece
+ * drawn by the very helpers that draw a section's own title and its own logo comes out at the
+ * angle its row asked for without either of them learning what an angle is.
+ *
+ * Nothing at all at zero degrees, which is what every piece in most rolls is set to.
+ */
+class TurnedPainter {
+public:
+	TurnedPainter(QPainter *painter, const QRectF &rect, qreal degrees)
+		: target(painter && degrees != 0.0 ? painter : nullptr)
+	{
+		if (!target)
+			return;
+
+		target->save();
+		target->translate(rect.center());
+		target->rotate(degrees);
+		target->translate(-rect.center());
+	}
+
+	~TurnedPainter()
+	{
+		if (target)
+			target->restore();
+	}
+
+	TurnedPainter(const TurnedPainter &) = delete;
+	TurnedPainter &operator=(const TurnedPainter &) = delete;
+
+private:
+	QPainter *target = nullptr;
+};
+
+/*
  * Where every part of one Section Divider goes, in strip space.
  *
  * The artwork is separated from the text and the logos because the three are painted by
@@ -1181,6 +1227,8 @@ struct DividerLayout {
 	struct TextPiece {
 		QString text;
 		QRectF rect;
+		/* Degrees clockwise about the rect's centre; see DividerPiece::rotation. */
+		qreal rotation = 0.0;
 	};
 	struct LogoPiece {
 		LogoArt art;
@@ -1190,6 +1238,8 @@ struct DividerLayout {
 		 */
 		const LogoRef *ref = nullptr;
 		QRect rect;
+		/* Degrees clockwise about the rect's centre; see DividerPiece::rotation. */
+		qreal rotation = 0.0;
 	};
 
 	QVector<DividerArtPlacement> art;
@@ -1233,6 +1283,25 @@ struct MeasuredStack {
 	 */
 	qreal outerHalfWidth() const { return isEmpty() ? 0.0 : pieces.first().size.width() / 2.0; }
 };
+
+/*
+ * How tall a measured piece reaches once it is turned: the height of its own box while it stands
+ * square, and the height that box sweeps out once it does not.
+ *
+ * Height only. A turn moves nothing along the rule -- the piece keeps the width its untilted shape
+ * asked for, so its neighbours and the arms stay where they were while an angle is dialled in (see
+ * DividerPiece::rotation) -- but the divider still has to be tall enough to hold what it draws, or
+ * a square set on its corner would have the corners cut off by the section's own box.
+ */
+qreal turnedHeight(const MeasuredPiece &piece)
+{
+	const qreal degrees = piece.piece->rotation;
+	if (degrees == 0.0)
+		return piece.size.height();
+
+	const qreal radians = qDegreesToRadians(degrees);
+	return std::abs(piece.size.width() * std::sin(radians)) + std::abs(piece.size.height() * std::cos(radians));
+}
 
 /*
  * Measures a run of divider pieces laid side by side, `pieceGap` apart.
@@ -1305,7 +1374,7 @@ MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const Tex
 		}
 
 		stack.width += pieceWidth;
-		stack.height = std::max(stack.height, stack.pieces.at(i).size.height());
+		stack.height = std::max(stack.height, turnedHeight(stack.pieces.at(i)));
 	}
 
 	return stack;
@@ -1344,17 +1413,26 @@ void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal 
 		const QRectF box(cursor, midY - measured.size.height() / 2.0, measured.size.width(),
 				 measured.size.height());
 
+		/*
+		 * A word and a mark are not flipped, so the lean they were given is reflected instead:
+		 * that is what keeps a tilted year or badge at one end the answering figure to the one
+		 * at the other without setting any of it backwards. Artwork needs no such arrangement --
+		 * its flip is a true mirror, and reflects whatever angle it carries with it.
+		 */
+		const qreal turn = mirrored ? -piece.rotation : piece.rotation;
+
 		switch (piece.kind) {
 		case DividerPiece::Kind::Ornament:
-			layout->art.append(DividerArtPlacement{box, piece.shape, piece.svgPath, mirrored});
+			layout->art.append(
+				DividerArtPlacement{box, piece.shape, piece.svgPath, mirrored, piece.rotation});
 			break;
 
 		case DividerPiece::Kind::Text:
-			layout->texts.append(DividerLayout::TextPiece{piece.text, box});
+			layout->texts.append(DividerLayout::TextPiece{piece.text, box, turn});
 			break;
 
 		case DividerPiece::Kind::Logo:
-			layout->logos.append(DividerLayout::LogoPiece{measured.art, &piece.logo, box.toRect()});
+			layout->logos.append(DividerLayout::LogoPiece{measured.art, &piece.logo, box.toRect(), turn});
 			break;
 		}
 
@@ -1623,7 +1701,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					   : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
 	const int boxX = spansCanvas ? 0 : qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
 
-	const int contentX = spansCanvas ? 0 : boxX + section.marginX;
+	/*
+	 * The nudge is added to the content's left edge and taken out of nothing: the whole of what
+	 * the section draws slides with it, keeping the arrangement inside the box rather than
+	 * reflowing into a narrower one. A block spans the canvas and its children carry offsets of
+	 * their own, so it takes none of its own -- see Section::contentOffsetX.
+	 */
+	const int contentX = spansCanvas ? 0 : boxX + section.marginX + section.contentOffsetX;
 	const int contentWidth = spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
 
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
@@ -1745,12 +1829,16 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * style's gradient, outline and shadow without a second implementation of
 			 * any of it.
 			 */
-			for (const DividerLayout::TextPiece &piece : divider.texts)
+			for (const DividerLayout::TextPiece &piece : divider.texts) {
+				const TurnedPainter turned(painter, piece.rect, piece.rotation);
 				layoutText(painter, piece.text, style, piece.rect.left(), piece.rect.top(),
 					   piece.rect.width());
+			}
 
-			for (const DividerLayout::LogoPiece &piece : divider.logos)
+			for (const DividerLayout::LogoPiece &piece : divider.logos) {
+				const TurnedPainter turned(painter, piece.rect, piece.rotation);
 				paintLogo(painter, piece.art, piece.rect, style, piece.ref->playback);
+			}
 		}
 
 		for (const DividerLayout::TextPiece &piece : divider.texts)
@@ -1902,8 +1990,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 						section.rowSubtitles ? &entry.secondarySubtitle : &noSubtitle,
 						&rightStyle, &rightSubtitleStyle};
 
-			const BridgedRow row =
-				placeBridgedRow(section, left, right, contentX, contentWidth, naturalBridge);
+			const BridgedRow row = placeBridgedRow(
+				section, left, right, indentedX(section, entry, contentX), contentWidth, naturalBridge);
 			const PreparedBridge bridge = prepareBridge(section, bridgeStyle, bridges, row.bridgeWidth);
 
 			/*
@@ -1968,8 +2056,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::TextList: {
 		for (const Entry &entry : section.entries) {
-			const int height = layoutText(painter, entry.text, style, contentX, y, contentWidth);
-			record(LayoutBox::Kind::Text, QRectF(contentX, y, contentWidth, height));
+			const qreal x = indentedX(section, entry, contentX);
+			const int height = layoutText(painter, entry.text, style, x, y, contentWidth);
+			record(LayoutBox::Kind::Text, QRectF(x, y, contentWidth, height));
 			y += height;
 			y += section.entryGap;
 		}
@@ -1983,7 +2072,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		for (const Entry &entry : section.entries) {
 			y += layoutTitleSubtitle(painter, section, style, subtitleStyle, entry.text,
-						 entry.secondaryText, contentX, y, contentWidth, record);
+						 entry.secondaryText, indentedX(section, entry, contentX), y,
+						 contentWidth, record);
 			y += section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -1995,7 +2085,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		for (const Entry &entry : section.entries) {
 			const LogoArt art = logos.resolve(entry.logo);
 			const QSize size = logoDrawSize(art.poster, entry.logo, contentWidth);
-			const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
+			const int x = qRound(indentedX(section, entry, contentX) +
+					     alignOffset(style.align, contentWidth, size.width()));
 			const QRect box(QPoint(x, y), size);
 			paintLogo(painter, art, box, style, entry.logo.playback);
 			recordLogo(art, entry.logo, box, style);
@@ -2034,7 +2125,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					continue;
 
 				const Entry &entry = section.entries.at(index);
-				const int x = contentX + column * (columnWidth + section.columnGap);
+				const int x = qRound(indentedX(section, entry,
+							       contentX + column * (columnWidth + section.columnGap)));
 
 				if (logoMode) {
 					const LogoArt art = logos.resolve(entry.logo);
