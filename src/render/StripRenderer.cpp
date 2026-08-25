@@ -1241,9 +1241,8 @@ struct MeasuredStack {
  * ends, because an end *is* a stack: that is the whole of what makes a shape offered in one place
  * offered in the other, and a word or a mark able to cap a rule as well as break one.
  */
-MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const TextStyle &style,
-				  const LogoSource &logos, DividerArtCache *dividers, qreal thickness,
-				  qreal pieceGap, qreal available)
+MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const TextStyle &style, const LogoSource &logos,
+				  DividerArtCache *dividers, qreal thickness, qreal pieceGap, qreal available)
 {
 	MeasuredStack stack;
 	stack.pieces.reserve(pieces.size());
@@ -1620,12 +1619,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	 */
 	const bool spansCanvas = section.type == SectionType::StickyBlock;
 
-	const qreal boxWidth = spansCanvas ? document.width : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
+	const qreal boxWidth = spansCanvas ? document.width
+					   : std::clamp(section.sectionWidth, 0.0, 1.0) * document.width;
 	const int boxX = spansCanvas ? 0 : qRound(alignOffset(section.sectionAlign, document.width, boxWidth));
 
 	const int contentX = spansCanvas ? 0 : boxX + section.marginX;
-	const int contentWidth =
-		spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
+	const int contentWidth = spansCanvas ? document.width : std::max(1, qRound(boxWidth) - section.marginX * 2);
 
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
 	const TextStyle &style = document.effectiveStyle(section);
@@ -1653,8 +1652,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		 */
 		const LogoSource stills{logos.stills, nullptr};
 
-		const int height = layoutStickyChildren(nullptr, section, document, stills, bridges, dividers, y,
-							boxes, nullptr);
+		const int height =
+			layoutStickyChildren(nullptr, section, document, stills, bridges, dividers, y, boxes, nullptr);
 		record(LayoutBox::Kind::Sticky, QRectF(0, y, document.width, height));
 
 		if (sticky && height > 0) {
@@ -1712,8 +1711,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 						      section.stickyBackdropColor);
 			}
 
-			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y,
-					     nullptr, nullptr);
+			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y, nullptr,
+					     nullptr);
 			blockPainter.end();
 
 			/* Straight alpha, for the same reason the tiles are. */
@@ -1918,13 +1917,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * adding a subtitle under a row should leave the leader exactly where it was
 			 * rather than dragging it down to the middle of a two-line block.
 			 */
-			const StackedLine leftTopLine = topStackedLine(section, *left.text, *left.subtitle,
-								       *left.style, *left.subtitleStyle);
+			const StackedLine leftTopLine =
+				topStackedLine(section, *left.text, *left.subtitle, *left.style, *left.subtitleStyle);
 			const StackedLine rightTopLine = topStackedLine(section, *right.text, *right.subtitle,
 									*right.style, *right.subtitleStyle);
 
-			const qreal leftAscent =
-				firstBaseline(*leftTopLine.text, *leftTopLine.style, row.leftWidth);
+			const qreal leftAscent = firstBaseline(*leftTopLine.text, *leftTopLine.style, row.leftWidth);
 			const qreal rightAscent =
 				firstBaseline(*rightTopLine.text, *rightTopLine.style, row.rightWidth);
 			const qreal bridgeAscent = bridge.ascent(section);
@@ -1938,13 +1936,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * Both sides go through the pair helper whether or not they carry a subtitle,
 			 * which is what records their text boxes as well as drawing them.
 			 */
-			const int leftHeight = layoutTitleSubtitle(painter, section, *left.style,
-								  *left.subtitleStyle, *left.text, *left.subtitle,
-								  row.leftX, leftTop, row.leftWidth, record);
+			const int leftHeight = layoutTitleSubtitle(painter, section, *left.style, *left.subtitleStyle,
+								   *left.text, *left.subtitle, row.leftX, leftTop,
+								   row.leftWidth, record);
 			const int rightHeight = layoutTitleSubtitle(painter, section, *right.style,
-								    *right.subtitleStyle, *right.text,
-								    *right.subtitle, row.rightX, rightTop,
-								    row.rightWidth, record);
+								    *right.subtitleStyle, *right.text, *right.subtitle,
+								    row.rightX, rightTop, row.rightWidth, record);
 			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
 							     row.bridgeX, bridgeTop, row.bridgeWidth);
 
@@ -2288,7 +2285,7 @@ Strip StripRenderer::render(const Document &input, LayoutBoxes *boxes) const
 	int total = 0;
 	const LogoSource art{logos, animations};
 	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total, boxes,
-							   &strip.animatedLogos, &strip.stickyBlocks);
+							    &strip.animatedLogos, &strip.stickyBlocks);
 
 	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
 	if (strip.height <= 0 || placed.isEmpty()) {

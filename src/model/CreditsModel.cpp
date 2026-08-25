@@ -338,8 +338,7 @@ SectionType composeSectionType(const SectionTypeSwitches &switches)
 		if (switches.logoOnly)
 			return title ? SectionType::LogoTitle : SectionType::LogoHeader;
 		if (switches.subtitle && switches.logo)
-			return title ? SectionType::TitleWithSubtitleAndLogo
-				     : SectionType::HeaderWithSubtitleAndLogo;
+			return title ? SectionType::TitleWithSubtitleAndLogo : SectionType::HeaderWithSubtitleAndLogo;
 		if (switches.subtitle)
 			return title ? SectionType::TitleWithSubtitle : SectionType::HeaderWithSubtitle;
 		if (switches.logo)
@@ -1059,7 +1058,7 @@ void Section::load(obs_data_t *data)
 	 * the empty bridge existed gets the default rather than a gap of nothing.
 	 */
 	bridgeMinGap = obs_data_has_user_value(data, "bridge_min_gap") ? obs_data_get_double(data, "bridge_min_gap")
-								      : 24.0;
+								       : 24.0;
 	bridgeMinGap = std::max(0.0, bridgeMinGap);
 	/* A thickness of zero would draw nothing at all, which no document ever means. */
 	bridgeThickness = obs_data_get_double(data, "bridge_thickness");
@@ -1159,8 +1158,8 @@ void Section::load(obs_data_t *data)
 	stickyRelease = stickyReleaseFromId(obs_data_get_string(data, "sticky_release"), StickyRelease::EndAtHold);
 	stickyBackdrop = obs_data_get_bool(data, "sticky_backdrop");
 	if (obs_data_has_user_value(data, "sticky_backdrop_color")) {
-		stickyBackdropColor = QColor::fromRgba(
-			static_cast<QRgb>(obs_data_get_int(data, "sticky_backdrop_color")));
+		stickyBackdropColor =
+			QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "sticky_backdrop_color")));
 	}
 	stickyBackdropPadding = obs_data_has_user_value(data, "sticky_backdrop_padding")
 					? obs_data_get_double(data, "sticky_backdrop_padding")
@@ -1445,7 +1444,8 @@ Section Section::makeDefault(SectionType type)
 			section.marginX = 120;
 		}
 		for (int i = 0; i < count; ++i)
-			section.entries.append(Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}, {}, {}});
+			section.entries.append(
+				Entry{QStringLiteral("Position"), QStringLiteral("Full Name"), {}, {}, {}});
 		break;
 	}
 

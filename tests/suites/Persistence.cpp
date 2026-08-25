@@ -148,7 +148,8 @@ void compare(const Section &loaded, const Section &original)
 	check(loaded.dividerMirrorEnds == original.dividerMirrorEnds, "dividerMirrorEnds");
 	checkEq(loaded.dividerEndCap.size(), original.dividerEndCap.size(), "dividerEndCap size");
 	if (!loaded.dividerEndCap.isEmpty() && !original.dividerEndCap.isEmpty())
-		check(loaded.dividerEndCap.first().shape == original.dividerEndCap.first().shape, "dividerEndCap shape");
+		check(loaded.dividerEndCap.first().shape == original.dividerEndCap.first().shape,
+		      "dividerEndCap shape");
 	check(loaded.dividerArm == original.dividerArm, "dividerArm");
 	checkNear(loaded.dividerThickness, original.dividerThickness, 0.001, "dividerThickness");
 	check(loaded.dividerConnect == original.dividerConnect, "dividerConnect");

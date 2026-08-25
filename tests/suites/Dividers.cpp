@@ -84,8 +84,7 @@ CT_SUITE(divider_end_stack, "An end built from more than one piece")
 	one.dividerCap = {ornament(DividerShape::Diamond)};
 
 	Section three = divider();
-	three.dividerCap = {ornament(DividerShape::Diamond), ornament(DividerShape::Dot),
-			    ornament(DividerShape::Dot)};
+	three.dividerCap = {ornament(DividerShape::Diamond), ornament(DividerShape::Dot), ornament(DividerShape::Dot)};
 
 	const QRectF oneBox = boxOf(documentWith(one), LayoutBox::Kind::Divider);
 	const QRectF threeBox = boxOf(documentWith(three), LayoutBox::Kind::Divider);
@@ -161,8 +160,8 @@ CT_SUITE(divider_end_words, "A word and a picture at the end of a rule")
 
 	/* Ink at both ends: the word is drawn at each, not only where it was written. */
 	const Ink leftInk = inkOf(image, QRectF(box.left(), box.top(), box.width() / 4.0, box.height()));
-	const Ink rightInk = inkOf(image, QRectF(box.right() - box.width() / 4.0, box.top(), box.width() / 4.0,
-						 box.height()));
+	const Ink rightInk =
+		inkOf(image, QRectF(box.right() - box.width() / 4.0, box.top(), box.width() / 4.0, box.height()));
 	check(!leftInk.isEmpty(), "the word is drawn at the left-hand end");
 	check(!rightInk.isEmpty(), "and at the right-hand one");
 

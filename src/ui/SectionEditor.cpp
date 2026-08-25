@@ -213,8 +213,8 @@ constexpr int kPieceSizeColumnWidth = 70;
 const QVector<SectionType> &baseSectionTypes()
 {
 	static const QVector<SectionType> types = {
-		SectionType::Title,   SectionType::Header,         SectionType::TextList, SectionType::Bridged,
-		SectionType::Spacer,  SectionType::SectionDivider, SectionType::StickyBlock,
+		SectionType::Title,  SectionType::Header,         SectionType::TextList,    SectionType::Bridged,
+		SectionType::Spacer, SectionType::SectionDivider, SectionType::StickyBlock,
 	};
 	return types;
 }
@@ -700,12 +700,9 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	addRow(QString(), typeLogoOnly);
 
 	typeListContent = new QComboBox(this);
-	typeListContent->addItem(moduleText("Designer.ListContent.Text"),
-				 static_cast<int>(SectionListContent::Text));
-	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"),
-				 static_cast<int>(SectionListContent::Pairs));
-	typeListContent->addItem(moduleText("Designer.ListContent.Logos"),
-				 static_cast<int>(SectionListContent::Logos));
+	typeListContent->addItem(moduleText("Designer.ListContent.Text"), static_cast<int>(SectionListContent::Text));
+	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
+	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
 	addRow(moduleText("Designer.ListContent"), typeListContent);
 
 	labelEdit = new QLineEdit(this);
@@ -1269,9 +1266,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		 * follows from the row it is pointed at: a logo piece wants an image, a custom
 		 * ornament an SVG.
 		 */
-		pieceFileButtons[index] =
-			addPieceButton(makeLabelledButton(page, moduleText("Designer.SetPieceFile")),
-				       [this, slot] { browseForPieceFile(slot); });
+		pieceFileButtons[index] = addPieceButton(makeLabelledButton(page, moduleText("Designer.SetPieceFile")),
+							 [this, slot] { browseForPieceFile(slot); });
 		buttonRow->addStretch();
 
 		pageLayout->addLayout(buttonRow);
@@ -1281,7 +1277,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	}
 
 	outer->addWidget(dividerPiecesGroup, 1);
-
 
 	/*
 	 * Whatever height is left over when the editor is shorter than the pane it sits in. A
@@ -1302,12 +1297,10 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * Every one of them is a thing somebody eventually wants -- which is why the switch shows
 	 * them rather than the editor deciding they do not exist.
 	 */
-	for (QWidget *field : std::initializer_list<QWidget *>{marginX, logoAnimatedShadow, bridgeOffset,
-							      bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
-							      bridgeSizing, dividerPieceGap, dividerRuleGap,
-							      dividerRuleInset, dividerTint, bridgeTint,
-							      subtitleOrder, fillOrder, stickyOffset,
-							      stickyBackdropPadding})
+	for (QWidget *field : std::initializer_list<QWidget *>{
+		     marginX, logoAnimatedShadow, bridgeOffset, bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
+		     bridgeSizing, dividerPieceGap, dividerRuleGap, dividerRuleInset, dividerTint, bridgeTint,
+		     subtitleOrder, fillOrder, stickyOffset, stickyBackdropPadding})
 		markAdvanced(field);
 
 	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
@@ -1322,9 +1315,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 */
 	connect(columns, &QSpinBox::valueChanged, this, &SectionEditor::onTypeSwitchChanged);
 
-	connect(showAdvanced, &QCheckBox::toggled, this, [this] {
-		applyTypeVisibility(composedType());
-	});
+	connect(showAdvanced, &QCheckBox::toggled, this, [this] { applyTypeVisibility(composedType()); });
 
 	connect(labelEdit, &QLineEdit::textChanged, this, notify);
 	connect(visibleBox, &QCheckBox::toggled, this, notify);
@@ -1423,8 +1414,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * on. `presetOrigin` marks the editor mid-signal so the synchronous round trip back
 	 * through setPresets() leaves the fields being typed into alone.
 	 */
-	for (StyleEditor *editor : {primaryStyle, secondaryStyle, bridgeStyle, rowSubtitleStyle,
-				    rowSecondarySubtitleStyle}) {
+	for (StyleEditor *editor :
+	     {primaryStyle, secondaryStyle, bridgeStyle, rowSubtitleStyle, rowSecondarySubtitleStyle}) {
 		connect(editor, &StyleEditor::presetSaveRequested, this,
 			[this, editor](const QString &name, const TextStyle &style) {
 				presetOrigin = editor;
@@ -1525,7 +1516,8 @@ void SectionEditor::setSection(const Section &source)
 	entryGap->setValue(source.entryGap);
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
-	spacerHeight->setValue(source.spacerHeight);	selectByData(stickyAnchor, static_cast<int>(source.stickyAnchor));
+	spacerHeight->setValue(source.spacerHeight);
+	selectByData(stickyAnchor, static_cast<int>(source.stickyAnchor));
 	stickyCanvasPosition->setValue(qRound(source.stickyCanvasPosition * 100.0));
 	stickyOffset->setValue(qRound(source.stickyOffset));
 	stickyHold->setValue(source.stickyHold);
@@ -2005,7 +1997,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(stickyHoldForever, sticky);
 	setRowVisible(stickyRelease, sticky);
 	setRowVisible(stickyForeverWarning,
-			    sticky && stickyHoldForever->isChecked() && stickyReleaseEndsAtHold(release));
+		      sticky && stickyHoldForever->isChecked() && stickyReleaseEndsAtHold(release));
 	setRowVisible(stickyBackdrop, sticky);
 	setRowVisible(stickyBackdropColour, backdrop);
 	setRowVisible(stickyBackdropPadding, backdrop);
@@ -2078,10 +2070,9 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		 */
 		if (rowSubtitles) {
 			entryTable->setColumnCount(4);
-			entryTable->setHorizontalHeaderLabels({moduleText("Designer.Column.Left"),
-							       moduleText("Designer.Column.LeftSubtitle"),
-							       moduleText("Designer.Column.Right"),
-							       moduleText("Designer.Column.RightSubtitle")});
+			entryTable->setHorizontalHeaderLabels(
+				{moduleText("Designer.Column.Left"), moduleText("Designer.Column.LeftSubtitle"),
+				 moduleText("Designer.Column.Right"), moduleText("Designer.Column.RightSubtitle")});
 			break;
 		}
 
