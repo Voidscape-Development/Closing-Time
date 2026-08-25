@@ -801,8 +801,7 @@ const Section *DesignerDialog::sectionAt(const SectionPath &path) const
 		return nullptr;
 
 	const std::vector<Section> &children = document.sections.at(path.parent).children;
-	return static_cast<size_t>(path.index) < children.size() ? &children[static_cast<size_t>(path.index)]
-								 : nullptr;
+	return static_cast<size_t>(path.index) < children.size() ? &children[static_cast<size_t>(path.index)] : nullptr;
 }
 
 QVector<DesignerDialog::SectionPath> DesignerDialog::pathsInOrder() const
