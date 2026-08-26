@@ -155,6 +155,9 @@ private:
 	/* Style presets live on the document, so the editors route their edits through here. */
 	void savePreset(const QString &name, const TextStyle &style);
 	void deletePreset(const QString &name);
+	/* The panels' twins of the two above; see BackgroundEditor and Document::backgroundPresets. */
+	void saveBackgroundPreset(const QString &name, const BackgroundPanel &panel);
+	void deleteBackgroundPreset(const QString &name);
 
 	/*
 	 * Decides what editing a style bound to a *linked* preset does: change it in the library, for
@@ -165,7 +168,16 @@ private:
 	 * and a dialog per keystroke is not a question, it is an obstruction. Returns true when the
 	 * edit should go to the library.
 	 */
-	bool shouldEditLinkedPreset(const QString &name);
+	/*
+	 * Whether an edit to a preset that follows the library should change it everywhere, or fork a
+	 * copy into this document.
+	 *
+	 * `choices` is the per-window memory of what was answered for a name, and is passed in rather
+	 * than reached for, because a background and a text style may share a name and are two
+	 * different things to be asked about: one memory each keeps the answer for "Card the panel"
+	 * from answering for "Card the heading style".
+	 */
+	bool shouldEditLinkedPreset(const QString &name, QHash<QString, bool> *choices);
 
 	/* Opens the library manager on this document. */
 	void openStyleLibrary();
@@ -216,6 +228,7 @@ private:
 	struct DocumentSnapshot {
 		QVector<Section> sections;
 		QVector<StylePreset> stylePresets;
+		QVector<BackgroundPreset> backgroundPresets;
 		/*
 		 * The font settings ride along because the font window is undoable like everything
 		 * else here. Carrying the bundle costs nothing per step: a QVector of QByteArrays
@@ -399,6 +412,7 @@ private:
 	/* Collects a run of edits to linked presets; see flushLibraryEdits. */
 	QTimer *libraryWriteTimer = nullptr;
 	QHash<QString, TextStyle> pendingLibraryEdits;
+	QHash<QString, BackgroundPanel> pendingLibraryBackgroundEdits;
 	/* The library's serial as of the last refresh, so an unchanged reload costs nothing. */
 	quint64 librarySerial = 0;
 	/*
@@ -406,6 +420,8 @@ private:
 	 * with the window: the question is about a train of edits, not about a document.
 	 */
 	QHash<QString, bool> linkedEditChoices;
+	/* The same memory for the panels, in a keyspace of its own; see shouldEditLinkedPreset. */
+	QHash<QString, bool> linkedBackgroundEditChoices;
 	/*
 	 * Whether deleting a section still asks first. Per window, like the answers above: undo
 	 * already covers a delete, so this is a courtesy rather than the safety net, and a window

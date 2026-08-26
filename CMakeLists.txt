@@ -90,6 +90,8 @@ target_sources(
     src/plugin-main.cpp
     src/source/CreditsSource.cpp
     src/source/CreditsSource.hpp
+    src/ui/BackgroundControls.cpp
+    src/ui/BackgroundControls.hpp
     src/ui/CollapsibleGroup.cpp
     src/ui/CollapsibleGroup.hpp
     src/ui/CsvImportDialog.cpp

@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QInputDialog>
+#include <QComboBox>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -80,11 +81,39 @@ QString describe(const TextStyle &style)
 	return parts.join(QStringLiteral(" · "));
 }
 
-QListWidgetItem *makeItem(const StylePreset &preset, bool linked)
+/* And of a panel, so the lists read the same way whichever collection they are showing. */
+QString describe(const BackgroundPanel &panel)
 {
-	auto *item = new QListWidgetItem(linked ? QStringLiteral("%1  ⇄").arg(preset.name) : preset.name);
-	item->setData(Qt::UserRole, preset.name);
-	item->setToolTip(describe(preset.style));
+	QStringList parts;
+	parts.append(moduleText(QStringLiteral("Designer.Background.Fill.%1")
+					.arg(QString::fromUtf8(backgroundFillId(panel.fill)))
+					.toUtf8()
+					.constData()));
+
+	if (panel.fill == BackgroundFill::Image && !panel.imagePath.isEmpty()) {
+		parts.append(moduleText(QStringLiteral("Designer.Background.Fit.%1")
+						.arg(QString::fromUtf8(backgroundImageFitId(panel.imageFit)))
+						.toUtf8()
+						.constData()));
+	}
+
+	if (!panel.hasUniformRadius() || panel.radiusTopLeft > 0.0)
+		parts.append(moduleText("Library.Describe.Rounded"));
+	if (panel.border.enabled)
+		parts.append(moduleText("Designer.Background.Border"));
+	if (panel.bleed() > 0.0)
+		parts.append(moduleText("Library.Describe.Outset"));
+	if (panel.opacity < 1.0)
+		parts.append(QStringLiteral("%1 %").arg(qRound(panel.opacity * 100.0)));
+
+	return parts.join(QStringLiteral(" · "));
+}
+
+QListWidgetItem *makeItem(const QString &name, const QString &tooltip, bool linked)
+{
+	auto *item = new QListWidgetItem(linked ? QStringLiteral("%1  ⇄").arg(name) : name);
+	item->setData(Qt::UserRole, name);
+	item->setToolTip(tooltip);
 	return item;
 }
 
@@ -97,6 +126,20 @@ StyleLibraryDialog::StyleLibraryDialog(Document *document, QWidget *parent) : QD
 	resize(720, 420);
 
 	auto *layout = new QVBoxLayout(this);
+
+	/*
+	 * Which collection the lists are showing. A picker rather than a second pair of lists,
+	 * because every button between them means the same thing for either kind.
+	 */
+	auto *kindRow = new QHBoxLayout;
+	kindRow->addWidget(new QLabel(moduleText("Library.Kind"), this));
+	kindBox = new QComboBox(this);
+	kindBox->addItem(moduleText("Library.Kind.Styles"), false);
+	kindBox->addItem(moduleText("Library.Kind.Backgrounds"), true);
+	kindRow->addWidget(kindBox);
+	kindRow->addStretch();
+	layout->addLayout(kindRow);
+
 	auto *grid = new QGridLayout;
 	layout->addLayout(grid, 1);
 
@@ -166,32 +209,60 @@ StyleLibraryDialog::StyleLibraryDialog(Document *document, QWidget *parent) : QD
 	connect(deleteButton, &QPushButton::clicked, this, &StyleLibraryDialog::deleteSelected);
 	connect(importButton, &QPushButton::clicked, this, &StyleLibraryDialog::importLibrary);
 	connect(exportButton, &QPushButton::clicked, this, &StyleLibraryDialog::exportLibrary);
+	connect(kindBox, &QComboBox::currentIndexChanged, this, &StyleLibraryDialog::refreshLists);
 
 	refreshLists();
+}
+
+bool StyleLibraryDialog::showingBackgrounds() const
+{
+	return kindBox && kindBox->currentData().toBool();
 }
 
 void StyleLibraryDialog::refreshLists()
 {
 	StyleLibrary &library = StyleLibrary::instance();
 
+	const bool backgrounds = showingBackgrounds();
+
 	if (documentList) {
 		const QString selected = selectedDocumentPreset();
 		documentList->clear();
-		for (const StylePreset &preset : document->stylePresets) {
-			QListWidgetItem *item = makeItem(preset, preset.linked);
-			documentList->addItem(item);
-			if (preset.name == selected)
-				documentList->setCurrentItem(item);
+
+		if (backgrounds) {
+			for (const BackgroundPreset &preset : document->backgroundPresets) {
+				QListWidgetItem *item = makeItem(preset.name, describe(preset.panel), preset.linked);
+				documentList->addItem(item);
+				if (preset.name == selected)
+					documentList->setCurrentItem(item);
+			}
+		} else {
+			for (const StylePreset &preset : document->stylePresets) {
+				QListWidgetItem *item = makeItem(preset.name, describe(preset.style), preset.linked);
+				documentList->addItem(item);
+				if (preset.name == selected)
+					documentList->setCurrentItem(item);
+			}
 		}
 	}
 
 	const QString selectedLibrary = selectedLibraryPreset();
 	libraryList->clear();
-	for (const StylePreset &preset : library.presets()) {
-		QListWidgetItem *item = makeItem(preset, false);
-		libraryList->addItem(item);
-		if (preset.name == selectedLibrary)
-			libraryList->setCurrentItem(item);
+
+	if (backgrounds) {
+		for (const BackgroundPreset &preset : library.backgrounds()) {
+			QListWidgetItem *item = makeItem(preset.name, describe(preset.panel), false);
+			libraryList->addItem(item);
+			if (preset.name == selectedLibrary)
+				libraryList->setCurrentItem(item);
+		}
+	} else {
+		for (const StylePreset &preset : library.presets()) {
+			QListWidgetItem *item = makeItem(preset.name, describe(preset.style), false);
+			libraryList->addItem(item);
+			if (preset.name == selectedLibrary)
+				libraryList->setCurrentItem(item);
+		}
 	}
 
 	const QString path = library.filePath();
@@ -225,10 +296,16 @@ void StyleLibraryDialog::updateButtons()
 		 * silently replacing what is there, so the two paths in are kept apart: link brings a
 		 * new one in, publish sends an existing one out.
 		 */
-		const bool clash = std::any_of(document->stylePresets.cbegin(), document->stylePresets.cend(),
-					       [&library](const StylePreset &preset) {
-						       return preset.name == library && !preset.linked;
-					       });
+		const bool clash = showingBackgrounds()
+					   ? std::any_of(document->backgroundPresets.cbegin(),
+							 document->backgroundPresets.cend(),
+							 [&library](const BackgroundPreset &preset) {
+								 return preset.name == library && !preset.linked;
+							 })
+					   : std::any_of(document->stylePresets.cbegin(), document->stylePresets.cend(),
+							 [&library](const StylePreset &preset) {
+								 return preset.name == library && !preset.linked;
+							 });
 		linkButton->setEnabled(!library.isEmpty() && !clash);
 		copyButton->setEnabled(!library.isEmpty() && !clash);
 	}
@@ -243,16 +320,23 @@ void StyleLibraryDialog::publishSelected()
 	if (name.isEmpty())
 		return;
 
-	const TextStyle *style = document->findStylePreset(name);
-	if (!style)
+	StyleLibrary &library = StyleLibrary::instance();
+	const bool backgrounds = showingBackgrounds();
+
+	const TextStyle *style = backgrounds ? nullptr : document->findStylePreset(name);
+	const BackgroundPanel *panel = backgrounds ? document->findBackgroundPreset(name) : nullptr;
+	if (!style && !panel)
 		return;
 
-	if (StyleLibrary::instance().contains(name) &&
-	    QMessageBox::question(this, moduleText("Library.Publish"), moduleText("Library.Replace").arg(name)) !=
-		    QMessageBox::Yes)
+	const bool taken = backgrounds ? library.containsBackground(name) : library.contains(name);
+	if (taken && QMessageBox::question(this, moduleText("Library.Publish"),
+					   moduleText("Library.Replace").arg(name)) != QMessageBox::Yes)
 		return;
 
-	StyleLibrary::instance().set(name, *style);
+	if (backgrounds)
+		library.setBackground(name, *panel);
+	else
+		library.set(name, *style);
 
 	/*
 	 * Published and then linked, so the next library edit reaches this roll too. Publishing a
@@ -260,7 +344,10 @@ void StyleLibraryDialog::publishSelected()
 	 * publication.
 	 */
 	emit documentAboutToChange();
-	document->linkStylePreset(name);
+	if (backgrounds)
+		document->linkBackgroundPreset(name);
+	else
+		document->linkStylePreset(name);
 	emit documentChanged();
 
 	refreshLists();
@@ -273,7 +360,10 @@ void StyleLibraryDialog::linkSelected()
 		return;
 
 	emit documentAboutToChange();
-	document->linkStylePreset(name);
+	if (showingBackgrounds())
+		document->linkBackgroundPreset(name);
+	else
+		document->linkStylePreset(name);
 	emit documentChanged();
 
 	refreshLists();
@@ -285,18 +375,28 @@ void StyleLibraryDialog::copySelected()
 	if (name.isEmpty())
 		return;
 
-	TextStyle style;
-	if (!StyleLibrary::instance().find(name, &style))
-		return;
-
 	/*
 	 * The same style, unlinked: a starting point to edit for this roll alone. Without this the
 	 * only way to base one roll's title on the house style without being bound to it would be to
 	 * link it and then break the link.
 	 */
-	emit documentAboutToChange();
-	document->setStylePreset(name, style);
-	emit documentChanged();
+	if (showingBackgrounds()) {
+		BackgroundPanel panel;
+		if (!StyleLibrary::instance().findBackground(name, &panel))
+			return;
+
+		emit documentAboutToChange();
+		document->setBackgroundPreset(name, panel);
+		emit documentChanged();
+	} else {
+		TextStyle style;
+		if (!StyleLibrary::instance().find(name, &style))
+			return;
+
+		emit documentAboutToChange();
+		document->setStylePreset(name, style);
+		emit documentChanged();
+	}
 
 	refreshLists();
 }
@@ -314,12 +414,18 @@ void StyleLibraryDialog::renameSelected()
 	if (!accepted || renamed.isEmpty() || renamed == name)
 		return;
 
-	if (StyleLibrary::instance().contains(renamed)) {
+	StyleLibrary &library = StyleLibrary::instance();
+	const bool backgrounds = showingBackgrounds();
+
+	if (backgrounds ? library.containsBackground(renamed) : library.contains(renamed)) {
 		QMessageBox::warning(this, moduleText("Library.Rename"), moduleText("Library.NameTaken").arg(renamed));
 		return;
 	}
 
-	StyleLibrary::instance().rename(name, renamed);
+	if (backgrounds)
+		library.renameBackground(name, renamed);
+	else
+		library.rename(name, renamed);
 
 	/*
 	 * The library remembers the rename, and every document brought up to date against it follows:
@@ -338,10 +444,16 @@ void StyleLibraryDialog::renameSelected()
 		 * is not a rename. Saying so beats leaving the user to notice a binding that did not
 		 * follow; every other case moved, or had nothing here to move.
 		 */
-		const bool stillBound = std::any_of(document->stylePresets.cbegin(), document->stylePresets.cend(),
-						    [&name](const StylePreset &preset) {
-							    return preset.linked && preset.name == name;
-						    });
+		const bool stillBound =
+			backgrounds
+				? std::any_of(document->backgroundPresets.cbegin(), document->backgroundPresets.cend(),
+					      [&name](const BackgroundPreset &preset) {
+						      return preset.linked && preset.name == name;
+					      })
+				: std::any_of(document->stylePresets.cbegin(), document->stylePresets.cend(),
+					      [&name](const StylePreset &preset) {
+						      return preset.linked && preset.name == name;
+					      });
 
 		if (!moved && stillBound)
 			QMessageBox::information(this, moduleText("Library.Rename"),
@@ -361,7 +473,11 @@ void StyleLibraryDialog::deleteSelected()
 	    QMessageBox::Yes)
 		return;
 
-	StyleLibrary::instance().remove(name);
+	if (showingBackgrounds())
+		StyleLibrary::instance().removeBackground(name);
+	else
+		StyleLibrary::instance().remove(name);
+
 	refreshLists();
 }
 
@@ -379,8 +495,9 @@ void StyleLibraryDialog::importLibrary()
 	}
 
 	QVector<StylePreset> imported;
+	QVector<BackgroundPreset> importedBackgrounds;
 	QString error;
-	if (!StyleLibrary::parseJson(QString::fromUtf8(file.readAll()), &imported, &error)) {
+	if (!StyleLibrary::parseJson(QString::fromUtf8(file.readAll()), &imported, &importedBackgrounds, &error)) {
 		QMessageBox::warning(this, moduleText("Library.Import"), error);
 		return;
 	}
@@ -389,8 +506,14 @@ void StyleLibraryDialog::importLibrary()
 	 * Merged rather than replacing, and the imported side wins a clash. Replacing would throw
 	 * away every style on the machine to take one collection's; a merge is what carrying a house
 	 * style from one machine to another actually means.
+	 *
+	 * Both collections come in whichever the lists happen to be showing: a file is imported as a
+	 * whole, and leaving half of it on disk because a picker was set one way would be a surprise
+	 * with nothing on screen to explain it.
 	 */
-	QVector<StylePreset> merged = StyleLibrary::instance().presets();
+	StyleLibrary &library = StyleLibrary::instance();
+
+	QVector<StylePreset> merged = library.presets();
 	for (const StylePreset &preset : imported) {
 		const auto existing = std::find_if(merged.begin(), merged.end(), [&preset](const StylePreset &entry) {
 			return entry.name == preset.name;
@@ -402,7 +525,20 @@ void StyleLibraryDialog::importLibrary()
 			merged.append(preset);
 	}
 
-	StyleLibrary::instance().replaceAll(merged);
+	QVector<BackgroundPreset> mergedBackgrounds = library.backgrounds();
+	for (const BackgroundPreset &preset : importedBackgrounds) {
+		const auto existing =
+			std::find_if(mergedBackgrounds.begin(), mergedBackgrounds.end(),
+				     [&preset](const BackgroundPreset &entry) { return entry.name == preset.name; });
+
+		if (existing != mergedBackgrounds.end())
+			existing->panel = preset.panel;
+		else
+			mergedBackgrounds.append(preset);
+	}
+
+	library.replaceAll(merged);
+	library.replaceAllBackgrounds(mergedBackgrounds);
 	refreshLists();
 }
 
