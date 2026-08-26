@@ -592,6 +592,8 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	connect(editor, &SectionEditor::changed, this, &DesignerDialog::onSectionEdited);
 	connect(editor, &SectionEditor::presetSaveRequested, this, &DesignerDialog::savePreset);
 	connect(editor, &SectionEditor::presetDeleteRequested, this, &DesignerDialog::deletePreset);
+	connect(editor, &SectionEditor::backgroundPresetSaveRequested, this, &DesignerDialog::saveBackgroundPreset);
+	connect(editor, &SectionEditor::backgroundPresetDeleteRequested, this, &DesignerDialog::deleteBackgroundPreset);
 	connect(libraryButton, &QPushButton::clicked, this, &DesignerDialog::openStyleLibrary);
 	connect(fontsButton, &QPushButton::clicked, this, &DesignerDialog::openFonts);
 	connect(importButton, &QPushButton::clicked, this, &DesignerDialog::importJson);
@@ -657,20 +659,24 @@ void DesignerDialog::reloadStyleLibrary()
 	 * the library would still hold the new style and the next reload would bring it straight back.
 	 */
 	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
 	commitCurrentSection();
 	schedulePreviewRefresh();
 }
 
 void DesignerDialog::flushLibraryEdits()
 {
-	if (pendingLibraryEdits.isEmpty())
+	if (pendingLibraryEdits.isEmpty() && pendingLibraryBackgroundEdits.isEmpty())
 		return;
 
 	StyleLibrary &library = StyleLibrary::instance();
 	for (auto it = pendingLibraryEdits.cbegin(); it != pendingLibraryEdits.cend(); ++it)
 		library.set(it.key(), it.value());
+	for (auto it = pendingLibraryBackgroundEdits.cbegin(); it != pendingLibraryBackgroundEdits.cend(); ++it)
+		library.setBackground(it.key(), it.value());
 
 	pendingLibraryEdits.clear();
+	pendingLibraryBackgroundEdits.clear();
 	/* Our own writes must not read back as somebody else's change on the next reload. */
 	librarySerial = library.serial();
 }
@@ -698,6 +704,7 @@ void DesignerDialog::openStyleLibrary()
 	connect(&dialog, &StyleLibraryDialog::documentAboutToChange, this, [this] { beginUndoStep(); });
 	connect(&dialog, &StyleLibraryDialog::documentChanged, this, [this] {
 		editor->setPresets(document.stylePresets);
+		editor->setBackgroundPresets(document.backgroundPresets);
 		schedulePreviewRefresh();
 	});
 
@@ -745,6 +752,7 @@ void DesignerDialog::loadFromSource()
 		document.sections.append(Section::makeDefault(SectionType::Title));
 
 	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
 	refreshSectionList(0);
 	refreshPreview();
 }
@@ -766,6 +774,7 @@ void DesignerDialog::writeToSource()
 	merged.load(settings);
 	merged.sections = document.sections;
 	merged.stylePresets = document.stylePresets;
+	merged.backgroundPresets = document.backgroundPresets;
 	merged.bundleFonts = document.bundleFonts;
 	merged.fontSubstitutions = document.fontSubstitutions;
 	merged.bundledFonts = document.bundledFonts;
@@ -982,8 +991,13 @@ void DesignerDialog::refreshSectionList(int selectRow)
 
 DesignerDialog::DocumentSnapshot DesignerDialog::snapshot() const
 {
-	return DocumentSnapshot{document.sections,     document.stylePresets,      document.bundleFonts,
-				document.bundledFonts, document.fontSubstitutions, currentRow};
+	return DocumentSnapshot{document.sections,
+				document.stylePresets,
+				document.backgroundPresets,
+				document.bundleFonts,
+				document.bundledFonts,
+				document.fontSubstitutions,
+				currentRow};
 }
 
 void DesignerDialog::beginUndoStep()
@@ -1019,6 +1033,7 @@ void DesignerDialog::restore(const DocumentSnapshot &state)
 
 	document.sections = state.sections;
 	document.stylePresets = state.stylePresets;
+	document.backgroundPresets = state.backgroundPresets;
 	document.bundleFonts = state.bundleFonts;
 	document.bundledFonts = state.bundledFonts;
 	document.fontSubstitutions = state.fontSubstitutions;
@@ -1027,6 +1042,7 @@ void DesignerDialog::restore(const DocumentSnapshot &state)
 	currentPath = SectionPath{};
 	currentRow = -1;
 	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
 	refreshSectionList(-1);
 	refreshSectionList(std::min(state.currentIndex, static_cast<int>(rowPaths.size()) - 1));
 	refreshPreview();
@@ -1340,13 +1356,13 @@ void DesignerDialog::moveSectionTo(int from, int to)
 	schedulePreviewRefresh();
 }
 
-bool DesignerDialog::shouldEditLinkedPreset(const QString &name)
+bool DesignerDialog::shouldEditLinkedPreset(const QString &name, QHash<QString, bool> *choices)
 {
 	if (StyleLibrary::instance().alwaysEditLinked())
 		return true;
 
-	const auto answered = linkedEditChoices.constFind(name);
-	if (answered != linkedEditChoices.constEnd())
+	const auto answered = choices->constFind(name);
+	if (answered != choices->constEnd())
 		return *answered;
 
 	QMessageBox box(this);
@@ -1365,7 +1381,7 @@ bool DesignerDialog::shouldEditLinkedPreset(const QString &name)
 	box.exec();
 
 	const bool editLibrary = box.clickedButton() == everywhere;
-	linkedEditChoices.insert(name, editLibrary);
+	choices->insert(name, editLibrary);
 
 	/*
 	 * Only "change everywhere" is worth remembering across windows. Someone who wants to be asked
@@ -1395,7 +1411,7 @@ void DesignerDialog::savePreset(const QString &name, const TextStyle &style)
 		if (preset.name != name || !preset.linked)
 			continue;
 
-		if (shouldEditLinkedPreset(name)) {
+		if (shouldEditLinkedPreset(name, &linkedEditChoices)) {
 			pendingLibraryEdits.insert(name, style);
 			libraryWriteTimer->start();
 		} else {
@@ -1409,6 +1425,7 @@ void DesignerDialog::savePreset(const QString &name, const TextStyle &style)
 
 	/* Re-publishing the list is what binds the editor that raised this to the preset. */
 	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
 	commitCurrentSection();
 	schedulePreviewRefresh();
 }
@@ -1419,6 +1436,51 @@ void DesignerDialog::deletePreset(const QString &name)
 	document.removeStylePreset(name);
 
 	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
+	commitCurrentSection();
+	schedulePreviewRefresh();
+}
+
+void DesignerDialog::saveBackgroundPreset(const QString &name, const BackgroundPanel &panel)
+{
+	/* An edit step rather than a structural one, for the reason savePreset gives. */
+	beginEditUndoStep();
+
+	/*
+	 * A panel that follows the library is shared with every other roll on the machine, so the
+	 * same question is asked here that an edit to a linked style asks -- out of a memory of its
+	 * own, since a panel and a style may share a name and are not the same thing to answer for.
+	 */
+	for (BackgroundPreset &preset : document.backgroundPresets) {
+		if (preset.name != name || !preset.linked)
+			continue;
+
+		if (shouldEditLinkedPreset(name, &linkedBackgroundEditChoices)) {
+			pendingLibraryBackgroundEdits.insert(name, panel);
+			libraryWriteTimer->start();
+		} else {
+			/* The document's own copy from here on; the library carries on as it was. */
+			preset.linked = false;
+		}
+		break;
+	}
+
+	document.setBackgroundPreset(name, panel);
+
+	/* Re-publishing the list is what binds the editor that raised this to the preset. */
+	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
+	commitCurrentSection();
+	schedulePreviewRefresh();
+}
+
+void DesignerDialog::deleteBackgroundPreset(const QString &name)
+{
+	beginUndoStep();
+	document.removeBackgroundPreset(name);
+
+	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
 	commitCurrentSection();
 	schedulePreviewRefresh();
 }
@@ -1448,9 +1510,11 @@ void DesignerDialog::importJson()
 	/* Only the content is taken; canvas and playback settings stay as configured here. */
 	document.sections = loaded.sections;
 	document.stylePresets = loaded.stylePresets;
+	document.backgroundPresets = loaded.backgroundPresets;
 	currentPath = SectionPath{};
 	currentRow = -1;
 	editor->setPresets(document.stylePresets);
+	editor->setBackgroundPresets(document.backgroundPresets);
 	refreshSectionList(document.sections.isEmpty() ? -1 : 0);
 	refreshPreview();
 }

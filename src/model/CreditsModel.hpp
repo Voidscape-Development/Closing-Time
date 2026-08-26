@@ -29,10 +29,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <functional>
 #include <vector>
 
+#include "model/Background.hpp"
 #include "model/BridgeArt.hpp"
 #include "model/DividerArt.hpp"
 #include "model/EndingAction.hpp"
 #include "model/FontBundle.hpp"
+#include "model/Gradient.hpp"
 
 namespace closingtime {
 
@@ -98,6 +100,19 @@ bool sectionUsesSubtitles(SectionType type);
  * and that the secondary style is worth offering at all.
  */
 bool sectionUsesSecondaryText(SectionType type);
+
+/*
+ * Which background slots a section of this type actually draws anything behind, in the order the
+ * designer should offer them.
+ *
+ * Derived from the predicates above rather than tabulated beside them, for the same reason
+ * `sectionUsesSecondaryText` is: "does it place logos" already answers "can it have a panel behind
+ * a logo", and a second table would be a second place for the answer to drift. Every type gets the
+ * Section slot -- a spacer's panel is a plain band of colour in the middle of a roll, which is a
+ * use rather than an oversight -- and a sticky block gets that one alone, since what it holds are
+ * whole sections carrying slots of their own.
+ */
+QVector<BackgroundSlot> backgroundSlotsFor(SectionType type);
 
 /* What a list holds, which with a column count is the whole of what tells the six list types apart. */
 enum class SectionListContent { Text, Pairs, Logos };
@@ -290,44 +305,8 @@ enum class TextFill { Solid, LinearGradient, RadialGradient };
 const char *textFillId(TextFill fill);
 TextFill textFillFromId(const char *id, TextFill fallback = TextFill::Solid);
 
-/* One colour stop. `position` is 0.0 at the start of the gradient's axis and 1.0 at its end. */
-struct GradientStop {
-	double position = 0.0;
-	QColor color = QColor(255, 255, 255);
-
-	bool operator==(const GradientStop &other) const
-	{
-		return qFuzzyCompare(position + 1.0, other.position + 1.0) && color == other.color;
-	}
-	bool operator!=(const GradientStop &other) const { return !(*this == other); }
-};
-
-struct GradientSpec {
-	/*
-	 * Direction of a linear gradient, in degrees clockwise from straight down: 0 runs top
-	 * to bottom, 90 left to right, 180 bottom to top. Ignored by a radial gradient, which
-	 * has no axis to point.
-	 */
-	double angle = 0.0;
-	QVector<GradientStop> stops = {GradientStop{0.0, QColor(255, 255, 255)},
-				       GradientStop{1.0, QColor(140, 140, 140)}};
-
-	/*
-	 * The stops as QGradient wants them: sorted, clamped into 0..1, and padded out to at
-	 * least two so a gradient left with one stop still paints that colour rather than
-	 * falling back to black. Everything that draws a gradient goes through this.
-	 */
-	QVector<QPair<qreal, QColor>> resolvedStops() const;
-
-	bool operator==(const GradientSpec &other) const
-	{
-		return qFuzzyCompare(angle + 1.0, other.angle + 1.0) && stops == other.stops;
-	}
-	bool operator!=(const GradientSpec &other) const { return !(*this == other); }
-
-	void save(obs_data_t *data) const;
-	void load(obs_data_t *data);
-};
+/* GradientStop and GradientSpec live in model/Gradient.hpp: a panel maps a sweep over its own box
+ * exactly as a run of glyphs does, and a background is declared before the styles are. */
 
 /*
  * A stroke drawn around the glyphs, `width` pixels of it outside the letterform. Drawn under
@@ -949,6 +928,34 @@ struct Section {
 	QString rowSubtitleStylePresetName;
 	QString rowSecondarySubtitleStylePresetName;
 
+	/*
+	 * The panels drawn behind this section and behind the things it draws, one entry per slot
+	 * that has been given one.
+	 *
+	 * Held as the slots it *has* rather than as all eight always, which buys three things. A
+	 * section with no panels costs nothing to copy onto the undo stack and writes nothing into the
+	 * scene collection, which is every section in every roll written before this existed. A slot
+	 * can be told apart from a slot deliberately set to draw nothing, which is what makes an
+	 * alternate entry panel able to leave every other row bare (see BackgroundSlot::EntryAlt).
+	 * And an order is preserved, so the designer lists them the way they were added.
+	 *
+	 * Never more than one entry per slot: `backgroundEntry` replaces rather than appends, and the
+	 * loader drops a duplicate a hand-written document might carry.
+	 */
+	QVector<SectionBackground> backgrounds;
+
+	/* The panel in `slot`, or a default one that draws nothing. Never null, never dangling. */
+	const BackgroundPanel &background(BackgroundSlot slot) const;
+	/* The preset `slot` follows, or an empty string. */
+	QString backgroundPresetName(BackgroundSlot slot) const;
+	/* True when the slot has been given an entry at all, whether or not that entry draws. */
+	bool hasBackground(BackgroundSlot slot) const;
+
+	/* The slot's entry, created carrying a panel that draws nothing if it was not there. */
+	SectionBackground &backgroundEntry(BackgroundSlot slot);
+	/* Removes the slot's entry outright, which is not the same as setting its fill to None. */
+	void clearBackground(BackgroundSlot slot);
+
 	/* Vertical padding above and below the section's content, in pixels. */
 	int paddingTop = 16;
 	int paddingBottom = 16;
@@ -1034,18 +1041,6 @@ struct Section {
 
 	StickyRelease stickyRelease = StickyRelease::EndAtHold;
 
-	/*
-	 * A panel drawn behind the block while it is pinned, so the roll running past underneath
-	 * does not read through its lettering.
-	 *
-	 * Off by default: a closing card set over the last of the credits is a perfectly good look,
-	 * and a backdrop that appeared without being asked for would be the plugin making that
-	 * decision. `stickyBackdropPadding` grows it past the block's own bounds on every side.
-	 */
-	bool stickyBackdrop = false;
-	QColor stickyBackdropColor = QColor(0, 0, 0, 180);
-	double stickyBackdropPadding = 24.0;
-
 	bool visible = true;
 
 	void save(obs_data_t *data) const;
@@ -1076,6 +1071,16 @@ struct Document {
 
 	/* Named styles sections can bind to. Ordered as the designer lists them. */
 	QVector<StylePreset> stylePresets;
+
+	/*
+	 * Named panels sections can bind to, in their own collection alongside the text styles.
+	 *
+	 * Two collections rather than one preset carrying both, because a panel and a typeface are
+	 * not one decision: the card behind a sponsor logo has no font to set, and a heading style is
+	 * wanted behind several different panels as often as not. It also keeps the two namespaces
+	 * apart, so a background called "Card" and a style called "Card" are two things.
+	 */
+	QVector<BackgroundPreset> backgroundPresets;
 
 	/* Canvas geometry, in pixels. Also the source's reported width/height. */
 	int width = 1920;
@@ -1155,6 +1160,42 @@ struct Document {
 
 	/* Removes the preset and unbinds every section that referenced it. */
 	void removeStylePreset(const QString &name);
+
+	/* --- background presets ---------------------------------------------------------------- */
+
+	/* Null when no background preset carries that name, including for an empty name. */
+	const BackgroundPanel *findBackgroundPreset(const QString &name) const;
+
+	/*
+	 * The panel a section's slot is actually drawn with, once its preset binding is resolved.
+	 * Everything that paints a panel goes through this rather than reading Section::backgrounds
+	 * directly, so a binding cannot be bypassed by forgetting to resolve it at one paint site.
+	 *
+	 * A name that no longer resolves falls back to the section's own copy, the same way a text
+	 * style binding does, so deleting a preset degrades rather than breaks.
+	 */
+	const BackgroundPanel &effectiveBackground(const Section &section, BackgroundSlot slot) const;
+
+	/* Adds `name`, or replaces the panel of the background preset already carrying that name. */
+	void setBackgroundPreset(const QString &name, const BackgroundPanel &panel);
+
+	/* Removes the background preset and unbinds every slot on every section that referenced it. */
+	void removeBackgroundPreset(const QString &name);
+
+	/*
+	 * Adds `name` as a background preset that follows the machine-wide library, taking its
+	 * current panel from the library. Does nothing when the library holds no background of that
+	 * name.
+	 */
+	bool linkBackgroundPreset(const QString &name);
+
+	/*
+	 * Copies the current library panel into every background preset here marked `linked`, and
+	 * returns true when any of them moved. The background twin of `refreshLinkedPresets`, and it
+	 * exists for exactly the same reason: the renderer reads the document's own presets and never
+	 * learns that a library exists.
+	 */
+	bool refreshLinkedBackgroundPresets();
 
 	/*
 	 * Adds `name` as a preset that follows the machine-wide library, taking its current style

@@ -38,6 +38,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <cmath>
 
+#include "render/BackgroundPainter.hpp"
 #include "render/BridgeArtRenderer.hpp"
 #include "render/DividerArtRenderer.hpp"
 #include "render/FontResolution.hpp"
@@ -731,6 +732,57 @@ struct LogoSource {
 	LogoArt resolve(const LogoRef &ref) const { return resolveLogoArt(stills, animations, ref); }
 };
 
+/*
+ * The panels one section draws, resolved once and carried to every place that puts content down.
+ *
+ * It exists because a panel goes *under* something whose rectangle is only known once that thing
+ * has been measured, and measuring text twice is the most expensive thing this renderer could
+ * casually start doing. So `wants` is asked first: a slot with nothing in it -- which is every slot
+ * on every section of every roll that has not been given a panel -- costs one comparison and the
+ * content is laid out exactly once, as it always was. Only a slot that will really paint pays for
+ * the extra measure.
+ *
+ * It also holds the one rule that cannot live on the model: which of `Entry` and `EntryAlt` an
+ * entry falls to. A list with no alternate draws `Entry` behind every row; a list that has one
+ * draws it behind the odd-numbered rows, whether or not that alternate is set to draw anything --
+ * which is how every other row is left bare.
+ */
+class SectionPanels {
+public:
+	SectionPanels(QPainter *painter, const Document &document, const Section &section, LogoCache *images)
+		: painter(painter),
+		  document(&document),
+		  section(&section),
+		  images(images),
+		  alternating(section.hasBackground(BackgroundSlot::EntryAlt))
+	{
+	}
+
+	/* True when this slot would paint, and therefore worth measuring a box for. */
+	bool wants(BackgroundSlot slot) const
+	{
+		return painter && document->effectiveBackground(*section, slot).isVisible();
+	}
+
+	void paint(BackgroundSlot slot, const QRectF &box) const
+	{
+		paintBackgroundPanel(painter, document->effectiveBackground(*section, slot), box, images);
+	}
+
+	/* Which slot the entry at `index` in this section's list is panelled from. */
+	BackgroundSlot entrySlot(int index) const
+	{
+		return alternating && (index % 2) == 1 ? BackgroundSlot::EntryAlt : BackgroundSlot::Entry;
+	}
+
+private:
+	QPainter *painter;
+	const Document *document;
+	const Section *section;
+	LogoCache *images;
+	bool alternating;
+};
+
 /* Where the logo and text of a "... w/ Logo" row sit horizontally. */
 struct LogoRow {
 	qreal logoX = 0.0;
@@ -1134,12 +1186,34 @@ StackedLine topStackedLine(const Section &section, const QString &title, const Q
 template<typename Record>
 int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextStyle &titleStyle,
 			const TextStyle &subtitleStyle, const QString &title, const QString &subtitle, qreal x, qreal y,
-			qreal width, const Record &record)
+			qreal width, const Record &record, const SectionPanels *panels = nullptr)
 {
 	const QString &first = section.subtitleFirst ? subtitle : title;
 	const QString &second = section.subtitleFirst ? title : subtitle;
 	const TextStyle &firstStyle = section.subtitleFirst ? subtitleStyle : titleStyle;
 	const TextStyle &secondStyle = section.subtitleFirst ? titleStyle : subtitleStyle;
+
+	/*
+	 * The slots follow the fields, not the placement. `subtitleFirst` swaps which line is drawn on
+	 * top and nothing else, so the subtitle's panel goes behind the subtitle wherever the flip has
+	 * put it -- exactly as its style does.
+	 */
+	const BackgroundSlot firstSlot = section.subtitleFirst ? BackgroundSlot::Subtitle : BackgroundSlot::Title;
+	const BackgroundSlot secondSlot = section.subtitleFirst ? BackgroundSlot::Title : BackgroundSlot::Subtitle;
+
+	/*
+	 * A panel goes under a line whose height is not known until the line has been measured, so a
+	 * slot that will paint measures first and then draws. A slot with nothing in it -- which is
+	 * every slot until somebody sets one -- lays the line out exactly once, as it always did.
+	 */
+	const auto panelUnder = [&](BackgroundSlot slot, const QString &text, const TextStyle &style, qreal top) {
+		if (!panels || !panels->wants(slot))
+			return;
+
+		const int height = layoutText(nullptr, text, style, x, top, width);
+		if (height > 0)
+			panels->paint(slot, QRectF(x, top, width, height));
+	};
 
 	qreal cursor = y;
 
@@ -1149,12 +1223,14 @@ int layoutTitleSubtitle(QPainter *painter, const Section &section, const TextSty
 	 * otherwise paired list sits where a single line would rather than reserving space for
 	 * the line that is not there.
 	 */
+	panelUnder(firstSlot, first, firstStyle, cursor);
 	const int firstHeight = layoutText(painter, first, firstStyle, x, cursor, width);
 	if (firstHeight > 0) {
 		record(LayoutBox::Kind::Text, QRectF(x, cursor, width, firstHeight));
 		cursor += firstHeight + section.subtitleGap;
 	}
 
+	panelUnder(secondSlot, second, secondStyle, cursor);
 	const int secondHeight = layoutText(painter, second, secondStyle, x, cursor, width);
 	if (secondHeight > 0) {
 		record(LayoutBox::Kind::Text, QRectF(x, cursor, width, secondHeight));
@@ -1603,17 +1679,30 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 /* How far outside its own box one section can paint. Zero for a section that draws nothing. */
 double sectionBleed(const Document &document, const Section &section)
 {
+	if (!section.visible)
+		return 0.0;
+
+	/*
+	 * A panel's outset reaches outside the box it was given exactly as a shadow does, and is
+	 * counted first because it is the one thing here a section of *any* type can carry -- a
+	 * Spacer with a band of colour across it draws nothing else at all, and a bleed taken only
+	 * from the styles would cut that band off at the nearest tile seam.
+	 */
+	double bleed = 0.0;
+	for (const SectionBackground &entry : section.backgrounds)
+		bleed = std::max(bleed, document.effectiveBackground(section, entry.slot).bleed());
+
 	/*
 	 * Logos cast the style's shadow as well, so a section that only places art counts
 	 * too -- and a divider counts whatever its centre holds, since its rule is inked by
 	 * the same style and can carry the same shadow with nothing but artwork in it.
 	 */
-	if (!section.visible || !(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
-				  section.type == SectionType::SectionDivider))
-		return 0.0;
+	if (!(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
+	      section.type == SectionType::SectionDivider))
+		return bleed;
 
-	double bleed = std::max(document.effectiveStyle(section).effectBleed(),
-				document.effectiveSecondaryStyle(section).effectBleed());
+	bleed = std::max({bleed, document.effectiveStyle(section).effectBleed(),
+			  document.effectiveSecondaryStyle(section).effectBleed()});
 	/*
 	 * A bridge inked separately can carry a heavier shadow than either text beside it, and
 	 * it is counted for every section rather than only the bridged shapes: the override
@@ -1713,6 +1802,26 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	/* Resolved once here so nothing below can accidentally bypass a preset binding. */
 	const TextStyle &style = document.effectiveStyle(section);
 
+	const SectionPanels panels(painter, document, section, logos.stills);
+
+	/*
+	 * The section's own panel, which sits behind everything below and therefore has to go down
+	 * before any of it -- and needs the section's finished height, which is not known until all of
+	 * it has been laid out. So the section measures itself once and then draws.
+	 *
+	 * The recursion terminates on the painter: the measuring call passes none, and a call with no
+	 * painter paints no panel and so never measures again. It costs a second pass over one
+	 * section, and only over a section that has actually been given a panel.
+	 *
+	 * A sticky block is the exception. It leaves a hole in the strip rather than drawing into it,
+	 * so a panel painted here would be a card hanging in the roll where the block used to be; its
+	 * panel goes into the block's own picture instead, down in the branch below.
+	 */
+	if (section.type != SectionType::StickyBlock && panels.wants(BackgroundSlot::Section)) {
+		const int measured = layoutSection(nullptr, section, document, logos, bridges, dividers, top);
+		panels.paint(BackgroundSlot::Section, QRectF(boxX, top, boxWidth, measured));
+	}
+
 	int y = top + section.paddingTop;
 	const int contentTop = y;
 
@@ -1766,12 +1875,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			placement.holdForever = section.stickyHoldForever;
 			placement.release = section.stickyRelease;
 			/*
-			 * The backdrop's padding reaches outside the slot as surely as a shadow does,
-			 * so the picture is grown by whichever of the two asks for more.
+			 * A panel's outset reaches outside the slot as surely as a shadow does, so the
+			 * picture is grown by whichever of the two asks for more.
 			 */
-			const double backdropPadding =
-				section.stickyBackdrop ? std::max(0.0, section.stickyBackdropPadding) : 0.0;
-			const int margin = std::max(blockBleed, qCeil(backdropPadding));
+			const BackgroundPanel &blockPanel =
+				document.effectiveBackground(section, BackgroundSlot::Section);
+			const int margin = std::max(blockBleed, qCeil(blockPanel.bleed()));
 			placement.margin = margin;
 
 			QImage image(std::max(1, document.width), std::max(1, height + margin * 2),
@@ -1785,15 +1894,15 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			blockPainter.translate(0, -(y - margin));
 
 			/*
-			 * The panel goes down first, under everything the block holds: it is there to
-			 * keep the roll running past behind the block from reading through its
-			 * lettering, which is a job it can only do from underneath.
+			 * The panel goes down first, under everything the block holds: keeping the roll
+			 * running past behind the block from reading through its lettering is a job it
+			 * can only do from underneath. It is painted into the picture rather than carried
+			 * out as a colour to be drawn behind it, because a flat quad would mean a second
+			 * effect started inside the pass that is drawing the strip, and the panel is a
+			 * shape the rasteriser can fill for nothing at rebuild time.
 			 */
-			if (section.stickyBackdrop && section.stickyBackdropColor.alpha() > 0) {
-				blockPainter.fillRect(QRectF(0, y - backdropPadding, document.width,
-							     height + backdropPadding * 2.0),
-						      section.stickyBackdropColor);
-			}
+			paintBackgroundPanel(&blockPainter, blockPanel, QRectF(0, y, document.width, height),
+					     stills.stills);
 
 			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y, nullptr,
 					     nullptr);
@@ -1813,6 +1922,14 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		if (painter && divider.height > 0.0) {
 			const QRectF fillBox(contentX, y, contentWidth, divider.height);
+
+			/*
+			 * The divider's own panel, over the box its artwork occupies rather than the
+			 * section's -- which is the narrower and shorter of the two, since a divider set
+			 * narrower than its section sits centred in it. Down before the art, so a rule
+			 * drawn on a band reads as being on it.
+			 */
+			panels.paint(BackgroundSlot::Divider, fillBox);
 
 			/*
 			 * The artwork takes the bridge's ink override, because "colour the art
@@ -1853,6 +1970,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	case SectionType::Title:
 	case SectionType::Header: {
+		/* Measured before it is drawn only when there is a panel to go under it; see SectionPanels. */
+		if (panels.wants(BackgroundSlot::Title)) {
+			const int measured = layoutText(nullptr, section.text, style, contentX, y, contentWidth);
+			if (measured > 0)
+				panels.paint(BackgroundSlot::Title, QRectF(contentX, y, contentWidth, measured));
+		}
+
 		const int height = layoutText(painter, section.text, style, contentX, y, contentWidth);
 		record(LayoutBox::Kind::Text, QRectF(contentX, y, contentWidth, height));
 		y += height;
@@ -1868,7 +1992,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		 * whole rather than being written a second time and drifting from it.
 		 */
 		y += layoutTitleSubtitle(painter, section, style, document.effectiveSecondaryStyle(section),
-					 section.text, section.secondaryText, contentX, y, contentWidth, record);
+					 section.text, section.secondaryText, contentX, y, contentWidth, record,
+					 &panels);
 		break;
 	}
 
@@ -1878,6 +2003,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const QSize size = logoDrawSize(art.poster, section.logo, contentWidth);
 		const int x = contentX + qRound(alignOffset(style.align, contentWidth, size.width()));
 		const QRect box(QPoint(x, y), size);
+		/*
+		 * Behind the artwork's own box rather than the column it was placed in, so a card sits
+		 * under the wordmark rather than running the width of the section. The outset is what
+		 * takes it wider when that is what is wanted.
+		 */
+		panels.paint(BackgroundSlot::Logo, QRectF(box));
 		paintLogo(painter, art, box, style, section.logo.playback);
 		recordLogo(art, section.logo, box, style);
 		y += size.height();
@@ -1922,12 +2053,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		/* The logo and the text block are centred against each other within the row. */
 		const QRect logoBox(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize);
+		panels.paint(BackgroundSlot::Logo, QRectF(logoBox));
 		paintLogo(painter, art, logoBox, style, section.logo.playback);
 		recordLogo(art, section.logo, logoBox, style);
 
 		/* Records the box of each line it actually draws, so the overlay is the stack's own. */
 		layoutTitleSubtitle(painter, section, style, subtitleStyle, section.text, subtitle, row.textX, textTop,
-				    row.textWidth, record);
+				    row.textWidth, record, &panels);
 
 		if (section.logoPlacement == LogoPlacement::Bridged) {
 			/*
@@ -1954,6 +2086,20 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 							 : firstBaseline(*top.text, *top.style, row.textWidth);
 			const qreal baseline = textTop + textAscent;
 			const qreal bridgeTop = baseline - bridge.ascent(section);
+
+			/*
+			 * The leader's own panel. Measured first for the same reason a line of text is:
+			 * how tall a bridge draws depends on what it is made of.
+			 */
+			if (panels.wants(BackgroundSlot::Bridge)) {
+				const int measured = paintBridge(nullptr, bridge, section, bridgeStyle, bridges,
+								 row.bridgeX, bridgeTop, row.bridgeWidth);
+				if (measured > 0) {
+					panels.paint(BackgroundSlot::Bridge,
+						     QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, measured));
+				}
+			}
+
 			const int bridgeHeight = paintBridge(painter, bridge, section, bridgeStyle, bridges,
 							     row.bridgeX, bridgeTop, row.bridgeWidth);
 			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
@@ -1983,7 +2129,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const TextStyle bridgeStyle = document.effectiveBridgeStyle(section);
 		const qreal naturalBridge = naturalBridgeWidth(section, bridgeStyle, bridges);
 
-		for (const Entry &entry : section.entries) {
+		for (int index = 0; index < section.entries.size(); ++index) {
+			const Entry &entry = section.entries.at(index);
 			const BridgedSide left{&entry.text, section.rowSubtitles ? &entry.subtitle : &noSubtitle,
 					       &style, &leftSubtitleStyle};
 			const BridgedSide right{&entry.secondaryText,
@@ -2021,6 +2168,80 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const qreal bridgeTop = y + baseline - bridgeAscent;
 
 			/*
+			 * How tall the row comes to, given what its three parts came to. Written once
+			 * because the row's own panel needs the answer *before* anything is drawn, and a
+			 * second copy of it would be a panel that fits the row until one of the three
+			 * grows.
+			 */
+			const auto rowExtent = [&](int leftHeight, int rightHeight, int bridgeHeight) {
+				int rowHeight = 1;
+				const auto extend = [&rowHeight, y](qreal partTop, int height) {
+					/* An empty part has no height and must not push the row down. */
+					if (height > 0)
+						rowHeight = std::max(rowHeight, qCeil(partTop - y) + height);
+				};
+
+				extend(leftTop, leftHeight);
+				extend(rightTop, rightHeight);
+				extend(bridgeTop, bridgeHeight);
+				return rowHeight;
+			};
+
+			/*
+			 * The row's panel spans the section's full width rather than hugging the two
+			 * texts: what a striped list is striping is the row, and a band that stopped at
+			 * the ink would leave a ragged edge down the middle of the leader.
+			 */
+			const BackgroundSlot entrySlot = panels.entrySlot(index);
+			if (panels.wants(entrySlot)) {
+				const int measured = rowExtent(
+					layoutTitleSubtitle(nullptr, section, *left.style, *left.subtitleStyle,
+							    *left.text, *left.subtitle, row.leftX, leftTop,
+							    row.leftWidth, kIgnoreBoxes),
+					layoutTitleSubtitle(nullptr, section, *right.style, *right.subtitleStyle,
+							    *right.text, *right.subtitle, row.rightX, rightTop,
+							    row.rightWidth, kIgnoreBoxes),
+					paintBridge(nullptr, bridge, section, bridgeStyle, bridges, row.bridgeX,
+						    bridgeTop, row.bridgeWidth));
+
+				panels.paint(entrySlot,
+					     QRectF(indentedX(section, entry, contentX), y, contentWidth, measured));
+			}
+
+			if (panels.wants(BackgroundSlot::Bridge)) {
+				const int measured = paintBridge(nullptr, bridge, section, bridgeStyle, bridges,
+								 row.bridgeX, bridgeTop, row.bridgeWidth);
+				if (measured > 0) {
+					panels.paint(BackgroundSlot::Bridge,
+						     QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, measured));
+				}
+			}
+
+			/*
+			 * Here the two text slots are the row's two *columns*, not the two lines of one
+			 * of them -- which is exactly how the two styles map, `style` being the left side
+			 * and `secondaryStyle` the right. So each side's panel goes behind that side's
+			 * whole block, subtitle and all, and the pair helper is handed no panels of its
+			 * own: it would otherwise paint the Title slot behind the left column's top line
+			 * and again behind the right column's, which is one slot claiming two places.
+			 */
+			const auto panelBehindSide = [&](BackgroundSlot slot, const BridgedSide &side, qreal sideX,
+							 qreal sideTop, qreal sideWidth) {
+				if (!panels.wants(slot))
+					return;
+
+				const int measured = layoutTitleSubtitle(nullptr, section, *side.style,
+									 *side.subtitleStyle, *side.text,
+									 *side.subtitle, sideX, sideTop, sideWidth,
+									 kIgnoreBoxes);
+				if (measured > 0)
+					panels.paint(slot, QRectF(sideX, sideTop, sideWidth, measured));
+			};
+
+			panelBehindSide(BackgroundSlot::Title, left, row.leftX, leftTop, row.leftWidth);
+			panelBehindSide(BackgroundSlot::Subtitle, right, row.rightX, rightTop, row.rightWidth);
+
+			/*
 			 * Both sides go through the pair helper whether or not they carry a subtitle,
 			 * which is what records their text boxes as well as drawing them.
 			 */
@@ -2035,18 +2256,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
 
-			int rowHeight = 1;
-			const auto extend = [&rowHeight, y](qreal top, int height) {
-				/* An empty part has no height and must not push the row down. */
-				if (height > 0)
-					rowHeight = std::max(rowHeight, qCeil(top - y) + height);
-			};
-
-			extend(leftTop, leftHeight);
-			extend(rightTop, rightHeight);
-			extend(bridgeTop, bridgeHeight);
-
-			y += rowHeight + section.entryGap;
+			y += rowExtent(leftHeight, rightHeight, bridgeHeight) + section.entryGap;
 		}
 
 		if (!section.entries.isEmpty())
@@ -2055,8 +2265,17 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	}
 
 	case SectionType::TextList: {
-		for (const Entry &entry : section.entries) {
+		for (int index = 0; index < section.entries.size(); ++index) {
+			const Entry &entry = section.entries.at(index);
 			const qreal x = indentedX(section, entry, contentX);
+
+			const BackgroundSlot entrySlot = panels.entrySlot(index);
+			if (panels.wants(entrySlot)) {
+				const int measured = layoutText(nullptr, entry.text, style, x, y, contentWidth);
+				if (measured > 0)
+					panels.paint(entrySlot, QRectF(x, y, contentWidth, measured));
+			}
+
 			const int height = layoutText(painter, entry.text, style, x, y, contentWidth);
 			record(LayoutBox::Kind::Text, QRectF(x, y, contentWidth, height));
 			y += height;
@@ -2070,10 +2289,25 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	case SectionType::TitleSubtitleList: {
 		const TextStyle &subtitleStyle = document.effectiveSecondaryStyle(section);
 
-		for (const Entry &entry : section.entries) {
+		for (int index = 0; index < section.entries.size(); ++index) {
+			const Entry &entry = section.entries.at(index);
+			const qreal x = indentedX(section, entry, contentX);
+
+			/*
+			 * The entry's panel goes behind the whole pair; the Title and Subtitle panels go
+			 * behind its two lines, which the pair helper puts down as it places each of them.
+			 */
+			const BackgroundSlot entrySlot = panels.entrySlot(index);
+			if (panels.wants(entrySlot)) {
+				const int measured = layoutTitleSubtitle(nullptr, section, style, subtitleStyle,
+									 entry.text, entry.secondaryText, x, y,
+									 contentWidth, kIgnoreBoxes);
+				if (measured > 0)
+					panels.paint(entrySlot, QRectF(x, y, contentWidth, measured));
+			}
+
 			y += layoutTitleSubtitle(painter, section, style, subtitleStyle, entry.text,
-						 entry.secondaryText, indentedX(section, entry, contentX), y,
-						 contentWidth, record);
+						 entry.secondaryText, x, y, contentWidth, record, &panels);
 			y += section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -2082,12 +2316,23 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	}
 
 	case SectionType::LogoList: {
-		for (const Entry &entry : section.entries) {
+		for (int index = 0; index < section.entries.size(); ++index) {
+			const Entry &entry = section.entries.at(index);
 			const LogoArt art = logos.resolve(entry.logo);
 			const QSize size = logoDrawSize(art.poster, entry.logo, contentWidth);
 			const int x = qRound(indentedX(section, entry, contentX) +
 					     alignOffset(style.align, contentWidth, size.width()));
 			const QRect box(QPoint(x, y), size);
+
+			/*
+			 * Two panels that mean two different things: the entry's runs the width of the
+			 * list, so a striped run of sponsors reads as rows, while the logo's hugs the
+			 * artwork, which is the card behind one mark.
+			 */
+			panels.paint(panels.entrySlot(index),
+				     QRectF(indentedX(section, entry, contentX), y, contentWidth, size.height()));
+			panels.paint(BackgroundSlot::Logo, QRectF(box));
+
 			paintLogo(painter, art, box, style, entry.logo.playback);
 			recordLogo(art, entry.logo, box, style);
 			y += size.height() + section.entryGap;
@@ -2111,22 +2356,77 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const bool subtitleMode = sectionUsesSubtitles(section.type);
 		const TextStyle &subtitleStyle = document.effectiveSecondaryStyle(section);
 
+		/*
+		 * Across-fill walks the row before wrapping; the default down-fill completes each column
+		 * before moving right, which is what reads naturally in a long alphabetised list.
+		 */
+		const auto indexAt = [&](int row, int column) {
+			return section.fillAcross ? row * columns + column : column * rows + row;
+		};
+
+		const auto cellX = [&](const Entry &entry, int column) {
+			return qRound(indentedX(section, entry, contentX + column * (columnWidth + section.columnGap)));
+		};
+
+		/* What one cell comes to, drawing nothing. Only a panelled row ever asks. */
+		const auto measureCell = [&](const Entry &entry, int x, int top) {
+			if (logoMode) {
+				const LogoArt art = logos.resolve(entry.logo);
+				return logoDrawSize(art.poster, entry.logo, columnWidth).height();
+			}
+			if (subtitleMode) {
+				return layoutTitleSubtitle(nullptr, section, style, subtitleStyle, entry.text,
+							   entry.secondaryText, x, top, columnWidth, kIgnoreBoxes);
+			}
+			return layoutText(nullptr, entry.text, style, x, top, columnWidth);
+		};
+
 		for (int row = 0; row < rows; ++row) {
 			int rowHeight = 0;
 
+			/*
+			 * A cell's panel is the height of its *row* rather than of its own content, so the
+			 * cards across a row line up instead of stepping with whichever name happened to
+			 * wrap. That means the row has to be measured before any of it is drawn -- but only
+			 * when something in it will actually paint, which is what keeps an unpanelled grid
+			 * laying its text out exactly once.
+			 */
+			bool rowPanelled = false;
+			for (int column = 0; column < columns && !rowPanelled; ++column) {
+				const int index = indexAt(row, column);
+				if (index < count && panels.wants(panels.entrySlot(index)))
+					rowPanelled = true;
+			}
+
+			if (rowPanelled) {
+				int measured = 0;
+				for (int column = 0; column < columns; ++column) {
+					const int index = indexAt(row, column);
+					if (index >= count)
+						continue;
+
+					const Entry &entry = section.entries.at(index);
+					measured = std::max(measured, measureCell(entry, cellX(entry, column), y));
+				}
+
+				for (int column = 0; column < columns; ++column) {
+					const int index = indexAt(row, column);
+					if (index >= count)
+						continue;
+
+					const Entry &entry = section.entries.at(index);
+					panels.paint(panels.entrySlot(index),
+						     QRectF(cellX(entry, column), y, columnWidth, measured));
+				}
+			}
+
 			for (int column = 0; column < columns; ++column) {
-				/*
-				 * Across-fill walks the row before wrapping; the default down-fill
-				 * completes each column before moving right, which is what reads
-				 * naturally in a long alphabetised list.
-				 */
-				const int index = section.fillAcross ? row * columns + column : column * rows + row;
+				const int index = indexAt(row, column);
 				if (index >= count)
 					continue;
 
 				const Entry &entry = section.entries.at(index);
-				const int x = qRound(indentedX(section, entry,
-							       contentX + column * (columnWidth + section.columnGap)));
+				const int x = cellX(entry, column);
 
 				if (logoMode) {
 					const LogoArt art = logos.resolve(entry.logo);
@@ -2134,6 +2434,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					const int logoX =
 						x + qRound(alignOffset(style.align, columnWidth, size.width()));
 					const QRect box(QPoint(logoX, y), size);
+					panels.paint(BackgroundSlot::Logo, QRectF(box));
 					paintLogo(painter, art, box, style, entry.logo.playback);
 					recordLogo(art, entry.logo, box, style);
 					rowHeight = std::max(rowHeight, size.height());
@@ -2145,7 +2446,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					 */
 					const int height = layoutTitleSubtitle(painter, section, style, subtitleStyle,
 									       entry.text, entry.secondaryText, x, y,
-									       columnWidth, record);
+									       columnWidth, record, &panels);
 					rowHeight = std::max(rowHeight, height);
 				} else {
 					const int height = layoutText(painter, entry.text, style, x, y, columnWidth);
@@ -2257,28 +2558,12 @@ QBrush textFillBrush(const TextStyle &style, const QRectF &box)
 	if (style.fill == TextFill::Solid || box.isEmpty())
 		return QBrush(style.color);
 
-	QGradientStops stops;
-	for (const QPair<qreal, QColor> &stop : style.gradient.resolvedStops())
-		stops.append(QGradientStop(stop.first, stop.second));
-
-	if (style.fill == TextFill::RadialGradient) {
-		/* Half the diagonal, so the last stop lands on the corners rather than inside them. */
-		const qreal radius = std::hypot(box.width(), box.height()) / 2.0;
-		QRadialGradient gradient(box.center(), std::max(radius, 1.0));
-		gradient.setStops(stops);
-		return QBrush(gradient);
-	}
-
-	/* Clockwise from straight down: 0 runs top to bottom, 90 left to right. */
-	const qreal radians = qDegreesToRadians(style.gradient.angle);
-	const QPointF axis(std::sin(radians), std::cos(radians));
-	const QPointF centre = box.center();
-	/* The box's own extent along that axis, so the stops span exactly the block. */
-	const qreal half = (std::abs(axis.x()) * box.width() + std::abs(axis.y()) * box.height()) / 2.0;
-
-	QLinearGradient gradient(centre - axis * half, centre + axis * half);
-	gradient.setStops(stops);
-	return QBrush(gradient);
+	/*
+	 * The mapping itself lives with the panel painter, which sweeps a gradient over a rectangle
+	 * for exactly the same reason this does. One copy means a panel and the heading in front of it
+	 * carry the same sweep at the same angle rather than two that agree until one is edited.
+	 */
+	return gradientBrush(style.gradient, style.fill == TextFill::RadialGradient, box);
 }
 
 QImage LogoCache::get(const QString &path, int maxHeight)

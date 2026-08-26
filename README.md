@@ -32,6 +32,10 @@ columns — which between them cover every shape in the table below:
 | Spacer | A blank run, for pacing |
 | Sticky Ending Block | Sections that hold still on the frame while the rest of the roll scrolls past behind them — a closing card that stays up, and can be the end of the roll |
 
+Any section can carry a **background** — a colour, a gradient or an image, with rounded corners and
+a border — behind the whole section or behind the individual things it draws. See *Backgrounds*
+below.
+
 A **title and subtitle** list is the other way to set what a bridged row sets on one line: the
 position on top and the name under it, each with its own font, size, weight, colour and
 alignment, so the pair reads as one item. The gap inside a pair is set separately from the gap
@@ -113,6 +117,22 @@ text rather than across the whole roll, so every name in a list gets the same sw
 of a different slice of one long one, and an outline or shadow never moves anything: it
 paints outside the text without changing where a line sits or how long the roll runs.
 
+**Backgrounds** put a panel behind a section — a flat colour, a linear or radial gradient, or an
+image fitted by cover, contain, stretch or tile — with a corner radius on each of its four corners
+and an optional border. A panel can sit behind the whole section or behind the individual things it
+draws: the title, the subtitle, each logo, each row of a list, the leader joining a bridged row, or
+a divider's artwork. A card behind a wordmark, a band running the full width of the frame behind a
+header, a rounded chip behind a name. Give a list a panel for its rows and a second one for every
+*other* row and it stripes; leave that alternate empty and every other row is bare instead.
+
+The room inside a panel is the padding the section already has, and the **outset** is what takes it
+further out — per side, so a band can run to one edge of the frame and stop short of the other. A
+panel is painted, never laid out: switching one on, at any size, cannot move a section, change the
+height of the roll or alter how long it runs, which means a roll can be given cards and bands after
+it has been timed. Panels save as named presets and publish to the same machine-wide library the
+text styles do, in a collection of their own — so a background called `Card` and a heading style
+called `Card` are two different things.
+
 Any style can instead be saved as a named **preset**: bind
 every header to one and editing it once restyles all of them. Presets can also be published to a
 **style library** shared by every roll on the machine — every source, every scene collection,
@@ -154,8 +174,9 @@ the rest of the roll. You pick which part of the block is pinned —
 its top edge, its middle, its bottom — and where down the frame that lands, so "centred in the
 frame" and "top edge a third of the way down" are both one setting rather than a number to work
 out. It can hold for a set time or until something else stops the roll, and when the hold ends it
-either stays put and ends the roll, carries on up and off the top, or does both at once. Turn on
-its panel and the credits running past underneath will not read through its lettering.
+either stays put and ends the roll, carries on up and off the top, or does both at once. Give it a
+background and the credits running past underneath will not read through its lettering — the same
+panel every other section carries, so a closing card can have rounded corners and a border on it.
 
 It holds whole sections, so a closing card is a title, a divider and a logo the way anything else
 is; drag them under the block in the section list and they are inside it. Nothing above or below

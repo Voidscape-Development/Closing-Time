@@ -1091,20 +1091,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	stickyForeverWarning->setWordWrap(true);
 	addRow(QString(), stickyForeverWarning);
 
-	stickyBackdrop = new QCheckBox(moduleText("Designer.StickyBackdrop"), this);
-	stickyBackdrop->setToolTip(moduleText("Designer.StickyBackdrop.Tip"));
-	addRow(QString(), stickyBackdrop);
-
-	stickyBackdropColour = new ColourButton(this);
-	stickyBackdropColour->setDialogTitle(moduleText("Designer.StickyBackdropColor"));
-	addRow(moduleText("Designer.StickyBackdropColor"), stickyBackdropColour);
-
-	stickyBackdropPadding = new QSpinBox(this);
-	stickyBackdropPadding->setRange(0, 2048);
-	stickyBackdropPadding->setSuffix(QStringLiteral(" px"));
-	stickyBackdropPadding->setToolTip(moduleText("Designer.StickyBackdropPadding.Tip"));
-	addRow(moduleText("Designer.StickyBackdropPadding"), stickyBackdropPadding);
-
 	spacerHeight = new QSpinBox(this);
 	spacerHeight->setRange(0, 20000);
 	spacerHeight->setSuffix(QStringLiteral(" px"));
@@ -1202,6 +1188,40 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup->content());
 	rowSecondarySubtitleStyleGroup->addWidget(rowSecondarySubtitleStyle);
 	outer->addWidget(rowSecondarySubtitleStyleGroup);
+
+	/*
+	 * A folding group per background slot, built from the slot table so a slot added to the model
+	 * turns up here with nothing to write. They sit after the styles because a panel is the thing
+	 * behind the words: the reader who has come this far down the pane has already set them.
+	 */
+	for (const BackgroundSlot slot : allBackgroundSlots()) {
+		const QString title = moduleText(QStringLiteral("Designer.Background.Slot.%1")
+							 .arg(QString::fromUtf8(backgroundSlotId(slot)))
+							 .toUtf8()
+							 .constData());
+
+		auto *group = new CollapsibleGroup(title, this);
+		/*
+		 * Checkable, and for every slot rather than only the one that needs it. The checkbox says
+		 * whether the slot carries a panel at all, which is a different question from what the
+		 * panel is filled with -- and for an alternate entry the two really do differ: a list that
+		 * alternates onto a panel filled with nothing is how every other row is left bare, where a
+		 * list with no alternate draws the same panel behind every row. Making all eight read the
+		 * same way costs nothing and means one rule instead of a footnote on one group.
+		 */
+		group->setCheckable(true);
+		group->setHeaderToolTip(moduleText(QStringLiteral("Designer.Background.Slot.%1.Tip")
+							   .arg(QString::fromUtf8(backgroundSlotId(slot)))
+							   .toUtf8()
+							   .constData()));
+
+		auto *editor = new BackgroundEditor(group->content());
+		group->addWidget(editor);
+		outer->addWidget(group);
+
+		backgroundGroups.insert(slot, group);
+		backgroundEditors.insert(slot, editor);
+	}
 
 	entriesGroup = new QGroupBox(moduleText("Designer.Entries"), this);
 	auto *entriesLayout = new QVBoxLayout(entriesGroup);
@@ -1363,7 +1383,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	for (QWidget *field : std::initializer_list<QWidget *>{
 		     marginX, logoAnimatedShadow, bridgeOffset, bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
 		     bridgeSizing, dividerPieceGap, dividerRuleGap, dividerRuleInset, dividerTint, bridgeTint,
-		     subtitleOrder, fillOrder, stickyOffset, stickyBackdropPadding, indentStep})
+		     subtitleOrder, fillOrder, stickyOffset, indentStep})
 		markAdvanced(field);
 
 	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
@@ -1405,17 +1425,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(stickyOffset, &QSpinBox::valueChanged, this, notify);
 	connect(stickyHold, &QDoubleSpinBox::valueChanged, this, notify);
 	connect(stickyRelease, &QComboBox::currentIndexChanged, this, notify);
-	connect(stickyBackdropColour, &ColourButton::colourChanged, this, notify);
-	connect(stickyBackdropPadding, &QSpinBox::valueChanged, this, notify);
-	/* Both of these decide what else on the form applies, so they re-run the visibility pass. */
-	for (QCheckBox *box : {stickyHoldForever, stickyBackdrop}) {
-		connect(box, &QCheckBox::toggled, this, [this] {
-			if (loading)
-				return;
-			applyTypeVisibility(composedType());
-			emitChanged();
-		});
-	}
+	/* This decides what else on the form applies, so it re-runs the visibility pass. */
+	connect(stickyHoldForever, &QCheckBox::toggled, this, [this] {
+		if (loading)
+			return;
+		applyTypeVisibility(composedType());
+		emitChanged();
+	});
 	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
@@ -1473,6 +1489,31 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(bridgeStyle, &StyleEditor::changed, this, notify);
 	connect(rowSubtitleStyle, &StyleEditor::changed, this, notify);
 	connect(rowSecondarySubtitleStyle, &StyleEditor::changed, this, notify);
+
+	for (BackgroundEditor *editor : backgroundEditors)
+		connect(editor, &BackgroundEditor::changed, this, notify);
+
+	/* Switching a slot on or off is a change to the roll; folding one away is not. */
+	for (CollapsibleGroup *group : backgroundGroups)
+		connect(group, &CollapsibleGroup::toggled, this, notify);
+
+	/*
+	 * The panels' preset edits go up the same way the styles' do, through a marker of their own so
+	 * the round trip leaves the editor being typed into alone.
+	 */
+	for (BackgroundEditor *editor : backgroundEditors) {
+		connect(editor, &BackgroundEditor::presetSaveRequested, this,
+			[this, editor](const QString &name, const BackgroundPanel &panel) {
+				backgroundPresetOrigin = editor;
+				emit backgroundPresetSaveRequested(name, panel);
+				backgroundPresetOrigin = nullptr;
+			});
+		connect(editor, &BackgroundEditor::presetDeleteRequested, this, [this, editor](const QString &name) {
+			backgroundPresetOrigin = editor;
+			emit backgroundPresetDeleteRequested(name);
+			backgroundPresetOrigin = nullptr;
+		});
+	}
 
 	/*
 	 * Preset edits are routed up to the designer, which owns the document the presets live
@@ -1589,9 +1630,6 @@ void SectionEditor::setSection(const Section &source)
 	stickyHold->setValue(source.stickyHold);
 	stickyHoldForever->setChecked(source.stickyHoldForever);
 	selectByData(stickyRelease, static_cast<int>(source.stickyRelease));
-	stickyBackdrop->setChecked(source.stickyBackdrop);
-	stickyBackdropColour->setColour(source.stickyBackdropColor);
-	stickyBackdropPadding->setValue(qRound(source.stickyBackdropPadding));
 
 	paddingTop->setValue(source.paddingTop);
 	paddingBottom->setValue(source.paddingBottom);
@@ -1613,6 +1651,14 @@ void SectionEditor::setSection(const Section &source)
 	rowSecondarySubtitleStyle->setPresets(presets, source.rowSecondarySubtitleStylePresetName);
 	secondaryGroup->setChecked(source.useSecondaryStyle);
 	bridgeStyleGroup->setChecked(source.useBridgeStyle);
+
+	for (auto it = backgroundEditors.cbegin(); it != backgroundEditors.cend(); ++it) {
+		const BackgroundSlot slot = it.key();
+		it.value()->setPanel(source.background(slot));
+		/* After setPanel, so a bound preset's values win over the slot's own copy. */
+		it.value()->setPresets(backgroundPresets, source.backgroundPresetName(slot));
+		backgroundGroups.value(slot)->setChecked(source.hasBackground(slot));
+	}
 
 	/*
 	 * The centre table is filled before the visibility pass rather than after it, because that
@@ -1693,9 +1739,6 @@ Section SectionEditor::section() const
 	result.stickyHold = stickyHold->value();
 	result.stickyHoldForever = stickyHoldForever->isChecked();
 	result.stickyRelease = static_cast<StickyRelease>(stickyRelease->currentData().toInt());
-	result.stickyBackdrop = stickyBackdrop->isChecked();
-	result.stickyBackdropColor = stickyBackdropColour->colour();
-	result.stickyBackdropPadding = stickyBackdropPadding->value();
 	result.paddingTop = paddingTop->value();
 	result.paddingBottom = paddingBottom->value();
 	result.marginX = marginX->value();
@@ -1714,6 +1757,23 @@ Section SectionEditor::section() const
 	result.bridgeStylePresetName = bridgeStyle->presetName();
 	result.rowSubtitleStylePresetName = rowSubtitleStyle->presetName();
 	result.rowSecondarySubtitleStylePresetName = rowSecondarySubtitleStyle->presetName();
+
+	/*
+	 * A slot switched off is removed rather than stored empty, which is what keeps a section that
+	 * has never been given a panel writing nothing into the scene collection -- and what an
+	 * alternate entry reads to decide whether the list alternates at all.
+	 */
+	for (auto it = backgroundEditors.cbegin(); it != backgroundEditors.cend(); ++it) {
+		const BackgroundSlot slot = it.key();
+		if (!backgroundGroups.value(slot)->isChecked()) {
+			result.clearBackground(slot);
+			continue;
+		}
+
+		SectionBackground &entry = result.backgroundEntry(slot);
+		entry.panel = it.value()->panel();
+		entry.presetName = it.value()->presetName();
+	}
 
 	readEntriesFromTable(&result);
 	for (int index = 0; index < kPieceSlotCount; ++index)
@@ -1735,6 +1795,14 @@ void SectionEditor::setPresets(const QVector<StylePreset> &newPresets)
 	for (StyleEditor *editor :
 	     {primaryStyle, secondaryStyle, bridgeStyle, rowSubtitleStyle, rowSecondarySubtitleStyle})
 		editor->setPresets(presets, editor->presetName(), editor != presetOrigin);
+}
+
+void SectionEditor::setBackgroundPresets(const QVector<BackgroundPreset> &newPresets)
+{
+	backgroundPresets = newPresets;
+
+	for (BackgroundEditor *editor : backgroundEditors)
+		editor->setPresets(backgroundPresets, editor->presetName(), editor != backgroundPresetOrigin);
 }
 
 namespace {
@@ -2075,7 +2143,6 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	const bool sticky = type == SectionType::StickyBlock;
 	const auto release = static_cast<StickyRelease>(stickyRelease->currentData().toInt());
-	const bool backdrop = sticky && stickyBackdrop->isChecked();
 
 	setRowVisible(stickyAnchor, sticky);
 	setRowVisible(stickyCanvasPosition, sticky);
@@ -2085,9 +2152,6 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(stickyRelease, sticky);
 	setRowVisible(stickyForeverWarning,
 		      sticky && stickyHoldForever->isChecked() && stickyReleaseEndsAtHold(release));
-	setRowVisible(stickyBackdrop, sticky);
-	setRowVisible(stickyBackdropColour, backdrop);
-	setRowVisible(stickyBackdropPadding, backdrop);
 
 	/*
 	 * A divider has a style even though it carries no section text: the artwork is inked from
@@ -2115,6 +2179,15 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	bridgeStyleGroup->setVisible((usesBridge && !(artFromFile && !bridgeTint->isChecked())) || inkableDivider);
 	bridgeStyleGroup->setTitle(divider ? moduleText("Designer.DividerArtStyle")
 					   : moduleText("Designer.BridgeStyle"));
+
+	/*
+	 * Which panels a type has anything to sit behind is a property of the type table, so it is
+	 * asked of the model rather than rebuilt out of the predicates already gathered here -- one
+	 * answer, in one place, that a new section type comes with.
+	 */
+	const QVector<BackgroundSlot> panelSlots = backgroundSlotsFor(type);
+	for (auto it = backgroundGroups.cbegin(); it != backgroundGroups.cend(); ++it)
+		it.value()->setVisible(panelSlots.contains(it.key()));
 
 	entriesGroup->setVisible(hasEntries);
 	/* Nothing for a file picker to fill in when the entries are lines of text. */

@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWidget>
 
 #include "model/CreditsModel.hpp"
+#include "ui/BackgroundControls.hpp"
 #include "ui/CollapsibleGroup.hpp"
 #include "ui/FontPickerDialog.hpp"
 #include "ui/StyleControls.hpp"
@@ -192,8 +193,10 @@ public:
 	void setSection(const Section &section);
 	Section section() const;
 
-	/* Republishes the document's preset list into both style editors. */
+	/* Republishes the document's preset list into every style editor. */
 	void setPresets(const QVector<StylePreset> &presets);
+	/* And the same for the panels, into every background editor. */
+	void setBackgroundPresets(const QVector<BackgroundPreset> &presets);
 
 signals:
 	/* Emitted whenever the edited section changes in a way that affects the render. */
@@ -202,6 +205,10 @@ signals:
 	/* Forwarded from whichever StyleEditor raised them; see StyleEditor. */
 	void presetSaveRequested(const QString &name, const TextStyle &style);
 	void presetDeleteRequested(const QString &name);
+
+	/* And from whichever BackgroundEditor did; see BackgroundEditor. */
+	void backgroundPresetSaveRequested(const QString &name, const BackgroundPanel &panel);
+	void backgroundPresetDeleteRequested(const QString &name);
 
 private:
 	void applyTypeVisibility(SectionType type);
@@ -427,9 +434,6 @@ private:
 	QCheckBox *stickyHoldForever = nullptr;
 	QComboBox *stickyRelease = nullptr;
 	QLabel *stickyForeverWarning = nullptr;
-	QCheckBox *stickyBackdrop = nullptr;
-	ColourButton *stickyBackdropColour = nullptr;
-	QSpinBox *stickyBackdropPadding = nullptr;
 
 	/*
 	 * The style groups, which fold away like the three above them. The two that a section can
@@ -449,6 +453,15 @@ private:
 	CollapsibleGroup *rowSecondarySubtitleStyleGroup = nullptr;
 	StyleEditor *rowSecondarySubtitleStyle = nullptr;
 
+	/*
+	 * One folding group per background slot, built from the slot table rather than named one at a
+	 * time: eight slots carrying the same eleven controls is a loop, and writing it out eight
+	 * times would be eight places for a new panel setting to be forgotten. Which of them are on
+	 * screen follows `backgroundSlotsFor` -- see applyTypeVisibility.
+	 */
+	QHash<BackgroundSlot, CollapsibleGroup *> backgroundGroups;
+	QHash<BackgroundSlot, BackgroundEditor *> backgroundEditors;
+
 	QGroupBox *entriesGroup = nullptr;
 	QTableWidget *entryTable = nullptr;
 	/* Hidden for the entry types that have no logo path to set. */
@@ -463,11 +476,13 @@ private:
 	int trailingStretchIndex = -1;
 
 	QVector<StylePreset> presets;
+	QVector<BackgroundPreset> backgroundPresets;
 	/*
 	 * Set only for the duration of a forwarded preset signal, so the round trip back
 	 * through setPresets() does not rewrite the fields of the editor being typed into.
 	 */
 	StyleEditor *presetOrigin = nullptr;
+	BackgroundEditor *backgroundPresetOrigin = nullptr;
 
 	Section current;
 	/* The type the entry table's columns currently stand for; see relayoutEntryTable. */

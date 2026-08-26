@@ -222,6 +222,58 @@ bool sectionUsesSecondaryText(SectionType type)
 	return type == SectionType::Bridged || sectionUsesSubtitles(type);
 }
 
+QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
+{
+	/*
+	 * Every type has a section to sit behind, including the two that draw no content of their
+	 * own: a panel behind a Spacer is a band of colour between two runs of credits, which is a
+	 * design rather than an accident of the slot being offered.
+	 */
+	QVector<BackgroundSlot> used{BackgroundSlot::Section};
+
+	/*
+	 * A block is the exception, and for the same reason it takes no section box: what it holds
+	 * are whole sections, each carrying every slot below in its own right. Offering them here
+	 * would be a second panel for each of them with no rule for which won.
+	 */
+	if (type == SectionType::StickyBlock)
+		return used;
+
+	if (type == SectionType::SectionDivider)
+		used.append(BackgroundSlot::Divider);
+
+	if (sectionUsesEntries(type)) {
+		used.append(BackgroundSlot::Entry);
+		used.append(BackgroundSlot::EntryAlt);
+	}
+
+	/*
+	 * The text slots are the *lines within* a piece of content, which is why a list offers them
+	 * only when its entries hold a pair. A plain Text List's line and its entry are one rectangle,
+	 * and offering two names for it would be two settings that draw over each other with no rule
+	 * for which won -- so a single-line list is panelled by its entry slot and that is all.
+	 */
+	if (sectionUsesText(type) && (!sectionUsesEntries(type) || sectionUsesSecondaryText(type))) {
+		used.append(BackgroundSlot::Title);
+		if (sectionUsesSecondaryText(type))
+			used.append(BackgroundSlot::Subtitle);
+	}
+
+	if (sectionUsesLogos(type))
+		used.append(BackgroundSlot::Logo);
+
+	/*
+	 * A leader is drawn by a Bridged section and by a heading whose logo is bridged across to it,
+	 * and the second of those is a placement rather than a type -- so the slot is offered to every
+	 * logo-carrying heading rather than only to the ones currently set that way. Offering it and
+	 * drawing nothing is the same bargain every other setting here strikes when its switch is off.
+	 */
+	if (type == SectionType::Bridged || sectionUsesLogos(type))
+		used.append(BackgroundSlot::Bridge);
+
+	return used;
+}
+
 const char *dividerPieceKindId(DividerPiece::Kind kind)
 {
 	for (const auto &info : kDividerPieceKinds) {
@@ -585,66 +637,6 @@ TextFill textFillFromId(const char *id, TextFill fallback)
 	return fallback;
 }
 
-QVector<QPair<qreal, QColor>> GradientSpec::resolvedStops() const
-{
-	QVector<QPair<qreal, QColor>> resolved;
-	resolved.reserve(std::max<qsizetype>(2, stops.size()));
-
-	for (const GradientStop &stop : stops)
-		resolved.append({std::clamp(stop.position, 0.0, 1.0), stop.color});
-
-	std::stable_sort(resolved.begin(), resolved.end(),
-			 [](const QPair<qreal, QColor> &a, const QPair<qreal, QColor> &b) {
-				 return a.first < b.first;
-			 });
-
-	/*
-	 * QGradient paints black wherever it has no stop to interpolate from, so a spec that
-	 * has been edited down to one stop -- or none -- is padded out rather than allowed to
-	 * blank the text out from under the user mid-edit.
-	 */
-	if (resolved.isEmpty())
-		resolved.append({0.0, QColor(255, 255, 255)});
-	if (resolved.size() == 1)
-		resolved.append({1.0, resolved.first().second});
-
-	return resolved;
-}
-
-void GradientSpec::save(obs_data_t *data) const
-{
-	obs_data_set_double(data, "angle", angle);
-
-	saveArray(
-		data, "stops", stops.size(),
-		[](obs_data_t *item, int index, const void *context) {
-			const GradientStop &stop = static_cast<const QVector<GradientStop> *>(context)->at(index);
-			obs_data_set_double(item, "position", stop.position);
-			obs_data_set_int(item, "color", static_cast<long long>(stop.color.rgba()));
-		},
-		&stops);
-}
-
-void GradientSpec::load(obs_data_t *data)
-{
-	angle = obs_data_get_double(data, "angle");
-
-	OBSDataArrayAutoRelease array = obs_data_get_array(data, "stops");
-	if (!array)
-		return;
-
-	stops.clear();
-	const size_t count = obs_data_array_count(array);
-	stops.reserve(static_cast<int>(count));
-	for (size_t i = 0; i < count; ++i) {
-		OBSDataAutoRelease item = obs_data_array_item(array, i);
-		GradientStop stop;
-		stop.position = std::clamp(obs_data_get_double(item, "position"), 0.0, 1.0);
-		stop.color = QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(item, "color")));
-		stops.append(stop);
-	}
-}
-
 bool TextStyle::hasEffects() const
 {
 	return fill != TextFill::Solid || outline.enabled || shadow.enabled;
@@ -900,6 +892,58 @@ void DividerPiece::load(obs_data_t *data)
 		logo.load(logoData);
 }
 
+const BackgroundPanel &Section::background(BackgroundSlot slot) const
+{
+	for (const SectionBackground &entry : backgrounds) {
+		if (entry.slot == slot)
+			return entry.panel;
+	}
+
+	/*
+	 * A panel that draws nothing, shared by every slot that has not been given one. Returned by
+	 * reference so a caller can hold on to it exactly as it holds on to a real one, which is what
+	 * lets every paint site read a slot without first asking whether it is there.
+	 */
+	static const BackgroundPanel none;
+	return none;
+}
+
+QString Section::backgroundPresetName(BackgroundSlot slot) const
+{
+	for (const SectionBackground &entry : backgrounds) {
+		if (entry.slot == slot)
+			return entry.presetName;
+	}
+	return QString();
+}
+
+bool Section::hasBackground(BackgroundSlot slot) const
+{
+	return std::any_of(backgrounds.cbegin(), backgrounds.cend(),
+			   [slot](const SectionBackground &entry) { return entry.slot == slot; });
+}
+
+SectionBackground &Section::backgroundEntry(BackgroundSlot slot)
+{
+	for (SectionBackground &entry : backgrounds) {
+		if (entry.slot == slot)
+			return entry;
+	}
+
+	backgrounds.append(SectionBackground{slot, BackgroundPanel(), QString()});
+	return backgrounds.last();
+}
+
+void Section::clearBackground(BackgroundSlot slot)
+{
+	for (int i = 0; i < backgrounds.size(); ++i) {
+		if (backgrounds.at(i).slot == slot) {
+			backgrounds.removeAt(i);
+			return;
+		}
+	}
+}
+
 void Section::save(obs_data_t *data) const
 {
 	obs_data_set_string(data, "type", sectionTypeId(type));
@@ -954,9 +998,6 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "sticky_hold", stickyHold);
 	obs_data_set_bool(data, "sticky_hold_forever", stickyHoldForever);
 	obs_data_set_string(data, "sticky_release", stickyReleaseId(stickyRelease));
-	obs_data_set_bool(data, "sticky_backdrop", stickyBackdrop);
-	obs_data_set_int(data, "sticky_backdrop_color", static_cast<long long>(stickyBackdropColor.rgba()));
-	obs_data_set_double(data, "sticky_backdrop_padding", stickyBackdropPadding);
 	obs_data_set_bool(data, "visible", visible);
 	obs_data_set_bool(data, "use_secondary_style", useSecondaryStyle);
 	obs_data_set_bool(data, "use_bridge_style", useBridgeStyle);
@@ -1015,6 +1056,20 @@ void Section::save(obs_data_t *data) const
 	 */
 	savePieces("divider_cap_pieces", dividerCap);
 	savePieces("divider_end_cap_pieces", dividerEndCap);
+
+	/*
+	 * Written only when there are any, for the same reason the children are: a section with no
+	 * panels is every section in every roll written before panels existed, and an empty array
+	 * apiece would grow every one of those scene collections for nothing.
+	 */
+	if (!backgrounds.isEmpty()) {
+		saveArray(
+			data, "backgrounds", backgrounds.size(),
+			[](obs_data_t *item, int index, const void *context) {
+				static_cast<const QVector<SectionBackground> *>(context)->at(index).save(item);
+			},
+			&backgrounds);
+	}
 
 	/*
 	 * A sticky block's children are sections, saved by the very same call that saved this one.
@@ -1173,15 +1228,6 @@ void Section::load(obs_data_t *data)
 	stickyHold = std::max(0.0, stickyHold);
 	stickyHoldForever = obs_data_get_bool(data, "sticky_hold_forever");
 	stickyRelease = stickyReleaseFromId(obs_data_get_string(data, "sticky_release"), StickyRelease::EndAtHold);
-	stickyBackdrop = obs_data_get_bool(data, "sticky_backdrop");
-	if (obs_data_has_user_value(data, "sticky_backdrop_color")) {
-		stickyBackdropColor =
-			QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "sticky_backdrop_color")));
-	}
-	stickyBackdropPadding = obs_data_has_user_value(data, "sticky_backdrop_padding")
-					? obs_data_get_double(data, "sticky_backdrop_padding")
-					: 24.0;
-	stickyBackdropPadding = std::max(0.0, stickyBackdropPadding);
 	visible = obs_data_get_bool(data, "visible");
 	useSecondaryStyle = obs_data_get_bool(data, "use_secondary_style");
 	/* Absent in every document written before the bridge had ink of its own, all of which took the row's. */
@@ -1326,6 +1372,29 @@ void Section::load(obs_data_t *data)
 
 	loadEnd("divider_cap_pieces", "divider_cap", "divider_cap_svg", &dividerCap);
 	loadEnd("divider_end_cap_pieces", "divider_end_cap", "divider_end_cap_svg", &dividerEndCap);
+
+	backgrounds.clear();
+	OBSDataArrayAutoRelease backgroundArray = obs_data_get_array(data, "backgrounds");
+	if (backgroundArray) {
+		const size_t count = obs_data_array_count(backgroundArray);
+		backgrounds.reserve(static_cast<int>(count));
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(backgroundArray, i);
+
+			SectionBackground entry;
+			entry.load(item);
+
+			/*
+			 * One panel per slot. A hand-written document carrying two for the same slot would
+			 * otherwise leave which of them is drawn to the order of a lookup, so the first is
+			 * kept and the rest dropped rather than the question being left open.
+			 */
+			if (hasBackground(entry.slot))
+				continue;
+
+			backgrounds.append(entry);
+		}
+	}
 
 	children.clear();
 	OBSDataArrayAutoRelease childArray = obs_data_get_array(data, "children");
@@ -1694,6 +1763,102 @@ TextStyle Document::effectiveBridgeStyle(const Section &section) const
 	return style;
 }
 
+const BackgroundPanel *Document::findBackgroundPreset(const QString &name) const
+{
+	if (name.isEmpty())
+		return nullptr;
+
+	for (const BackgroundPreset &preset : backgroundPresets) {
+		if (preset.name == name)
+			return &preset.panel;
+	}
+	return nullptr;
+}
+
+const BackgroundPanel &Document::effectiveBackground(const Section &section, BackgroundSlot slot) const
+{
+	const BackgroundPanel *preset = findBackgroundPreset(section.backgroundPresetName(slot));
+	return preset ? *preset : section.background(slot);
+}
+
+void Document::setBackgroundPreset(const QString &name, const BackgroundPanel &panel)
+{
+	if (name.isEmpty())
+		return;
+
+	for (BackgroundPreset &preset : backgroundPresets) {
+		if (preset.name == name) {
+			preset.panel = panel;
+			return;
+		}
+	}
+
+	backgroundPresets.append(BackgroundPreset{name, panel, false});
+}
+
+bool Document::linkBackgroundPreset(const QString &name)
+{
+	BackgroundPanel panel;
+	if (name.isEmpty() || !StyleLibrary::instance().findBackground(name, &panel))
+		return false;
+
+	for (BackgroundPreset &preset : backgroundPresets) {
+		if (preset.name != name)
+			continue;
+
+		preset.panel = panel;
+		preset.linked = true;
+		return true;
+	}
+
+	backgroundPresets.append(BackgroundPreset{name, panel, true});
+	return true;
+}
+
+bool Document::refreshLinkedBackgroundPresets()
+{
+	const StyleLibrary &library = StyleLibrary::instance();
+	bool changed = false;
+
+	for (BackgroundPreset &preset : backgroundPresets) {
+		if (!preset.linked)
+			continue;
+
+		BackgroundPanel panel;
+		if (!library.findBackground(preset.name, &panel))
+			continue;
+
+		if (panel == preset.panel)
+			continue;
+
+		preset.panel = panel;
+		changed = true;
+	}
+
+	return changed;
+}
+
+void Document::removeBackgroundPreset(const QString &name)
+{
+	if (name.isEmpty())
+		return;
+
+	for (int i = 0; i < backgroundPresets.size(); ++i) {
+		if (backgroundPresets.at(i).name == name) {
+			backgroundPresets.removeAt(i);
+			break;
+		}
+	}
+
+	/* Cleared rather than left dangling, for the reason removeStylePreset gives. */
+	visitSections(sections, [&name](Section &section) {
+		for (SectionBackground &entry : section.backgrounds) {
+			if (entry.presetName == name)
+				entry.presetName.clear();
+		}
+	});
+}
+
 void Document::setStylePreset(const QString &name, const TextStyle &style)
 {
 	if (name.isEmpty())
@@ -1770,6 +1935,42 @@ bool Document::applyLibraryRenames()
 		changed = true;
 	}
 
+	/*
+	 * And the same again for the backgrounds, against the library's own background trail. Two
+	 * trails rather than one, because the two collections are two namespaces: a background renamed
+	 * from "Card" to "Panel" must not drag a text style that happens to be called "Card" along
+	 * with it.
+	 */
+	for (BackgroundPreset &preset : backgroundPresets) {
+		if (!preset.linked)
+			continue;
+
+		QString renamed;
+		if (!library.backgroundRenamedTo(preset.name, &renamed))
+			continue;
+
+		if (!library.containsBackground(renamed))
+			continue;
+
+		const QString from = preset.name;
+		const bool taken =
+			std::any_of(backgroundPresets.cbegin(), backgroundPresets.cend(),
+				    [&renamed](const BackgroundPreset &other) { return other.name == renamed; });
+		if (taken)
+			continue;
+
+		preset.name = renamed;
+
+		visitSections(sections, [&](Section &section) {
+			for (SectionBackground &entry : section.backgrounds) {
+				if (entry.presetName == from)
+					entry.presetName = renamed;
+			}
+		});
+
+		changed = true;
+	}
+
 	return changed;
 }
 
@@ -1778,9 +1979,19 @@ bool Document::refreshLinkedPresets()
 	const StyleLibrary &library = StyleLibrary::instance();
 	/*
 	 * Renames first: a preset that has been renamed has to be found under its new name before
-	 * there is any point asking the library what style is under it.
+	 * there is any point asking the library what style is under it. One call covers both
+	 * collections, so a caller brings the whole document up to date rather than half of it.
 	 */
 	bool changed = applyLibraryRenames();
+
+	/*
+	 * Backgrounds are refreshed here too rather than being left to a second call the caller has to
+	 * remember. Everything that wants one wants the other -- the designer's file watcher and the
+	 * source's poll both mean "the library moved" -- and a roll that followed its styles but not
+	 * its panels would be the kind of half-update nobody would think to look for.
+	 */
+	if (refreshLinkedBackgroundPresets())
+		changed = true;
 
 	for (StylePreset &preset : stylePresets) {
 		if (!preset.linked)
@@ -2074,6 +2285,13 @@ void Document::save(obs_data_t *data) const
 		&stylePresets);
 
 	saveArray(
+		data, "background_presets", backgroundPresets.size(),
+		[](obs_data_t *item, int index, const void *context) {
+			static_cast<const QVector<BackgroundPreset> *>(context)->at(index).save(item);
+		},
+		&backgroundPresets);
+
+	saveArray(
 		data, "sections", sections.size(),
 		[](obs_data_t *item, int index, const void *context) {
 			static_cast<const QVector<Section> *>(context)->at(index).save(item);
@@ -2137,6 +2355,21 @@ void Document::load(obs_data_t *data, bool *migrated)
 			/* An unnamed preset can never be resolved, so it is dropped on load. */
 			if (!preset.name.isEmpty())
 				stylePresets.append(preset);
+		}
+	}
+
+	backgroundPresets.clear();
+	OBSDataArrayAutoRelease backgroundArray = obs_data_get_array(data, "background_presets");
+	if (backgroundArray) {
+		const size_t count = obs_data_array_count(backgroundArray);
+		backgroundPresets.reserve(static_cast<int>(count));
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(backgroundArray, i);
+			BackgroundPreset preset;
+			preset.load(item);
+			/* An unnamed preset can never be resolved, so it is dropped on load. */
+			if (!preset.name.isEmpty())
+				backgroundPresets.append(preset);
 		}
 	}
 

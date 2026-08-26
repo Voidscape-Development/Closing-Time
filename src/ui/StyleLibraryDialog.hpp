@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/CreditsModel.hpp"
 
+class QComboBox;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -40,6 +41,11 @@ namespace closingtime {
  * Opened from the Tools menu with no document, it is the right-hand list alone: the library is a
  * thing a machine has whether or not a designer is open, and renaming or deleting from it should
  * not require finding a source to open first.
+ *
+ * The library holds two collections -- text styles and the panels drawn behind them -- and a picker
+ * at the top says which the lists are showing. One pair of lists rather than two, because every
+ * operation between them means exactly the same thing for either kind: publish, link, copy, rename,
+ * delete. Two pairs would be the same five buttons twice and a window half as tall for each.
  */
 class StyleLibraryDialog : public QDialog {
 	Q_OBJECT
@@ -61,6 +67,9 @@ signals:
 	void documentChanged();
 
 private:
+	/* Which of the library's two collections the lists are showing. */
+	bool showingBackgrounds() const;
+
 	void refreshLists();
 	void publishSelected();
 	void linkSelected();
@@ -77,6 +86,7 @@ private:
 
 	Document *document = nullptr;
 
+	QComboBox *kindBox = nullptr;
 	QListWidget *documentList = nullptr;
 	QListWidget *libraryList = nullptr;
 	QPushButton *publishButton = nullptr;
