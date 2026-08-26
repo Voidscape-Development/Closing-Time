@@ -105,9 +105,34 @@ Section distinctive(SectionType type)
 	section.stickyHold = 12.5;
 	section.stickyHoldForever = true;
 	section.stickyRelease = StickyRelease::ResumeEndAtHold;
-	section.stickyBackdrop = true;
-	section.stickyBackdropColor = QColor(12, 34, 56, 210);
-	section.stickyBackdropPadding = 37.0;
+
+	/*
+	 * Two slots rather than one, and one of them bound to a preset: the pair is what catches a
+	 * loader that reads the panels but flattens them onto a single slot, and a binding that is
+	 * written but never read back.
+	 */
+	SectionBackground &panel = section.backgroundEntry(BackgroundSlot::Section);
+	panel.panel.fill = BackgroundFill::Color;
+	panel.panel.color = QColor(12, 34, 56, 210);
+	panel.panel.opacity = 0.65;
+	panel.panel.outsetLeft = 11.0;
+	panel.panel.outsetTop = 12.0;
+	panel.panel.outsetRight = 13.0;
+	panel.panel.outsetBottom = 14.0;
+	panel.panel.radiusTopLeft = 4.0;
+	panel.panel.radiusTopRight = 8.0;
+	panel.panel.radiusBottomRight = 12.0;
+	panel.panel.radiusBottomLeft = 16.0;
+	panel.panel.border.enabled = true;
+	panel.panel.border.width = 3.0;
+	panel.panel.border.color = QColor(9, 8, 7, 200);
+
+	SectionBackground &titlePanel = section.backgroundEntry(BackgroundSlot::Title);
+	titlePanel.panel.fill = BackgroundFill::Image;
+	titlePanel.panel.imagePath = QStringLiteral("/card.png");
+	titlePanel.panel.imageFit = BackgroundImageFit::Tile;
+	titlePanel.presetName = QStringLiteral("Card");
+
 	section.children.push_back(Section::makeDefault(SectionType::Header));
 	section.visible = false;
 	section.entries = {Entry{QStringLiteral("one"), QStringLiteral("two"), QStringLiteral("three"),
@@ -196,9 +221,23 @@ void compare(const Section &loaded, const Section &original)
 	checkNear(loaded.stickyHold, original.stickyHold, 0.001, "stickyHold");
 	check(loaded.stickyHoldForever == original.stickyHoldForever, "stickyHoldForever");
 	check(loaded.stickyRelease == original.stickyRelease, "stickyRelease");
-	check(loaded.stickyBackdrop == original.stickyBackdrop, "stickyBackdrop");
-	check(loaded.stickyBackdropColor == original.stickyBackdropColor, "stickyBackdropColor");
-	checkNear(loaded.stickyBackdropPadding, original.stickyBackdropPadding, 0.001, "stickyBackdropPadding");
+
+	checkEq(loaded.backgrounds.size(), original.backgrounds.size(), "background slot count");
+	for (const BackgroundSlot slot : allBackgroundSlots()) {
+		check(loaded.hasBackground(slot) == original.hasBackground(slot),
+		      qPrintable(QStringLiteral("the %1 slot is there or is not")
+					 .arg(QString::fromUtf8(backgroundSlotId(slot)))));
+		/*
+		 * Field for field through operator==, which is the same comparison a library reload uses
+		 * to decide a panel did not move -- so a field the round trip drops is a field that would
+		 * also make an unchanged library look changed.
+		 */
+		check(loaded.background(slot) == original.background(slot),
+		      qPrintable(QStringLiteral("the %1 panel").arg(QString::fromUtf8(backgroundSlotId(slot)))));
+		checkEq(loaded.backgroundPresetName(slot), original.backgroundPresetName(slot),
+			qPrintable(QStringLiteral("the %1 binding").arg(QString::fromUtf8(backgroundSlotId(slot)))));
+	}
+
 	checkEq(static_cast<int>(loaded.children.size()), static_cast<int>(original.children.size()), "child count");
 	if (!loaded.children.empty() && !original.children.empty()) {
 		check(loaded.children.front().type == original.children.front().type, "a child keeps its type");

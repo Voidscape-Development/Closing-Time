@@ -43,6 +43,8 @@ set_target_properties(
 # the two targets rather than written out twice and left to drift.
 set(
   CLOSING_TIME_CORE_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/Background.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/Background.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/BridgeArt.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/BridgeArt.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CreditsModel.cpp"
@@ -53,10 +55,14 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/FontBundle.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/FontBundle.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/Gradient.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/Gradient.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/AnimatedLogo.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/AnimatedLogo.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.cpp"

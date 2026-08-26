@@ -155,9 +155,13 @@ CT_SUITE(sticky_backdrop, "The panel drawn behind a pinned block")
 	Section plain = stickyBlock();
 
 	Section panelled = plain;
-	panelled.stickyBackdrop = true;
-	panelled.stickyBackdropColor = QColor(0, 0, 0, 255);
-	panelled.stickyBackdropPadding = 40.0;
+	BackgroundPanel &panel = panelled.backgroundEntry(BackgroundSlot::Section).panel;
+	panel.fill = BackgroundFill::Color;
+	panel.color = QColor(0, 0, 0, 255);
+	panel.outsetLeft = 40.0;
+	panel.outsetTop = 40.0;
+	panel.outsetRight = 40.0;
+	panel.outsetBottom = 40.0;
 
 	/* The panel is part of the picture rather than a quad behind it, and does not move the roll. */
 	checkEq(measure(documentWith(panelled)), measure(documentWith(plain)),
@@ -170,7 +174,7 @@ CT_SUITE(sticky_backdrop, "The panel drawn behind a pinned block")
 	}
 
 	const StickyBlockPlacement &placement = strip.stickyBlocks.first();
-	check(placement.margin >= 40, "the picture is grown to hold the panel's padding");
+	check(placement.margin >= 40, "the picture is grown to hold the panel's outset");
 
 	const Ink ink = inkOf(placement.image);
 	checkEq(ink.left, 0, "the panel reaches the left edge of the canvas");
@@ -281,7 +285,7 @@ CT_SUITE(sticky_roll, "A block among the sections of a whole roll")
 	}
 
 	/* Two blocks in one roll is an ordinary document, not a special case. */
-	const Document two = documentWith({stickyBlock(QStringLiteral("Part One")), after,
-					   stickyBlock(QStringLiteral("Part Two"))});
+	const Document two =
+		documentWith({stickyBlock(QStringLiteral("Part One")), after, stickyBlock(QStringLiteral("Part Two"))});
 	checkEq(renderStrip(two).stickyBlocks.size(), 2, "each block is carried in its own right");
 }

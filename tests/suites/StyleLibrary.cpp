@@ -180,14 +180,18 @@ CT_SUITE(style_library_file, "The library survives a round trip through its file
 
 	/* The export/import format is the same one, so a library file is a valid import. */
 	QVector<StylePreset> parsed;
+	QVector<BackgroundPreset> parsedBackgrounds;
 	QString error;
-	check(StyleLibrary::parseJson(library.toJson(), &parsed, &error), "the library's own JSON parses");
+	check(StyleLibrary::parseJson(library.toJson(), &parsed, &parsedBackgrounds, &error),
+	      "the library's own JSON parses");
 	checkEq(parsed.size(), 1, "with the preset in it");
 
-	check(!StyleLibrary::parseJson(QStringLiteral("not json at all"), &parsed, &error), "nonsense is refused");
+	check(!StyleLibrary::parseJson(QStringLiteral("not json at all"), &parsed, &parsedBackgrounds, &error),
+	      "nonsense is refused");
 	check(!error.isEmpty(), "with something to show the user");
 
-	check(!StyleLibrary::parseJson(QStringLiteral("{}"), &parsed, &error), "a file with no presets is refused");
+	check(!StyleLibrary::parseJson(QStringLiteral("{}"), &parsed, &parsedBackgrounds, &error),
+	      "a file with neither styles nor panels is refused");
 
 	/* A preset in the library is the library's; the flag is a property of a document's copy. */
 	check(!library.presets().first().linked, "library entries are never marked linked");

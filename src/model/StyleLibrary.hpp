@@ -117,6 +117,32 @@ public:
 	/* Replaces the whole library in one write, for the manager dialog's import. */
 	void replaceAll(const QVector<StylePreset> &presets);
 
+	/* --- backgrounds ------------------------------------------------------------------------ */
+
+	/*
+	 * The same library, one collection over: named panels sections bind a background slot to.
+	 *
+	 * A second collection in the same file rather than a second file, because a house style is one
+	 * thing to publish, back up and carry between machines whether it is a typeface or the card
+	 * behind it. A second *collection* rather than a field on StylePreset, because the two are
+	 * genuinely different decisions -- see Document::backgroundPresets -- and because a shared
+	 * namespace would make a background called "Card" and a text style called "Card" collide over
+	 * a name neither of them chose.
+	 *
+	 * Everything below means exactly what its text-style twin above means, down to the rename
+	 * trail, which is kept separately for the same reason the collection is.
+	 */
+	QVector<BackgroundPreset> backgrounds() const;
+	bool findBackground(const QString &name, BackgroundPanel *panel) const;
+	bool containsBackground(const QString &name) const;
+
+	void setBackground(const QString &name, const BackgroundPanel &panel);
+	void removeBackground(const QString &name);
+	void renameBackground(const QString &from, const QString &to);
+	bool backgroundRenamedTo(const QString &from, QString *to) const;
+	QVector<QPair<QString, QString>> backgroundRenames() const;
+	void replaceAllBackgrounds(const QVector<BackgroundPreset> &presets);
+
 	/*
 	 * Whether editing a style bound to a linked preset edits the library rather than forking a
 	 * copy into the document.
@@ -129,9 +155,16 @@ public:
 	bool alwaysEditLinked() const;
 	void setAlwaysEditLinked(bool always);
 
-	/* Serialises to a standalone JSON string, and back, for the manager's export and import. */
+	/*
+	 * Serialises to a standalone JSON string, and back, for the manager's export and import.
+	 *
+	 * `parseJson` fills in whichever of the two collections the caller asks for, and succeeds when
+	 * the file held *either* -- a library of nothing but panels is as importable as one of nothing
+	 * but styles, and an exported document carrying both comes in whole.
+	 */
 	QString toJson() const;
-	static bool parseJson(const QString &json, QVector<StylePreset> *presets, QString *error = nullptr);
+	static bool parseJson(const QString &json, QVector<StylePreset> *presets,
+			      QVector<BackgroundPreset> *backgrounds = nullptr, QString *error = nullptr);
 
 private:
 	StyleLibrary() = default;
@@ -141,6 +174,7 @@ private:
 
 	QString path;
 	QVector<StylePreset> entries;
+	QVector<BackgroundPreset> backgroundEntries;
 	/*
 	 * Old name -> current name, for presets that have been renamed. Kept for as long as the
 	 * library is: a scene collection that has not been opened in a year is exactly the one that
@@ -148,6 +182,8 @@ private:
 	 * grows past one entry per name that has ever been used and abandoned.
 	 */
 	QVector<QPair<QString, QString>> renameTrail;
+	/* The same, for the backgrounds. Separate because the two names are separate. */
+	QVector<QPair<QString, QString>> backgroundRenameTrail;
 	bool editLinkedInPlace = false;
 	quint64 librarySerial = 0;
 	/* Modification time and size of the file as last read, for pollForChanges(). */
