@@ -393,6 +393,56 @@ const QVector<Scene> &scenes()
 			    documentWith({heading, tabbed, shifted}));
 		}
 
+		/* --- backgrounds --------------------------------------------------------------- */
+
+		{
+			/*
+			 * What the picture is for: a card behind a heading, a band that reaches out past
+			 * the section's own box, and a list striped by its alternate entry panel -- the
+			 * three shapes a panel is actually reached for. All three keep the layout they
+			 * would have had with no panel at all.
+			 */
+			const auto card = [](const QColor &colour, double radius) {
+				BackgroundPanel panel;
+				panel.fill = BackgroundFill::Color;
+				panel.color = colour;
+				panel.setRadius(radius);
+				return panel;
+			};
+
+			Section titled = Section::makeDefault(SectionType::TitleWithSubtitle);
+			titled.text = QStringLiteral("Closing Time");
+			titled.secondaryText = QStringLiteral("A Voidscape Production");
+			titled.sectionWidth = 0.7;
+			BackgroundPanel &titlePanel = titled.backgroundEntry(BackgroundSlot::Section).panel;
+			titlePanel = card(QColor(24, 28, 44, 235), 28.0);
+			titlePanel.border.enabled = true;
+			titlePanel.border.width = 2.0;
+			titlePanel.border.color = QColor(255, 210, 90, 220);
+
+			Section band = Section::makeDefault(SectionType::Header);
+			band.text = QStringLiteral("Principal Cast");
+			BackgroundPanel &bandPanel = band.backgroundEntry(BackgroundSlot::Section).panel;
+			bandPanel = card(QColor(255, 210, 90, 60), 0.0);
+			/* Out past the section's box to the edges of the frame, without moving anything. */
+			bandPanel.outsetLeft = 400.0;
+			bandPanel.outsetRight = 400.0;
+
+			Section striped = Section::makeDefault(SectionType::TextList);
+			striped.entries = {Entry{QStringLiteral("Ada Lovelace")}, Entry{QStringLiteral("Grace Hopper")},
+					   Entry{QStringLiteral("Karen Sparck Jones")},
+					   Entry{QStringLiteral("Barbara Liskov")}};
+			striped.sectionWidth = 0.6;
+			striped.entryGap = 0;
+			striped.backgroundEntry(BackgroundSlot::Entry).panel = card(QColor(255, 255, 255, 26), 6.0);
+			/* Present but drawing nothing, which is what leaves every other row bare. */
+			striped.backgroundEntry(BackgroundSlot::EntryAlt);
+
+			add(QStringLiteral("backgrounds"),
+			    QStringLiteral("A card behind a heading, a band reaching past its box, and a striped list"),
+			    documentWith({titled, band, striped}));
+		}
+
 		/* --- dividers ---------------------------------------------------------------- */
 
 		{

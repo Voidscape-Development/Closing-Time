@@ -39,6 +39,8 @@ src/
   plugin-main.cpp          module entry; registers the source and the global signal
   model/
     CreditsModel.{hpp,cpp} TextStyle, StylePreset, LogoRef, Entry, Section, Document + obs_data (de)serialisation
+    Background.{hpp,cpp}   BackgroundPanel, the slots a section holds them in, and BackgroundPreset
+    Gradient.{hpp,cpp}     GradientSpec and its stops, shared by a text fill and a panel alike
     BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
     DividerArt.{hpp,cpp}   the table of divider shapes, and which of the three slots each serves
     EndingAction.{hpp,cpp} ending-action config and execution
@@ -48,6 +50,7 @@ src/
     RenderThread.{hpp,cpp} the shared rasterisation thread and its job queue
     AnimatedLogo.{hpp,cpp} decoding animated artwork with Qt, and frame timing
     StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterisation
+    BackgroundPainter.{hpp,cpp} a panel's path, its fills and its border; the one gradient mapping
     SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
     DividerArtRenderer.{hpp,cpp} divider part sizing and arm tiling, on top of SvgArt
@@ -58,11 +61,12 @@ src/
   ui/
     DesignerDialog.{hpp,cpp} three-pane designer window
     SectionEditor.{hpp,cpp}  per-section editor + StyleEditor
+    BackgroundControls.{hpp,cpp} BackgroundEditor: one panel's fill, shape, edge and preset
     StyleControls.{hpp,cpp}  colour button, gradient stop editor and its swatch
     ToolButtons.{hpp,cpp}    the compact button shapes a list's controls are built from
     PreviewWidget.{hpp,cpp}  scaled preview of the rendered strip
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
-    StyleLibraryDialog.{hpp,cpp} the two-list manager: this roll's presets, and the machine's
+    StyleLibraryDialog.{hpp,cpp} the two-list manager: this roll's presets, and the machine's, for either kind
     FontDialog.{hpp,cpp}     what this roll carries, and what stands in for what it cannot
     FontPickerDialog.{hpp,cpp} picking a family and one of its faces, with no size in it
   util/
@@ -627,6 +631,119 @@ path leaves the rules to `QTextLayout::draw()`, which does them from the font's 
 All of that cost lands on rasterisation, which happens once per document change on the render
 thread, not per frame — playback still draws the same tiles it always did.
 
+### Backgrounds
+
+A **panel** is a rectangle drawn behind something: a colour, a linear or radial gradient, or an
+image; four corner radii; an optional border; a per-side outset and an opacity. `BackgroundPanel`
+carries all of it, and the whole of the design turns on one rule.
+
+**A panel never takes part in layout.** It is painted behind a box the layout has already decided
+and its outset reaches outside that box exactly the way a text shadow does — see *Text fills,
+outlines and shadows*, which this is deliberately modelled on. Switching a panel on, at any size, on
+any slot, cannot move a section, grow the roll or change how long it runs, so a roll can be given
+cards and bands after it has been timed. The cost is the same cost a shadow pays: `sectionBleed`
+counts the outset, so a band drawn across a tile seam is drawn into both tiles rather than being cut
+at it. A `Spacer` with a panel is why that bleed is taken over *every* type rather than only the
+ones that set text or place artwork — a spacer draws nothing else at all, and a band across one is a
+design rather than an oversight.
+
+The room **inside** a panel is the padding a section already has. `paddingTop`, `paddingBottom` and
+`marginX` say how much air its content gets, they already take part in layout, and a panel drawn
+around the outside of them is the panel anyone would draw by hand. The outset is for the other case
+— a band that has to reach *past* the section's box, out to the edges of the frame — and is per side
+because reaching past one edge is a different want from reaching past all four. Its one bound is the
+roll's own extent: the strip is exactly as tall as the layout made it, so an outset on the first or
+last section has nothing outside the roll to be drawn into.
+
+**Eight slots, not eight fields.** A section can carry a panel behind itself and behind each of the
+things it draws:
+
+| Slot | Behind |
+|---|---|
+| `Section` | everything the section draws, over its whole height including its padding |
+| `Title` | the primary text block: a heading, or the left-hand column of a bridged row |
+| `Subtitle` | the secondary text: the line under a heading, or a row's right-hand column |
+| `Logo` | each logo the section places, hugging the artwork |
+| `Entry` | each row of a list, or each cell of a grid, across the width the list occupies |
+| `EntryAlt` | every *other* entry instead, for a striped list; see below |
+| `Bridge` | the leader joining the two sides of a row |
+| `Divider` | a Section Divider's artwork, over the box that artwork occupies |
+
+A slot rather than a named field apiece, because eight `BackgroundPanel` members would be eight
+copies of the same save/load, eight branches in the editor and eight places for a new panel setting
+to be forgotten. Persistence, the editor and the renderer each say it once and ask which slot they
+are dealing with. `backgroundSlotsFor` says which of them a type has anything to sit behind, derived
+from the existing predicates rather than tabulated beside them for the same reason
+`sectionUsesSecondaryText` is: "does it place logos" already answers "can it have a panel behind a
+logo", and a second table is a second place for the answer to drift.
+
+Two of the mappings are worth naming because they are not the obvious one. In a **bridged row** the
+two text slots are the row's two *columns* — which is exactly how the two styles map, `style` being
+the left side and `secondaryStyle` the right — so each side's panel goes behind that side's whole
+block, subtitle and all. And a **plain list** is offered no title slot at all: its line and its entry
+are one rectangle, and two names for the same place would be two settings drawing over each other
+with no rule for which won. A pair-shaped list has both, and they mean different things: the entry
+panel is the pair, the two text panels are its lines.
+
+A section holds **the slots it has been given** rather than all eight always — `QVector<SectionBackground>`,
+one entry per slot. Three things fall out of that. A section with no panels costs nothing to copy
+onto the undo stack and writes nothing into the scene collection, which is every section in every
+roll written before this existed. A slot can be told apart from a slot deliberately set to draw
+nothing, which is the whole of how **striping** works: a list with no alternate draws `Entry` behind
+every row, and a list that *has* an alternate draws it behind the odd-numbered ones — so an
+alternate left on `None` is how every other row is left bare. And the order is preserved, so the
+designer lists them the way they were added.
+
+**Measuring twice, but only when it pays.** A panel goes under something whose rectangle is only
+known once that thing has been measured, and measuring text twice is the most expensive thing this
+renderer could casually start doing. So `SectionPanels::wants` is asked first: a slot with nothing in
+it — every slot on every section until somebody sets one — costs one comparison and the content is
+laid out exactly once, as it always was. Only a slot that will really paint pays for the extra
+measure. The section's own panel is the same trick one level up: it needs the section's finished
+height, so a panelled section lays itself out once with no painter and then draws, with the
+recursion terminating on the painter being null.
+
+The gradient mapping is shared outright rather than copied. `gradientBrush` in
+`render/BackgroundPainter.hpp` sweeps a `GradientSpec` over a rectangle, and `textFillBrush` is a
+thin wrapper over it — which is what keeps a panel's sweep and the heading in front of it at the
+same angle rather than two implementations that agree today. `GradientSpec` itself moved to
+`model/Gradient.hpp` for it: a section carries its panels before it carries its styles, so leaving
+the type in `CreditsModel.hpp` would have meant a circular include or a second copy of four fields.
+
+A **border** is stroked along a path inset by half its width, so its outer edge lands exactly on the
+panel's bounds. Stroking the bounds themselves would put half the width outside them, which would
+make a heavier border a wider panel — and the bleed, which counts the outset alone, would stop
+describing what is painted. An **image** is clipped to the panel's own path rather than to the
+rectangle around it, which is the whole of what makes a rounded corner mean anything to an image
+fill: `Cover` crops to the shape, not merely to the box the shape sits in. An animated file
+contributes its first frame only; the strip is rasterised once and scrolled, and a panel — unlike a
+logo — has no quad of its own to be drawn from.
+
+### Background presets
+
+A slot binds to a named `BackgroundPreset` on the document exactly the way a section binds to a
+`StylePreset`: the named panel is what is drawn, the slot's own copy is kept untouched underneath,
+and a name that no longer resolves falls back to it rather than failing. Everything that paints a
+panel goes through `Document::effectiveBackground` rather than reading `Section::backgrounds`
+directly, so a binding cannot be bypassed by forgetting to resolve it at one paint site.
+
+They are a **second collection** beside the text styles rather than a field on `StylePreset`, on the
+document and in the machine-wide library alike. A panel and a typeface are not one decision made
+twice: the card behind a sponsor logo has no font to set, and a heading style is wanted behind
+several different panels as often as not. Keeping them apart also keeps the namespaces apart, so a
+background called `Card` and a text style called `Card` are two things and neither shadows the other
+— which is also why the library keeps **two rename trails**, one per collection.
+
+The mechanics of a trail — collapse the chains, drop the entry when a name is created again, never
+follow a cycle — are written once as free functions over a trail and used by both, because they are
+exactly the same three rules whether the name belonged to a typeface or to a panel.
+
+`Document::refreshLinkedPresets` brings both collections up to date in one call rather than leaving
+the panels to a second one a caller has to remember. Everything that wants one wants the other — the
+designer's file watcher and the source's poll both mean "the library moved" — and a roll that
+followed its styles but not its panels would be the kind of half-update nobody would think to look
+for.
+
 ### Style presets
 
 A `StylePreset` is a named `TextStyle` on the document. A section may bind to one by name
@@ -652,6 +769,13 @@ A preset on a document restyles one roll. The **style library** is the same idea
 a single JSON file under the plugin's config directory (`obs_module_config_path`,
 `style-presets.json`), shared by every source, every scene collection and every profile on the
 machine.
+
+It holds two collections — the text styles and the panels drawn behind them — under separate keys,
+with a rename trail each. A second collection in the same file rather than a second file, because a
+house style is one thing to publish, back up and carry between machines whether it is a typeface or
+the card behind it. Everything below is written about the styles and is true of the panels word for
+word; the manager window carries a picker saying which of the two its lists are showing, since
+publish, link, copy, rename and delete mean exactly the same thing for either kind.
 
 A document does not copy out of it and forget where the style came from. A section binds to a
 preset by name exactly as it always has; what changes is that the document's own `StylePreset`
@@ -717,7 +841,13 @@ object so `obs_properties` can bind to them without the source marshalling a sub
 every edit.
 
 Enums persist by **string id**, never by ordinal (`sectionTypeId`, `endingActionId`,
-`hAlignId`, …). The enums can be reordered freely; only the id strings are contractual.
+`hAlignId`, `backgroundSlotId`, `backgroundFillId`, …). The enums can be reordered freely; only the
+id strings are contractual.
+
+A section's background slots are written only when it has any, and its children only when it holds
+any. Both are for the same reason: a section that has never been given a panel is every section in
+every roll written before panels existed, and an empty array apiece would grow all of those scene
+collections for nothing.
 
 Font sizes are stored and laid out in **pixels**, not points, so a roll renders identically
 regardless of the DPI of whatever screen OBS happens to be running on.
@@ -847,12 +977,18 @@ Where a block is *drawn* is decided separately, by `stickyBlockTop`, as the lowe
 position and its pinned one — one expression rather than two branches, which is what makes a roll
 parked in manual scroll show every block where it belongs with none of the timing running.
 
-**The backdrop is painted into the block's own picture** rather than drawn as a quad behind it.
-libobs draws solids and textures from different effects, and starting a second one inside the pass
-that is drawing the strip is not something to do for a rectangle the rasteriser can fill for
-nothing at rebuild time. The picture is grown by a margin at each end for it, and for whatever the
-children paint outside their own boxes — unlike the strip, there is no neighbouring tile here to
-catch a shadow.
+**A block's panel is painted into its own picture** rather than drawn as a quad behind it. libobs
+draws solids and textures from different effects, and starting a second one inside the pass that is
+drawing the strip is not something to do for a shape the rasteriser can fill for nothing at rebuild
+time. The picture is grown by a margin at each end for it, and for whatever the children paint
+outside their own boxes — unlike the strip, there is no neighbouring tile here to catch a shadow.
+
+The panel itself is the ordinary `BackgroundSlot::Section` one every type carries (see *Backgrounds*
+above); a block simply cannot use the pre-switch paint site the other types do, because it leaves a
+hole in the strip rather than drawing into it, and a panel painted there would be a card hanging in
+the roll where the block used to be. It replaced a `stickyBackdrop`/`Color`/`Padding` trio that was
+this feature in miniature for one section type — a flat colour and a padding, with no corners, no
+gradient, no image and no preset behind it.
 
 A block spans the canvas: `sectionWidth`, `sectionAlign` and `marginX` are ignored for it, because
 what it holds is whole sections and each of them carries a box of its own. Two nested shares of the
@@ -1473,13 +1609,26 @@ same reason: reporting it would send the user after a font nothing uses.
    trick has nowhere to put a second hole. Both are deliberate: pinning something to something
    already pinned is a second set of rules, and a card that holds still is not where a moving
    logo is missed.
-8. **A library rename is followed but never forced.** A document that already has a preset of
+8. **A panel's outset is bounded by the roll.** A panel paints outside its own box, but the strip is
+   exactly as tall as the layout made it — so an outset on the very first or very last section has
+   nothing outside the roll to be drawn into and is cut there. The lead-in, the lead-out and a
+   Spacer are the room; nothing here can be reached past them, because giving a panel the power to
+   grow the strip is exactly the power to change the roll's duration that the feature is built not
+   to have.
+9. **A panel's image is a still.** An animated file in a panel contributes its first frame. The
+   strip is rasterised once and scrolled, and unlike a logo a panel has no quad of its own to be
+   drawn over the top of it — the hole-and-overlay trick has nothing to hang a background on.
+10. **A library rename is followed but never forced.** A document that already has a preset of
    its own under the new name keeps its link under the old one — merging two presets is not a
    rename — and migrates by itself if the clash is ever resolved. The manager says so when it
    happens.
 
 ### Addressed since the first cut
 
+- Backgrounds: a panel — a colour, a gradient or an image, with rounded corners and a border —
+  behind a section and behind each of the things it draws, bindable to named presets that publish
+  into the machine-wide library alongside the text styles. It never takes part in layout, so a roll
+  can be given cards and bands after it has been timed.
 - A Sticky Ending Block: a section holding sections of its own that pins itself to a place on the
   canvas while the rest of the roll scrolls past behind it, holds, and then either stays put and
   ends the roll or carries on up and off.

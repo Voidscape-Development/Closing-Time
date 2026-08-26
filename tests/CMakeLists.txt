@@ -15,6 +15,7 @@ target_sources(
     harness/Probe.hpp
     harness/main.cpp
     suites/AnimatedLogos.cpp
+    suites/Backgrounds.cpp
     suites/BridgedRows.cpp
     suites/Dividers.cpp
     suites/Fonts.cpp
