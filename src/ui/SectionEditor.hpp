@@ -37,6 +37,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
 class QSpinBox;
 class QTableWidget;
 class QTabWidget;
@@ -44,6 +45,23 @@ class QToolButton;
 class QVBoxLayout;
 
 namespace closingtime {
+
+/*
+ * The four tabs the section's settings are dealt out into.
+ *
+ * The editor used to be one column of fifteen groups: what a section says, how its type is put
+ * together, where it sits, five text styles, eight panels and a table -- everything about a section
+ * at once, in a pane a third of a window wide. Folding the groups away made the column shorter
+ * without making it any less of a column; the reader still had to scroll past the geometry to reach
+ * the words.
+ *
+ * These four are the jobs somebody actually sits down to do, and each is a whole answer on its own:
+ * fill the section in, place it, ink it, put something behind it. The order is the order the work
+ * tends to happen in.
+ */
+enum class EditorTab { Content, Layout, Style, Background };
+
+constexpr int kEditorTabCount = 4;
 
 /*
  * Which of a divider's three piece stacks an editor is acting on.
@@ -235,6 +253,33 @@ private:
 	void markAdvanced(QWidget *field);
 
 	/*
+	 * Builds one tab and returns the layout its groups go into.
+	 *
+	 * Each tab scrolls on its own, so the header above the tab strip and the strip itself stay
+	 * put however tall the settings under them get, and each tab keeps its own scroll position --
+	 * coming back to Style leaves the reader where they left off in it rather than at the top of
+	 * a column they have to find their place in again.
+	 */
+	QVBoxLayout *addTab(EditorTab tab, const QString &title);
+
+	/* The layout a tab's groups are added to. */
+	QVBoxLayout *tabLayout(EditorTab tab) const { return tabLayouts[static_cast<int>(tab)]; }
+
+	/*
+	 * Takes away the tabs with nothing on them and gives them back.
+	 *
+	 * A Spacer has no words, no styles and no panels, so three of the four would be empty panes
+	 * inviting the reader to look for settings that are not there. Asked of the groups on each
+	 * page rather than of the section type: applyTypeVisibility has just decided what applies, and
+	 * counting what it left on screen cannot disagree with it the way a second list of conditions
+	 * could.
+	 */
+	void refreshTabVisibility();
+
+	/* True when any group on a tab's page is still on screen. */
+	bool tabHasVisibleGroup(EditorTab tab) const;
+
+	/*
 	 * The section type the picker and its switches add up to, and the reverse: which base type
 	 * and switches stand for a given section type.
 	 *
@@ -319,6 +364,31 @@ private:
 	QHash<QWidget *, QFormLayout *> rowOwner;
 	/* The rows held back until the reader asks for everything. */
 	QSet<QWidget *> advancedRows;
+
+	/*
+	 * The handful of rows above the tab strip: what kind of section this is, what it is called,
+	 * whether it is drawn, and whether the rarely-wanted settings are on show.
+	 *
+	 * They stay out of the tabs because they are not settings of one job -- the type decides what
+	 * every tab holds, the name is how the section is found again, and the advanced switch reaches
+	 * rows on three of the four pages. A reader who had to leave the tab they were working in to
+	 * flip one of these would lose their place to change something that governs all of them.
+	 */
+	QFormLayout *headerForm = nullptr;
+
+	QTabWidget *tabs = nullptr;
+	/* The layout each page's groups are added to, in EditorTab order. */
+	QVBoxLayout *tabLayouts[kEditorTabCount] = {};
+	/* Where each page's trailing spacer sits in its layout; see the note beside the one it added. */
+	int tabStretchIndex[kEditorTabCount] = {};
+	/*
+	 * The tab the reader last chose, which is not always the one on screen: a tab going away under
+	 * them takes the selection with it, and this is what brings them back to it when the next
+	 * section has one again.
+	 */
+	int desiredTab = 0;
+	/* Set while tabs are being taken away and given back, so that shuffle is not read as a choice. */
+	bool restoringTab = false;
 
 	CollapsibleGroup *contentGroup = nullptr;
 	CollapsibleGroup *typeSettingsGroup = nullptr;
@@ -466,14 +536,6 @@ private:
 	QTableWidget *entryTable = nullptr;
 	/* Hidden for the entry types that have no logo path to set. */
 	QToolButton *setLogoButton = nullptr;
-
-	/*
-	 * Absorbs whatever height is left once the visible rows have been laid out. Without it a
-	 * type carrying few fields has its rows spread down the pane by the leftover space rather
-	 * than sitting one under the next.
-	 */
-	QVBoxLayout *outerLayout = nullptr;
-	int trailingStretchIndex = -1;
 
 	QVector<StylePreset> presets;
 	QVector<BackgroundPreset> backgroundPresets;

@@ -37,6 +37,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -692,10 +693,17 @@ void StyleEditor::onFillChanged()
 SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 {
 	auto *outer = new QVBoxLayout(this);
-	outer->setContentsMargins(0, 0, 0, 0);
-	outerLayout = outer;
+	/*
+	 * A margin of its own, small but not nothing: the editor now sits straight against the
+	 * splitter rather than inside a scroll area whose frame used to hold it clear of the handle.
+	 */
+	outer->setContentsMargins(4, 4, 4, 4);
 
+	/*
+	 * The rows above the tab strip, which every tab is read under. See `headerForm`.
+	 */
 	form = new QFormLayout();
+	headerForm = form;
 	outer->addLayout(form);
 
 	const auto notify = [this] {
@@ -754,15 +762,38 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	addRow(QString(), showAdvanced);
 
 	/*
-	 * From here the rows go into named groups that fold away. The order is the order the work is
-	 * done in: what the section says, then how this kind of section is put together, then where
-	 * it sits on the canvas -- with the styles and the tables under them in groups of their own.
+	 * From here everything goes into one of the four tabs, in named groups that fold away. See
+	 * EditorTab for why the settings are dealt out rather than stacked.
+	 *
+	 * All four are built up front and in reading order, so a group only has to say which tab it
+	 * belongs to. Which of them are on show follows what is left visible on each page; see
+	 * refreshTabVisibility.
+	 */
+	tabs = new QTabWidget(this);
+	outer->addWidget(tabs, 1);
+
+	addTab(EditorTab::Content, moduleText("Designer.Tab.Content"));
+	addTab(EditorTab::Layout, moduleText("Designer.Tab.Layout"));
+	addTab(EditorTab::Style, moduleText("Designer.Tab.Style"));
+	addTab(EditorTab::Background, moduleText("Designer.Tab.Background"));
+
+	connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+		if (restoringTab || index < 0)
+			return;
+
+		desiredTab = index;
+	});
+
+	/*
+	 * What the section says: its words, and the artwork that stands beside or instead of them.
+	 * The table of entries and the divider's piece stacks join it further down -- a list of two
+	 * hundred credits is this section's content as much as a heading's one line is.
 	 */
 	contentGroup = new CollapsibleGroup(moduleText("Designer.Group.Content"), this);
 	form = new QFormLayout();
 	contentForm = form;
 	contentGroup->addLayout(form);
-	outer->addWidget(contentGroup);
+	tabLayout(EditorTab::Content)->addWidget(contentGroup);
 
 	textEdit = new QPlainTextEdit(this);
 	textEdit->setMaximumHeight(80);
@@ -825,7 +856,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	form = new QFormLayout();
 	typeSettingsForm = form;
 	typeSettingsGroup->addLayout(form);
-	outer->addWidget(typeSettingsGroup);
+	tabLayout(EditorTab::Layout)->addWidget(typeSettingsGroup);
 
 	logoPlacement = new QComboBox(this);
 	logoPlacement->addItem(moduleText("Designer.LogoPlacement.Hug"), static_cast<int>(LogoPlacement::Hug));
@@ -1101,7 +1132,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	form = new QFormLayout();
 	placementForm = form;
 	placementGroup->addLayout(form);
-	outer->addWidget(placementGroup);
+	tabLayout(EditorTab::Layout)->addWidget(placementGroup);
 
 	paddingTop = new QSpinBox(this);
 	paddingTop->setRange(0, 20000);
@@ -1136,28 +1167,28 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	addRow(moduleText("Designer.SectionAlign"), sectionAlign);
 
 	/*
-	 * The style groups fold away like the three above them.
+	 * The styles get a tab to themselves.
 	 *
 	 * A StyleEditor is the tallest thing in this pane -- a font, a size, a fill with its stops,
-	 * an outline, a shadow, an alignment -- and a bridged row with subtitles puts five of them
-	 * one under the next. Somebody working on the words of a section scrolls past all of it to
-	 * reach the entry table, which is the whole complaint the folding groups were added to
-	 * answer; these were simply left out of that first pass.
+	 * an outline, a shadow, an alignment -- and a bridged row with subtitles puts five of them one
+	 * under the next. Stacked under the settings above they were the length that made the editor
+	 * feel endless; behind a tab they are simply the answer to "what does this look like", which
+	 * is a question somebody asks on purpose rather than one they scroll through.
 	 *
-	 * Two of them keep their checkbox, which is now carried in the fold header beside the title
-	 * rather than by a QGroupBox: the checkbox still says whether the style applies, and the
-	 * triangle beside it says only whether it is on screen. See CollapsibleGroup.
+	 * Two of them keep their checkbox, which is carried in the fold header beside the title rather
+	 * than by a QGroupBox: the checkbox still says whether the style applies, and the triangle
+	 * beside it says only whether it is on screen. See CollapsibleGroup.
 	 */
 	styleGroup = new CollapsibleGroup(moduleText("Designer.TextStyle"), this);
 	primaryStyle = new StyleEditor(styleGroup->content());
 	styleGroup->addWidget(primaryStyle);
-	outer->addWidget(styleGroup);
+	tabLayout(EditorTab::Style)->addWidget(styleGroup);
 
 	secondaryGroup = new CollapsibleGroup(moduleText("Designer.SecondaryStyle"), this);
 	secondaryGroup->setCheckable(true);
 	secondaryStyle = new StyleEditor(secondaryGroup->content());
 	secondaryGroup->addWidget(secondaryStyle);
-	outer->addWidget(secondaryGroup);
+	tabLayout(EditorTab::Style)->addWidget(secondaryGroup);
 
 	/*
 	 * Unchecked, the bridge is drawn in the section's own style, which is what makes a leader
@@ -1170,7 +1201,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	bridgeStyle = new StyleEditor(bridgeStyleGroup->content());
 	bridgeStyle->setInkOnly(true);
 	bridgeStyleGroup->addWidget(bridgeStyle);
-	outer->addWidget(bridgeStyleGroup);
+	tabLayout(EditorTab::Style)->addWidget(bridgeStyleGroup);
 
 	/*
 	 * The two subtitles of a bridged row. Two style groups rather than one, because the two
@@ -1182,17 +1213,18 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	rowSubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSubtitleStyle"), this);
 	rowSubtitleStyle = new StyleEditor(rowSubtitleStyleGroup->content());
 	rowSubtitleStyleGroup->addWidget(rowSubtitleStyle);
-	outer->addWidget(rowSubtitleStyleGroup);
+	tabLayout(EditorTab::Style)->addWidget(rowSubtitleStyleGroup);
 
 	rowSecondarySubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSecondarySubtitleStyle"), this);
 	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup->content());
 	rowSecondarySubtitleStyleGroup->addWidget(rowSecondarySubtitleStyle);
-	outer->addWidget(rowSecondarySubtitleStyleGroup);
+	tabLayout(EditorTab::Style)->addWidget(rowSecondarySubtitleStyleGroup);
 
 	/*
 	 * A folding group per background slot, built from the slot table so a slot added to the model
-	 * turns up here with nothing to write. They sit after the styles because a panel is the thing
-	 * behind the words: the reader who has come this far down the pane has already set them.
+	 * turns up here with nothing to write. Eight of them, one for each thing a section can put a
+	 * panel behind, which is why they get a tab rather than sharing one with the styles: a panel is
+	 * a different question from the ink on the words in front of it, and eight groups is a page.
 	 */
 	for (const BackgroundSlot slot : allBackgroundSlots()) {
 		const QString title = moduleText(QStringLiteral("Designer.Background.Slot.%1")
@@ -1217,7 +1249,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 
 		auto *editor = new BackgroundEditor(group->content());
 		group->addWidget(editor);
-		outer->addWidget(group);
+		tabLayout(EditorTab::Background)->addWidget(group);
 
 		backgroundGroups.insert(slot, group);
 		backgroundEditors.insert(slot, editor);
@@ -1267,7 +1299,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ImportCsv")), &SectionEditor::importCsv);
 
 	entriesLayout->addLayout(buttons);
-	outer->addWidget(entriesGroup, 1);
+	tabLayout(EditorTab::Content)->addWidget(entriesGroup, 1);
 
 	/*
 	 * The divider's three piece stacks: its two ends and its middle.
@@ -1359,16 +1391,26 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		connect(table, &QTableWidget::itemChanged, this, [this] { emitChanged(); });
 	}
 
-	outer->addWidget(dividerPiecesGroup, 1);
+	/*
+	 * The piece stacks are what a divider is made of, so they go where a list's entries do. A
+	 * divider has no words to type, which leaves its Content tab holding these alone -- which is
+	 * exactly right: this is the thing somebody opens a divider to work on.
+	 */
+	tabLayout(EditorTab::Content)->addWidget(dividerPiecesGroup, 1);
 
 	/*
-	 * Whatever height is left over when the editor is shorter than the pane it sits in. A
-	 * QVBoxLayout with nothing to give the slack to shares it out between the items it has, so
-	 * without this a type carrying few fields -- Title especially -- has its handful of rows
-	 * spread down the pane with gaps between them rather than sitting one under the next.
+	 * Whatever height is left over when a page is shorter than the tab it sits in. A QVBoxLayout
+	 * with nothing to give the slack to shares it out between the items it has, so without this a
+	 * type carrying few fields -- Title especially -- has its handful of rows spread down the page
+	 * with gaps between them rather than sitting one under the next.
+	 *
+	 * One per page, and added last, so each page packs its own groups at the top independently of
+	 * what the others hold.
 	 */
-	outer->addStretch();
-	trailingStretchIndex = outer->count() - 1;
+	for (int index = 0; index < kEditorTabCount; ++index) {
+		tabLayouts[index]->addStretch();
+		tabStretchIndex[index] = tabLayouts[index]->count() - 1;
+	}
 
 	/*
 	 * The settings held back until the reader asks for everything.
@@ -1850,6 +1892,74 @@ void SectionEditor::markAdvanced(QWidget *field)
 	advancedRows.insert(field);
 }
 
+QVBoxLayout *SectionEditor::addTab(EditorTab tab, const QString &title)
+{
+	const int index = static_cast<int>(tab);
+
+	/*
+	 * A scroll area per page rather than one around the whole editor. The header and the tab strip
+	 * are then outside every one of them and cannot be scrolled off the top, and each page keeps
+	 * the place the reader left it at -- which is the point of tabs: going back to one should be
+	 * going back to where you were, not to the top of it.
+	 */
+	auto *scroll = new QScrollArea(tabs);
+	scroll->setWidgetResizable(true);
+	/* The tab already draws a frame around the page; a second one inside it is a box in a box. */
+	scroll->setFrameShape(QFrame::NoFrame);
+
+	auto *page = new QWidget(scroll);
+	auto *layout = new QVBoxLayout(page);
+	layout->setContentsMargins(0, 6, 0, 0);
+	scroll->setWidget(page);
+
+	tabs->addTab(scroll, title);
+
+	tabLayouts[index] = layout;
+
+	return layout;
+}
+
+bool SectionEditor::tabHasVisibleGroup(EditorTab tab) const
+{
+	const QVBoxLayout *layout = tabLayouts[static_cast<int>(tab)];
+
+	for (int item = 0; item < layout->count(); ++item) {
+		const QWidget *widget = layout->itemAt(item)->widget();
+		/*
+		 * `isHidden` rather than `isVisible`, because a page on a tab nobody is looking at is
+		 * itself hidden and every widget on it would answer no. What is being asked here is
+		 * whether the group was hidden on purpose, which is the flag `isHidden` carries.
+		 */
+		if (widget && !widget->isHidden())
+			return true;
+	}
+
+	return false;
+}
+
+void SectionEditor::refreshTabVisibility()
+{
+	/*
+	 * Hiding the tab somebody is on moves the selection, and that move is Qt tidying up rather
+	 * than the reader choosing -- so it must not be recorded as the tab to come back to.
+	 */
+	restoringTab = true;
+
+	for (int index = 0; index < kEditorTabCount; ++index)
+		tabs->setTabVisible(index, tabHasVisibleGroup(static_cast<EditorTab>(index)));
+
+	/*
+	 * Back to the tab the reader picked, now that it has something on it again. When it still has
+	 * not, whatever Qt fell back to is left alone: the choice is remembered, not forced, so
+	 * clicking through a run of sections that have no styles does not keep dragging them to a tab
+	 * that is empty for the one they are looking at.
+	 */
+	if (desiredTab >= 0 && desiredTab < kEditorTabCount && tabs->isTabVisible(desiredTab))
+		tabs->setCurrentIndex(desiredTab);
+
+	restoringTab = false;
+}
+
 SectionType SectionEditor::composedType() const
 {
 	SectionTypeSwitches switches;
@@ -2196,11 +2306,6 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	dividerPiecesGroup->setVisible(divider);
 
 	/*
-	 * Whichever table is on show is the one thing here worth growing, so it takes the leftover
-	 * height. With no table at all the trailing spacer takes it instead, which is what keeps the
-	 * rows packed at the top rather than spread down the pane.
-	 */
-	/*
 	 * A group with every row hidden is a heading over nothing, so it goes away with them. Asked
 	 * of the form rather than tracked alongside it: the rows have just been set, and counting
 	 * what is visible cannot disagree with them the way a second list of conditions could.
@@ -2209,7 +2314,16 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	typeSettingsGroup->setVisible(formHasVisibleRow(typeSettingsForm));
 	placementGroup->setVisible(formHasVisibleRow(placementForm));
 
-	outerLayout->setStretch(trailingStretchIndex, hasEntries || divider ? 0 : 1);
+	/*
+	 * Whichever table the Content tab is showing is the one thing on it worth growing, so it takes
+	 * that page's leftover height. With no table at all the trailing spacer takes it instead,
+	 * which is what keeps the rows packed at the top rather than spread down the page.
+	 */
+	tabLayout(EditorTab::Content)
+		->setStretch(tabStretchIndex[static_cast<int>(EditorTab::Content)], hasEntries || divider ? 0 : 1);
+
+	/* Last, so it reads the groups this pass has just settled. */
+	refreshTabVisibility();
 }
 
 void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)

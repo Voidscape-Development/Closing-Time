@@ -1181,18 +1181,53 @@ taking a type apart is a property of the type table rather than of this window, 
 mapping that has to be exactly reversible is worth a test that needs no window on screen. Nothing
 about persistence changes: the document still carries all twenty ids.
 
-**The rows are gathered into named groups that fold away** — *Content Properties*, the type's own
-settings, *Layout Properties* — with the middle one titled after the type in it, since
-"Bridge settings" and "Divider settings" are never on screen at once. A `CollapsibleGroup` rather
-than a checkable `QGroupBox`: a checkbox on a group reads as switching the group *off*, which is
-what the checkable groups already in this editor mean. A group whose every row is hidden goes away
-with them, which is asked of the layout rather than of the widgets in it — a child of a window that
-has not been shown yet reads as hidden whether or not anything hid it.
+**The settings are dealt out into four tabs rather than stacked in one column** — *Content*,
+*Layout*, *Style*, *Background* (`EditorTab`). Fifteen groups one under the next was everything
+about a section at once in a pane a third of a window wide; folding the groups away made the column
+shorter without making it any less of a column, and somebody working on the words still scrolled
+past the geometry to reach them. The four are the jobs somebody sits down to do — fill the section
+in, place it, ink it, put something behind it — and each is a whole answer on its own. The document
+is untouched by this: a tab is where a control is drawn and nothing else.
+
+*Content* holds what the section says, and the tables it says it through: the entry table for a
+list, the divider's three piece stacks for a divider (a divider has no words, so those stacks *are*
+its content, and its Content tab holds them alone). *Layout* holds the type's own settings and the
+placement rows. *Style* holds the up-to-five `StyleEditor`s. *Background* holds the eight panel
+slots.
+
+**The type picker, the label, the visible box and the advanced switch stay above the tab strip.**
+They are not settings of any one job: the type decides what every tab holds, the name is how the
+section is found again in the list, and the advanced switch reaches rows on three of the four
+pages. A reader who had to leave the tab they were working in to flip one of them would lose their
+place to change something that governs all of them.
+
+**Each tab scrolls on its own**, so the header and the strip cannot be scrolled off the top and
+each page keeps the place it was left at — going back to *Style* should be going back to where you
+were in it. That is why the designer adds the editor straight to the splitter rather than wrapping
+it in a `QScrollArea` as it used to: the scrolling moved inside, one area per page.
+
+**A tab with nothing on it goes away.** A Spacer has no words, no styles and no panels, so three of
+the four would otherwise be empty panes inviting the reader to look for settings that are not
+there. Asked of the groups on each page rather than of the section type — `applyTypeVisibility` has
+just settled what applies, and counting what it left on screen cannot disagree with it the way a
+second list of conditions could. It asks `isHidden` rather than `isVisible`, because the page of a
+tab nobody is looking at is itself hidden and everything on it would otherwise answer no. The tab
+the reader chose is remembered rather than forced: a tab going away under them takes the selection
+with it, and `desiredTab` is what brings them back to it once the next section has one again, while
+`restoringTab` keeps that shuffle from being read as a choice of theirs.
+
+**Within a tab the rows are still gathered into named groups that fold away** — *Content
+Properties*, the type's own settings, *Placement on the Canvas* — with the middle one titled after
+the type in it, since "Bridge settings" and "Divider settings" are never on screen at once. A
+`CollapsibleGroup` rather than a checkable `QGroupBox`: a checkbox on a group reads as switching the
+group *off*, which is what the checkable groups already in this editor mean. A group whose every row
+is hidden goes away with them, which is asked of the layout rather than of the widgets in it — a
+child of a window that has not been shown yet reads as hidden whether or not anything hid it.
 
 **The style groups fold away too, and the two that switch off carry both controls in one header.**
 A `StyleEditor` is the tallest thing in the pane — a font, a size, a fill with its stops, an
-outline, a shadow, an alignment — and a bridged row with subtitles stacks five of them between the
-placement rows and the entry table, which is the scroll the folding groups were added to end. So
+outline, a shadow, an alignment — and a bridged row with subtitles stacks five of them one under the
+next, which is the length that made the editor feel endless before they had a tab of their own. So
 `CollapsibleGroup` grew the checkbox it was originally written to avoid: it sits *beside* the
 title rather than replacing the disclosure triangle, and the two readings stay apart — the checkbox
 says whether the style applies, the triangle says whether it is on screen, and neither moves the
@@ -1215,11 +1250,12 @@ bridged row's *subtitles* switch adds and takes away, so the editor remembers th
 was built with (`tableType`, `tableRowSubtitles`) and reads through that rather than through the
 switch: the same cell means a different field on each side of the rebuild, and reading a two-column
 table as a four-column one put every row's right-hand name into the left-hand subtitle the moment
-subtitles were switched on. A trailing spacer takes whatever height
-is left over: a `QVBoxLayout` with nothing to give its slack to shares it out between the items
-it has, which spread a short type's handful of rows down the pane with gaps between them. The
-entry table is the one thing worth growing, so it takes the slack instead whenever the selected
-type has one, and asks for enough height to read a run of entries at a glance.
+subtitles were switched on. Each tab's page ends in a trailing spacer that takes whatever height is
+left over: a `QVBoxLayout` with nothing to give its slack to shares it out between the items it
+has, which spread a short type's handful of rows down the page with gaps between them. Whichever
+table the *Content* page is showing is the one thing on it worth growing, so it takes that page's
+slack instead whenever the selected type has one, and asks for enough height to read a run of
+entries at a glance.
 
 **A sticky block's children are branches off it, and fold away.** The list stays a `QListWidget`:
 a roll is a run of sections with one shallow exception in it, and a tree would trade the
