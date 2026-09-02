@@ -65,7 +65,7 @@ QString faceKey(const QString &family, const QString &styleName)
  * would add nothing.
  *
  * A file that declares no faces at all -- a bundle written before they were recorded -- says
- * nothing either way, and is treated as adding nothing, which is the behaviour it already had.
+ * nothing either way, and is treated as adding nothing, which is the behavior it already had.
  */
 bool suppliesNothingMissing(const BundledFont &font)
 {

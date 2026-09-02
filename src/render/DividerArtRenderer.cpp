@@ -46,7 +46,7 @@ qreal shapeAspect(DividerShape shape, QSvgRenderer *renderer)
 }
 
 /*
- * Renders one tile, mirrored along x and turned about its own centre when asked. Qt has no flag
+ * Renders one tile, mirrored along x and turned about its own center when asked. Qt has no flag
  * for either, so the painter is transformed around the rectangle and the tile drawn into it the
  * usual way -- which means a mirrored piece is the same artwork rather than a second copy of it
  * that has to be kept in step.
@@ -93,12 +93,12 @@ QRectF placementBounds(const DividerArtPlacement &piece)
 	return turn.mapRect(piece.rect);
 }
 
-/* True when this piece is painted through the section's ink rather than in its own colours. */
+/* True when this piece is painted through the section's ink rather than in its own colors. */
 bool isTinted(const DividerArtPlacement &piece, const Section &section)
 {
 	/*
 	 * The built-in shapes are drawn white precisely so they can be used as a stencil, so they
-	 * are always tinted. Only a file the user supplied has colours of its own worth keeping.
+	 * are always tinted. Only a file the user supplied has colors of its own worth keeping.
 	 */
 	return !dividerShapeUsesFile(piece.shape) || section.dividerTint;
 }
@@ -146,7 +146,7 @@ QVector<QRectF> layoutDividerArm(DividerShape shape, const QString &file, Divide
 
 	/*
 	 * An arm *is* the rule, so it is drawn at exactly the divider's thickness whatever height
-	 * its table row declares -- that number describes a cap or a centrepiece's proportion to
+	 * its table row declares -- that number describes a cap or a centerpiece's proportion to
 	 * the rule, and a rule has no proportion to itself.
 	 */
 	const qreal tileWidth = span.height() * shapeAspect(shape, renderer);
@@ -169,8 +169,8 @@ QVector<QRectF> layoutDividerArm(DividerShape shape, const QString &file, Divide
 
 	/*
 	 * The leftover is opened up between the tiles rather than left at the ends, so the run
-	 * meets the cap outside it and the centre inside it. With one tile there is nothing to open
-	 * up between, so it is centred instead.
+	 * meets the cap outside it and the center inside it. With one tile there is nothing to open
+	 * up between, so it is centered instead.
 	 */
 	const qreal pitch = copies > 1 ? (span.width() - tileWidth) / (copies - 1) : 0.0;
 	const qreal start = copies > 1 ? span.left() : span.left() + (span.width() - tileWidth) / 2.0;
@@ -190,7 +190,7 @@ void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art,
 
 	/*
 	 * Untinted custom artwork goes straight to the strip, and takes no part in the silhouette:
-	 * it has colours of its own, so there is nothing for a fill to stencil and no reason for an
+	 * it has colors of its own, so there is nothing for a fill to stencil and no reason for an
 	 * outline to trace it.
 	 */
 	for (const DividerArtPlacement &piece : art) {

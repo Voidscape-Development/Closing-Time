@@ -85,7 +85,7 @@ void paintImage(QPainter *painter, const QImage &image, const QRectF &rect, Back
 								     : std::min(scaleX, scaleY);
 
 		const QSizeF drawn(imageWidth * scale, imageHeight * scale);
-		/* Centred either way: what Cover crops is taken off both edges, and what Contain
+		/* Centered either way: what Cover crops is taken off both edges, and what Contain
 		 * leaves over is left on both. */
 		const QRectF target(rect.center().x() - drawn.width() / 2.0, rect.center().y() - drawn.height() / 2.0,
 				    drawn.width(), drawn.height());
@@ -114,11 +114,11 @@ QBrush gradientBrush(const GradientSpec &spec, bool radial, const QRectF &box)
 	/* Clockwise from straight down: 0 runs top to bottom, 90 left to right. */
 	const qreal radians = qDegreesToRadians(spec.angle);
 	const QPointF axis(std::sin(radians), std::cos(radians));
-	const QPointF centre = box.center();
+	const QPointF center = box.center();
 	/* The box's own extent along that axis, so the stops span exactly the block. */
 	const qreal half = (std::abs(axis.x()) * box.width() + std::abs(axis.y()) * box.height()) / 2.0;
 
-	QLinearGradient gradient(centre - axis * half, centre + axis * half);
+	QLinearGradient gradient(center - axis * half, center + axis * half);
 	gradient.setStops(stops);
 	return QBrush(gradient);
 }
@@ -144,7 +144,7 @@ QPainterPath backgroundPath(const BackgroundPanel &panel, const QRectF &rect)
 	 * the shape folds through itself. Every pair is checked and the *whole* figure scaled by the
 	 * worst of them, rather than each corner being clipped on its own: scaling keeps the corners
 	 * in the proportion they were set in, so a panel with one large corner and three small ones
-	 * put behind a short section is still recognisably that panel.
+	 * put behind a short section is still recognizably that panel.
 	 */
 	qreal scale = 1.0;
 	const auto limit = [&scale](qreal a, qreal b, qreal edge) {

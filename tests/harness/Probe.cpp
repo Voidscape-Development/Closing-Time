@@ -106,7 +106,7 @@ QImage flatten(const Strip &strip)
 
 	QPainter painter(&flat);
 	/* Source, not SourceOver: the tiles partition the strip, so this is assembly and not
-	 * compositing, and blending would quietly hide a tile that overlapped its neighbour. */
+	 * compositing, and blending would quietly hide a tile that overlapped its neighbor. */
 	painter.setCompositionMode(QPainter::CompositionMode_Source);
 	for (const StripTile &tile : strip.tiles)
 		painter.drawImage(0, tile.top, tile.image);

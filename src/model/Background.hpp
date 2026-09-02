@@ -37,7 +37,7 @@ namespace closingtime {
  * order -- and so the sweep is mapped over the panel by the very code that maps one over a block of
  * text (see gradientBrush in render/BackgroundPainter.hpp).
  *
- * `None` is not "a transparent colour": it is the panel not being drawn at all, which is what
+ * `None` is not "a transparent color": it is the panel not being drawn at all, which is what
  * every slot on every section starts as and what every document written before panels existed
  * loads as. Keeping it a fill rather than a separate switch means one setting says whether there
  * is a panel and what it is made of, and turning a panel off leaves everything else about it --
@@ -83,7 +83,7 @@ const QVector<BackgroundImageFit> &allBackgroundImageFits();
  *
  * Drawn *inside* the panel's own bounds rather than straddling them, so the rectangle the outset
  * describes is the outermost thing the panel paints and a border can be made heavier without the
- * panel quietly growing into its neighbours. A rounded panel's border follows the same corners the
+ * panel quietly growing into its neighbors. A rounded panel's border follows the same corners the
  * fill does, since it is the same path stroked rather than a second shape.
  */
 struct BackgroundBorder {
@@ -109,7 +109,7 @@ constexpr double kMaxBackgroundBorder = 512.0;
  *
  * **A panel never takes part in layout.** It is painted behind content whose box has already been
  * decided, and its outset reaches outside that box the way a text shadow reaches outside a line of
- * type -- see TextStyle::effectBleed, which this is deliberately modelled on. Nothing about
+ * type -- see TextStyle::effectBleed, which this is deliberately modeled on. Nothing about
  * switching a panel on moves a section, changes the height of the roll or alters its duration, so
  * a roll can be given cards and bands after it has been timed. The cost is the same cost a shadow
  * pays: the renderer has to be told how far outside its own box a section may paint, which is what
@@ -129,7 +129,7 @@ struct BackgroundPanel {
 	GradientSpec gradient;
 
 	/* Absolute path to an image QImageReader can decode. Animated files contribute their first
-	 * frame only: the strip is rasterised once and scrolled, and a panel -- unlike a logo -- has
+	 * frame only: the strip is rasterized once and scrolled, and a panel -- unlike a logo -- has
 	 * no quad of its own to be drawn from. */
 	QString imagePath;
 	BackgroundImageFit imageFit = BackgroundImageFit::Cover;
@@ -137,7 +137,7 @@ struct BackgroundPanel {
 	/*
 	 * Applied to everything the panel paints, fill and border together, 0.0 to 1.0.
 	 *
-	 * Over the whole panel rather than folded into the colour's own alpha, because an image has
+	 * Over the whole panel rather than folded into the color's own alpha, because an image has
 	 * no alpha to fold it into and "the same card, half as present" should be one number wherever
 	 * the panel came from -- including when it came from a preset shared with another section.
 	 */

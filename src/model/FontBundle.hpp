@@ -50,7 +50,7 @@ struct BundledFont {
 	 * Recorded because a family is not one file and the roll does not use all of them. Without
 	 * it, a bundle arriving on a machine that has the family installed but not the semibold has
 	 * no way to know that the file it is carrying is the one thing that can supply it, and the
-	 * font window has no way to say which faces travelled and which did not.
+	 * font window has no way to say which faces traveled and which did not.
 	 *
 	 * Empty in a bundle written before this was recorded, which means "unknown" rather than
 	 * "none": such a file is treated as standing for the whole family, exactly as it used to be.
@@ -84,7 +84,7 @@ private:
 /*
  * A family this machine cannot supply, and the installed family standing in for it.
  *
- * The other half of the answer, for the fonts that cannot travel: most commercial licences
+ * The other half of the answer, for the fonts that cannot travel: most commercial licenses
  * forbid passing the file on, and a foundry's webfont is often not a file at all. Choosing the
  * stand-in explicitly is still better than letting Qt pick, because the choice is recorded --
  * it renders the same on every machine that opens the collection, including the one it was

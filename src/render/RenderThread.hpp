@@ -23,9 +23,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace closingtime {
 
 /*
- * The shared strip-rasterisation thread.
+ * The shared strip-rasterization thread.
  *
- * Rasterising a long roll takes long enough to be seen, so it does not belong on the thread
+ * Rasterizing a long roll takes long enough to be seen, so it does not belong on the thread
  * that draws OBS's own window. QPainter, QFontMetrics and QImageReader are all usable off
  * the GUI thread as long as the paint device is a QImage, which is exactly what the strip
  * renderer paints into.

@@ -34,7 +34,7 @@ namespace {
  * hands it.
  *
  * The art is white because the renderer uses it as a stencil for the section's own fill, which
- * is what keeps a leader picking up the same colour, gradient, outline and shadow as the text
+ * is what keeps a leader picking up the same color, gradient, outline and shadow as the text
  * either side of it.
  */
 const BridgeTypeInfo kBridgeTypes[] = {
@@ -50,7 +50,7 @@ const BridgeTypeInfo kBridgeTypes[] = {
 	{BridgeType::Dots, "dots", "Dots", R"(<circle cx="1" cy="0.5" r="0.5" fill="#ffffff"/>)", 2.0,
 	 BridgeStretch::Spread},
 
-	/* Centred in its tile, like the dot, so a run of them is symmetric at both ends. */
+	/* Centered in its tile, like the dot, so a run of them is symmetric at both ends. */
 	{BridgeType::Dashes, "dashes", "Dashes",
 	 R"(<rect x="0.5" y="0" width="2" height="1" rx="0.5" fill="#ffffff"/>)", 3.0, BridgeStretch::Spread},
 

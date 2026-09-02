@@ -44,7 +44,7 @@ and the harness already reports which of them failed.
 The scenes in `harness/Fixtures.cpp` are small documents chosen to show one thing each. Adding one
 is three lines and gets you a rendered PNG next to all the others.
 
-**There are deliberately no golden images.** Text rasterises differently across font versions,
+**There are deliberately no golden images.** Text rasterizes differently across font versions,
 hinting settings and platforms, so a committed PNG would fail on machines where nothing is wrong.
 The artifacts are for looking at; anything that must hold is written as a measurement.
 
@@ -79,7 +79,7 @@ main way a check here passes while the thing it names is broken.
 
 - **`boxesOf` / `boxOf`** — where the layout *put* something: the column a run of text was given,
   the rectangle a logo was fitted into. Use for "this column is the full content width".
-- **`inkOf`** — where pixels actually landed. Use for "the leader reaches the words": a centred
+- **`inkOf`** — where pixels actually landed. Use for "the leader reaches the words": a centered
   title in a wide column inks the middle of it, and only the ink knows that.
 
 ### Sweeps
@@ -91,7 +91,7 @@ A configuration matrix is one call rather than eight nested loops. Each combinat
 const QVector<Axis> axes = {
         axis<LogoPlacement>("place", {{"edge", LogoPlacement::Edge}, {"hug", LogoPlacement::Hug}},
                             [](Section &s, LogoPlacement v) { s.logoPlacement = v; }),
-        axis<HAlign>("align", {{"left", HAlign::Left}, {"centre", HAlign::Center}},
+        axis<HAlign>("align", {{"left", HAlign::Left}, {"center", HAlign::Center}},
                      [](Section &s, HAlign v) { s.style.align = v; }),
 };
 

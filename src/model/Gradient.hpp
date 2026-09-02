@@ -35,7 +35,7 @@ namespace closingtime {
  * would have meant either a circular include or a second copy of the same four fields.
  */
 
-/* One colour stop. `position` is 0.0 at the start of the gradient's axis and 1.0 at its end. */
+/* One color stop. `position` is 0.0 at the start of the gradient's axis and 1.0 at its end. */
 struct GradientStop {
 	double position = 0.0;
 	QColor color = QColor(255, 255, 255);
@@ -59,7 +59,7 @@ struct GradientSpec {
 
 	/*
 	 * The stops as QGradient wants them: sorted, clamped into 0..1, and padded out to at
-	 * least two so a gradient left with one stop still paints that colour rather than
+	 * least two so a gradient left with one stop still paints that color rather than
 	 * falling back to black. Everything that draws a gradient goes through this.
 	 */
 	QVector<QPair<qreal, QColor>> resolvedStops() const;

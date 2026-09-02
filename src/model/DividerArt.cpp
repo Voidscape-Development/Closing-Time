@@ -41,7 +41,7 @@ constexpr unsigned kArm = DividerRoleArm;
  * ends of the same rule.
  *
  * The art is white because the renderer uses it as a stencil for the section's own fill, which
- * is what lets a divider carry the same colour, gradient, outline and shadow as the titles
+ * is what lets a divider carry the same color, gradient, outline and shadow as the titles
  * around it. Filigree is stroked rather than filled -- a curl has no interior worth naming --
  * and no stroked shape is a scaling arm, so nothing here is ever scaled unevenly enough to
  * thin a stroke on one axis.
@@ -100,7 +100,7 @@ const DividerShapeInfo kDividerShapes[] = {
 	 8.0, 1.0, DividerStretch::Scale, kArm},
 
 	/*
-	 * Thickest where it meets the centre and drawn down to a hairline at the cap, rather than
+	 * Thickest where it meets the center and drawn down to a hairline at the cap, rather than
 	 * to a true point: a zero-width end disappears into the antialiasing instead of tapering
 	 * into it. Paired with a `None` cap this is the needle rule that has no ends at all.
 	 */
@@ -125,7 +125,7 @@ const DividerShapeInfo kDividerShapes[] = {
 	 R"(</g>)",
 	 4.0, 1.0, DividerStretch::Spread, kArm},
 
-	/* --- Centrepieces ----------------------------------------------------------------- */
+	/* --- Centerpieces ----------------------------------------------------------------- */
 
 	{DividerShape::Diamond, "diamond", "Diamond", R"(<path d="M1 0 L2 0.5 L1 1 L0 0.5 Z" fill="#ffffff"/>)", 2.0,
 	 3.5, DividerStretch::Spread, kPiece},
@@ -164,7 +164,7 @@ const DividerShapeInfo kDividerShapes[] = {
 
 	/*
 	 * Two mirrored curls with nothing between them, which is the point: whatever belongs in
-	 * that space -- a diamond, a word, a monogram -- is another piece in the centre stack
+	 * that space -- a diamond, a word, a monogram -- is another piece in the center stack
 	 * rather than a second copy of this shape with the middle filled in.
 	 */
 	{DividerShape::Filigree, "filigree", "Filigree",
@@ -190,11 +190,11 @@ const DividerShapeInfo kDividerShapes[] = {
 
 	/*
 	 * The geometry, filled and outlined. Every one is drawn to the full unit height with the
-	 * midline through its centre, so a run of them sits on the rule at one size whatever mix of
+	 * midline through its center, so a run of them sits on the rule at one size whatever mix of
 	 * shapes it is made of -- and `height` is the same 3.0 throughout for the same reason.
 	 *
-	 * An outline is the filled path scaled about its own centre rather than a second set of
-	 * coordinates: the stroke is centred on the line it traces, so art drawn to the edge of the
+	 * An outline is the filled path scaled about its own center rather than a second set of
+	 * coordinates: the stroke is centered on the line it traces, so art drawn to the edge of the
 	 * box would have the outer half of it clipped away by the viewBox. Scaling the whole shape
 	 * pulls the stroke inside, and keeps the outline the same figure as the fill it answers.
 	 */
@@ -273,7 +273,7 @@ const DividerShapeInfo kDividerShapes[] = {
 	 * Custom art is measured from the file's own viewBox rather than from `aspect`, and it
 	 * spreads rather than scales in an arm: stretching artwork nobody here drew is far more
 	 * likely to ruin it than to fill the span nicely. Its `height` is a guess at what a cap or
-	 * a centrepiece usually is -- a file declares no proportion to the rule anywhere -- and the
+	 * a centerpiece usually is -- a file declares no proportion to the rule anywhere -- and the
 	 * piece's own size multiplier is what corrects it. In an arm the number is not read at all:
 	 * an arm is the rule, and is drawn at exactly the thickness.
 	 */

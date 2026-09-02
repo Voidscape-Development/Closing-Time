@@ -75,7 +75,7 @@ const SectionTypeInfo kSectionTypes[] = {
 	{SectionType::MultiLogoList, "multi_logo_list", "Multi-List of Logos", false, true, true, true, false},
 	/*
 	 * Every flag is false: a divider has no section text, no section logo and no entry list.
-	 * The text and the logos it can carry live in its own centre stack, which is a different
+	 * The text and the logos it can carry live in its own center stack, which is a different
 	 * shape from an entry list and is edited by a table of its own -- so answering yes to any
 	 * of these would hand the divider the rows and the buttons belonging to a list it does not
 	 * have. What it does show is decided by type in SectionEditor::applyTypeVisibility.
@@ -90,7 +90,7 @@ const SectionTypeInfo kSectionTypes[] = {
 	{SectionType::StickyBlock, "sticky_block", "Sticky Ending Block", false, false, false, false, false},
 };
 
-/* Listed in the order the divider's centre-piece picker presents them. */
+/* Listed in the order the divider's center-piece picker presents them. */
 const struct {
 	DividerPiece::Kind kind;
 	const char *id;
@@ -226,7 +226,7 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 {
 	/*
 	 * Every type has a section to sit behind, including the two that draw no content of their
-	 * own: a panel behind a Spacer is a band of colour between two runs of credits, which is a
+	 * own: a panel behind a Spacer is a band of color between two runs of credits, which is a
 	 * design rather than an accident of the slot being offered.
 	 */
 	QVector<BackgroundSlot> used{BackgroundSlot::Section};
@@ -251,7 +251,7 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 	 * The text slots are the *lines within* a piece of content, which is why a list offers them
 	 * only when its entries hold a pair. A plain Text List's line and its entry are one rectangle,
 	 * and offering two names for it would be two settings that draw over each other with no rule
-	 * for which won -- so a single-line list is panelled by its entry slot and that is all.
+	 * for which won -- so a single-line list is paneled by its entry slot and that is all.
 	 */
 	if (sectionUsesText(type) && (!sectionUsesEntries(type) || sectionUsesSecondaryText(type))) {
 		used.append(BackgroundSlot::Title);
@@ -725,7 +725,7 @@ void TextStyle::load(obs_data_t *data)
 	if (lineSpacing <= 0.0)
 		lineSpacing = 1.0;
 
-	/* Absent in documents written before fills existed, which were all solid colour. */
+	/* Absent in documents written before fills existed, which were all solid color. */
 	fill = textFillFromId(obs_data_get_string(data, "fill"), TextFill::Solid);
 
 	OBSDataAutoRelease gradientData = obs_data_get_obj(data, "gradient");
@@ -1048,7 +1048,12 @@ void Section::save(obs_data_t *data) const
 			&pieces);
 	};
 
-	savePieces("divider_centre", dividerCentre);
+	/*
+	 * The key keeps the spelling it was first written with. Every scene collection already saved
+	 * holds "divider_centre", and renaming the key to match the field would quietly drop the
+	 * middle of every divider in them -- a rename worth nothing against a stack of art lost.
+	 */
+	savePieces("divider_centre", dividerCenter);
 	/*
 	 * Under keys of their own rather than the "divider_cap"/"divider_end_cap" a single shape was
 	 * written to: those still have to be readable as what they were, and a key that is a string
@@ -1345,7 +1350,8 @@ void Section::load(obs_data_t *data)
 		return true;
 	};
 
-	loadPieces("divider_centre", &dividerCentre);
+	/* British-spelled on purpose; see the note beside the matching save. */
+	loadPieces("divider_centre", &dividerCenter);
 
 	/*
 	 * An end written as a single shape -- every document from before an end was a stack -- is
@@ -1559,16 +1565,16 @@ Section Section::makeDefault(SectionType type)
 		 * The arrow rule: a plain bar between two arrowheads, broken in the middle by a
 		 * diamond with a dot either side of it. Deliberately a compound rather than a
 		 * single ornament, because the first thing anyone does with a new divider is take a
-		 * piece out or put one in, and starting from three shows that the centre is a list.
+		 * piece out or put one in, and starting from three shows that the center is a list.
 		 */
 		section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Arrow, {}, 1.0, {}, {}}};
 		section.dividerArm = DividerShape::Rule;
 		section.dividerThickness = 5.0;
-		section.dividerCentre.append(
+		section.dividerCenter.append(
 			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}});
-		section.dividerCentre.append(
+		section.dividerCenter.append(
 			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 1.0, {}, {}});
-		section.dividerCentre.append(
+		section.dividerCenter.append(
 			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}});
 		/*
 		 * Narrower than the canvas and generously padded, because a divider that runs edge to
@@ -1600,7 +1606,7 @@ Section Section::makeDefault(SectionType type)
 	}
 
 	/*
-	 * A section being added now gets the placement that actually honours logoGap. Edge
+	 * A section being added now gets the placement that actually honors logoGap. Edge
 	 * stays the load-time fallback, so documents predating the setting keep the layout they
 	 * were built against.
 	 */
@@ -1668,11 +1674,11 @@ QString Section::displayLabel() const
 
 	case SectionType::SectionDivider: {
 		/*
-		 * A labelled break names itself: the one thing in a divider a user can pick out of a
+		 * A labeled break names itself: the one thing in a divider a user can pick out of a
 		 * list at a glance is a word they typed into it. Everything else falls back to the
 		 * type and the rule it is drawn from, which at least tells two dividers apart.
 		 */
-		for (const DividerPiece &piece : dividerCentre) {
+		for (const DividerPiece &piece : dividerCenter) {
 			if (piece.kind == DividerPiece::Kind::Text && !piece.text.isEmpty())
 				return piece.text;
 		}
@@ -1749,7 +1755,7 @@ TextStyle Document::effectiveBridgeStyle(const Section &section) const
 
 	/*
 	 * Ink only. Everything the layout measures with -- family, size, weight, alignment, line
-	 * spacing -- is left as the row's, so a bridge that has been recoloured occupies exactly the
+	 * spacing -- is left as the row's, so a bridge that has been recolored occupies exactly the
 	 * space it did before and nothing else in the row moves for it. It also means a preset
 	 * written for a run of headings can be pointed at a leader without dragging a heading's font
 	 * size across with it.
@@ -2076,7 +2082,7 @@ QVector<FontUse> Document::usedFonts() const
 			return;
 
 		/*
-		 * A divider draws text only when its centre stack holds some, so it is asked rather
+		 * A divider draws text only when its center stack holds some, so it is asked rather
 		 * than assumed: reporting a font for a roll whose every divider is pure artwork
 		 * would send the user hunting for a substitution that never happened.
 		 */
@@ -2088,7 +2094,7 @@ QVector<FontUse> Document::usedFonts() const
 
 		/* Any of the three stacks can hold a word, so all three are asked. */
 		const bool dividerText = section.type == SectionType::SectionDivider &&
-					 (holdsWord(section.dividerCentre) || holdsWord(section.dividerCap) ||
+					 (holdsWord(section.dividerCenter) || holdsWord(section.dividerCap) ||
 					  holdsWord(section.dividerEndCap));
 
 		if (!sectionUsesText(section.type) && !dividerText)

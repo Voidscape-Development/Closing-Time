@@ -119,9 +119,9 @@ BackgroundEditor::BackgroundEditor(QWidget *parent) : QWidget(parent)
 	fillBox->setToolTip(moduleText("Designer.Background.Fill.Tip"));
 	layout->addRow(moduleText("Designer.Background.Fill"), fillBox);
 
-	colourButton = new ColourButton(this);
-	colourButton->setDialogTitle(moduleText("Designer.Background.Color"));
-	layout->addRow(moduleText("Designer.Background.Color"), colourButton);
+	colorButton = new ColorButton(this);
+	colorButton->setDialogTitle(moduleText("Designer.Background.Color"));
+	layout->addRow(moduleText("Designer.Background.Color"), colorButton);
 
 	gradientEditor = new GradientEditor(this);
 	layout->addRow(moduleText("Designer.Background.Gradient"), gradientEditor);
@@ -208,9 +208,9 @@ BackgroundEditor::BackgroundEditor(QWidget *parent) : QWidget(parent)
 	borderWidth->setSingleStep(0.5);
 	borderWidth->setSuffix(QStringLiteral(" px"));
 	borderForm->addRow(moduleText("Designer.Background.BorderWidth"), borderWidth);
-	borderColour = new ColourButton(borderGroup);
-	borderColour->setDialogTitle(moduleText("Designer.Background.BorderColor"));
-	borderForm->addRow(moduleText("Designer.Background.BorderColor"), borderColour);
+	borderColor = new ColorButton(borderGroup);
+	borderColor->setDialogTitle(moduleText("Designer.Background.BorderColor"));
+	borderForm->addRow(moduleText("Designer.Background.BorderColor"), borderColor);
 	layout->addRow(borderGroup);
 
 	const auto notify = [this] {
@@ -222,8 +222,8 @@ BackgroundEditor::BackgroundEditor(QWidget *parent) : QWidget(parent)
 		notifyEdited();
 	});
 	connect(imageFit, &QComboBox::currentIndexChanged, this, notify);
-	connect(colourButton, &ColourButton::colourChanged, this, notify);
-	connect(borderColour, &ColourButton::colourChanged, this, notify);
+	connect(colorButton, &ColorButton::colorChanged, this, notify);
+	connect(borderColor, &ColorButton::colorChanged, this, notify);
 	connect(gradientEditor, &GradientEditor::changed, this, notify);
 	connect(imagePath, &QLineEdit::textChanged, this, notify);
 	connect(browse, &QPushButton::clicked, this, &BackgroundEditor::browseForImage);
@@ -255,7 +255,7 @@ void BackgroundEditor::writeFields(const BackgroundPanel &panel)
 	loading = true;
 
 	fillBox->setCurrentIndex(std::max(0, fillBox->findData(static_cast<int>(panel.fill))));
-	colourButton->setColour(panel.color);
+	colorButton->setColor(panel.color);
 
 	gradient = panel.gradient;
 	gradientEditor->setGradient(gradient);
@@ -291,7 +291,7 @@ void BackgroundEditor::writeFields(const BackgroundPanel &panel)
 
 	borderGroup->setChecked(panel.border.enabled);
 	borderWidth->setValue(panel.border.width);
-	borderColour->setColour(panel.border.color);
+	borderColor->setColor(panel.border.color);
 
 	applyFillVisibility();
 	applyShapeVisibility();
@@ -309,7 +309,7 @@ BackgroundPanel BackgroundEditor::panel() const
 	BackgroundPanel result;
 
 	result.fill = static_cast<BackgroundFill>(fillBox->currentData().toInt());
-	result.color = colourButton->colour();
+	result.color = colorButton->color();
 	result.gradient = gradientEditor->gradient();
 	result.imagePath = imagePath->text().trimmed();
 	result.imageFit = static_cast<BackgroundImageFit>(imageFit->currentData().toInt());
@@ -344,7 +344,7 @@ BackgroundPanel BackgroundEditor::panel() const
 
 	result.border.enabled = borderGroup->isChecked();
 	result.border.width = borderWidth->value();
-	result.border.color = borderColour->colour();
+	result.border.color = borderColor->color();
 
 	return result;
 }
@@ -353,7 +353,7 @@ void BackgroundEditor::applyFillVisibility()
 {
 	const auto fill = static_cast<BackgroundFill>(fillBox->currentData().toInt());
 
-	form->setRowVisible(colourButton, fill == BackgroundFill::Color);
+	form->setRowVisible(colorButton, fill == BackgroundFill::Color);
 	form->setRowVisible(gradientEditor, isGradient(fill));
 	form->setRowVisible(imageRow, fill == BackgroundFill::Image);
 	form->setRowVisible(imageFit, fill == BackgroundFill::Image);

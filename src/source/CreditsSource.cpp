@@ -96,7 +96,7 @@ struct StickyBlockRuntime {
 	gs_texture_t *texture = nullptr;
 
 	enum class State {
-		/* Still travelling with the roll, on its way to the anchor. */
+		/* Still traveling with the roll, on its way to the anchor. */
 		Waiting,
 		/* Detached and holding at the anchor. */
 		Pinned,
@@ -107,7 +107,7 @@ struct StickyBlockRuntime {
 	State state = State::Waiting;
 	/* Seconds left of the hold. Meaningless until the block has pinned. */
 	double holdRemaining = 0.0;
-	/* How far it has travelled since it was released, in pixels. */
+	/* How far it has traveled since it was released, in pixels. */
 	double releasedTravel = 0.0;
 	/* Set once its hold has had whatever say it has in ending the roll. */
 	bool spent = false;
@@ -131,7 +131,7 @@ struct CreditsSourceData {
 	obs_source_t *source = nullptr;
 
 	Document document;
-	/* What the last rebuild was rasterised from; see renderKey(). Graphics thread only. */
+	/* What the last rebuild was rasterized from; see renderKey(). Graphics thread only. */
 	QString renderedFrom;
 	/*
 	 * Owned by the render thread: only the rebuild job reads or writes it, and jobs run
@@ -207,10 +207,10 @@ struct RebuildTask {
 };
 
 /*
- * Everything the strip is rasterised from, as a string two documents can be compared by.
+ * Everything the strip is rasterized from, as a string two documents can be compared by.
  *
  * Playback settings reach the source through the same update() every content edit does, and
- * scrubbing moves a slider that fires one per frame of the drag. Rasterising a long roll on each
+ * scrubbing moves a slider that fires one per frame of the drag. Rasterizing a long roll on each
  * of those would keep the render thread busy for the whole gesture and hand back a stream of
  * strips identical to the one already on the GPU, so a rebuild is queued only when this changes.
  *
@@ -234,7 +234,7 @@ QString renderKey(const Document &document)
 	/*
 	 * The bundled font files are reduced to their sizes rather than carried. This key is built
 	 * on every update -- which is once per frame of a slider drag -- and a font runs to
-	 * megabytes: serialising them here would cost more than the rebuild it exists to avoid.
+	 * megabytes: serializing them here would cost more than the rebuild it exists to avoid.
 	 * What is left still names every family and every file, which is what a bundle changing
 	 * actually looks like.
 	 */
@@ -264,7 +264,7 @@ void queueRebuild(CreditsSourceData *data)
 	task->sourceName = QString::fromUtf8(obs_source_get_name(data->source));
 
 	/*
-	 * Rasterisation is long enough to be seen if it happens on the thread drawing OBS's
+	 * Rasterization is long enough to be seen if it happens on the thread drawing OBS's
 	 * own window, so it goes to the shared render thread instead. The handoff below is
 	 * unchanged: the graphics thread still picks the finished tiles up in video_render.
 	 */
@@ -726,7 +726,7 @@ void advanceStickyBlocks(CreditsSourceData *data, double seconds, bool rolling)
 	}
 
 	/* The roll has gone as far as it goes; nothing below can still be on its way to an anchor. */
-	const bool travelled = offset >= rollTravel(data) - 0.5;
+	const bool traveled = offset >= rollTravel(data) - 0.5;
 	const double stripTop = canvasHeight - offset;
 
 	bool pending = false;
@@ -750,12 +750,12 @@ void advanceStickyBlocks(CreditsSourceData *data, double seconds, bool rolling)
 		case StickyBlockRuntime::State::Waiting: {
 			/*
 			 * Pinned once the slot has carried it up to the anchor -- or once the roll has
-			 * finished travelling, which catches a pin the roll would never otherwise reach
+			 * finished traveling, which catches a pin the roll would never otherwise reach
 			 * (a negative offset on a short roll) rather than leaving the roll waiting on a
 			 * block that can never arrive.
 			 */
 			const double naturalTop = stripTop + placement.rect.top();
-			if (rolling && (naturalTop <= pinnedTop || travelled))
+			if (rolling && (naturalTop <= pinnedTop || traveled))
 				runtime.state = StickyBlockRuntime::State::Pinned;
 			break;
 		}
@@ -853,7 +853,7 @@ void update(void *raw, obs_data_t *settings)
 		data->settingsNeedWriteBack = true;
 
 	/*
-	 * Only a change to what the strip is made of is worth rasterising again -- see renderKey().
+	 * Only a change to what the strip is made of is worth rasterizing again -- see renderKey().
 	 * Everything else here arrives through the same call: a scrub sends one per frame of the
 	 * drag, and rebuilding for those would keep the render thread busy producing strips
 	 * identical to the one already uploaded.
@@ -1199,7 +1199,7 @@ void drawTile(gs_texture_t *texture, double top, int canvasHeight)
 /*
  * Draws the animated logos over the strip.
  *
- * Each one goes where the layout put it, offset by however far the roll has travelled, into the
+ * Each one goes where the layout put it, offset by however far the roll has traveled, into the
  * hole the strip left for it -- so an animated logo scrolls with the text beside it rather than
  * following it a frame later, because both are placed from the same offset in the same frame.
  *

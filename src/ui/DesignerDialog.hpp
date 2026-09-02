@@ -333,6 +333,21 @@ private:
 	/* Inserts `section` into the container `path` names, at `path.index`. Returns where it went. */
 	SectionPath insertSection(const SectionPath &path, const Section &section);
 
+	/*
+	 * Asks what the section about to be added is called, and answers false if the user backs out.
+	 *
+	 * A roll of forty sections is read in the list down the left, and a section that was never
+	 * named sits in it as "List (23)" until somebody thinks to go looking for the name field --
+	 * which is a row in the editor, three away from the type picker, and easy to never meet. The
+	 * one moment the name is worth asking for is the moment the section is made, so it is asked
+	 * for there and the field stays where it is for changing the answer later.
+	 *
+	 * An empty answer is a real answer: the section falls back to naming itself after what it
+	 * holds, which is what every section did before this dialog existed. Cancel is the only way
+	 * to end up with no section, so a misfired menu costs nothing.
+	 */
+	bool promptForSectionName(const QString &title, const QString &initial, QString *name);
+
 	/* Takes the section out of its container. */
 	void removeSectionAt(const SectionPath &path);
 
@@ -358,7 +373,7 @@ private:
 
 	/*
 	 * Preview renders coalesce the same way the source's do: while one is out, further
-	 * edits set a flag instead of queueing another job, so a roll slow enough to rasterise
+	 * edits set a flag instead of queueing another job, so a roll slow enough to rasterize
 	 * cannot build a backlog of stale frames behind the one the user is waiting for.
 	 * UI thread only.
 	 */
@@ -399,7 +414,7 @@ private:
 	QPushButton *undoButton = nullptr;
 	QPushButton *redoButton = nullptr;
 	/*
-	 * Renders are debounced so that typing into a text field does not re-rasterise the
+	 * Renders are debounced so that typing into a text field does not re-rasterize the
 	 * entire strip on every keystroke.
 	 */
 	QTimer *refreshTimer = nullptr;

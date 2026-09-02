@@ -164,7 +164,7 @@ QString distinctFamily()
  * An installed family that ships a bold face of its own, and whose bold measures differently
  * from its regular, or empty when this machine has none.
  *
- * Both halves matter. A family whose bold is synthesised would make "the named face was used" and
+ * Both halves matter. A family whose bold is synthesized would make "the named face was used" and
  * "the bold flag was used" the same picture, and a family whose two faces happen to measure alike
  * would make the check pass whichever of them was drawn.
  */
@@ -240,7 +240,7 @@ TwoFaceFamily findTwoFaceFamily()
 	}
 
 	/*
-	 * Walked in name order rather than in the hash's. QHash randomises its iteration per process,
+	 * Walked in name order rather than in the hash's. QHash randomizes its iteration per process,
 	 * which would have this pick a different family on each run -- and a check that fails on one
 	 * machine in four runs is one nobody can reproduce.
 	 */
@@ -336,7 +336,7 @@ CT_SUITE(fonts_used_families, "Which families a roll is actually set in")
 	DividerPiece word;
 	word.kind = DividerPiece::Kind::Text;
 	word.text = QStringLiteral("PART II");
-	divider.dividerCentre = {word};
+	divider.dividerCenter = {word};
 	checkEq(documentWith(divider).usedFontFamilies().size(), 1,
 		"a divider that does set text reports the family it sets it in");
 
@@ -521,20 +521,20 @@ CT_SUITE(fonts_collection, "Which files a roll carries with it")
 	foreign.fileName = QStringLiteral("absent.ttf");
 	foreign.data = QByteArray("pretend this is a font");
 
-	Document travelled = headingIn(kAbsentFamily);
-	travelled.bundledFonts = {foreign};
+	Document traveled = headingIn(kAbsentFamily);
+	traveled.bundledFonts = {foreign};
 
-	check(!travelled.refreshFontBundle(), "a roll carrying a font this machine lacks is unchanged by a refresh");
-	checkEq(travelled.bundledFonts.size(), 1, "and still carries it");
+	check(!traveled.refreshFontBundle(), "a roll carrying a font this machine lacks is unchanged by a refresh");
+	checkEq(traveled.bundledFonts.size(), 1, "and still carries it");
 
-	check(!travelled.refreshFontBundle(nullptr, true), "even when the files are deliberately re-read");
-	checkEq(travelled.bundledFonts.size(), 1, "which is the machine the bundle exists for");
+	check(!traveled.refreshFontBundle(nullptr, true), "even when the files are deliberately re-read");
+	checkEq(traveled.bundledFonts.size(), 1, "which is the machine the bundle exists for");
 
 	/* A family the roll has stopped using is a file it has stopped needing to carry. */
-	travelled.sections[0].style.family = installed.family;
-	check(travelled.refreshFontBundle(), "changing the family the roll is set in changes the bundle");
-	check(!travelled.bundledFonts.isEmpty(), "which now carries the family it is set in");
-	for (const BundledFont &font : travelled.bundledFonts)
+	traveled.sections[0].style.family = installed.family;
+	check(traveled.refreshFontBundle(), "changing the family the roll is set in changes the bundle");
+	check(!traveled.bundledFonts.isEmpty(), "which now carries the family it is set in");
+	for (const BundledFont &font : traveled.bundledFonts)
 		check(font.family != kAbsentFamily, "and no longer the one it is not");
 
 	/* A family that has been answered with a stand-in is not one to go looking for a file for. */
@@ -790,7 +790,7 @@ CT_SUITE(fonts_face_render, "A named face rendering, and falling back when it ca
 	check(inkOf(renderImage(namedFace)).width() != regularWidth, "and not as the family's regular");
 
 	check(fontStyleAvailable(family, boldFace.toUpper()),
-	      "a face is recognised whatever the document spelled its capitals as");
+	      "a face is recognized whatever the document spelled its capitals as");
 	check(!fontStyleAvailable(family, QStringLiteral("Closing Time Absent Face Name")),
 	      "and a face the family does not ship is not");
 }

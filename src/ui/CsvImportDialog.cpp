@@ -111,7 +111,7 @@ CsvImportDialog::CsvImportDialog(SectionType type, bool subtitles, QWidget *pare
 	/*
 	 * The mapping sits beside the preview rather than above it: a column of "name -> field"
 	 * rows scrolls down as far as the file is wide, so a spreadsheet with a dozen columns
-	 * needs no sideways scrolling to reach the last one, and each row is labelled with the
+	 * needs no sideways scrolling to reach the last one, and each row is labeled with the
 	 * column's own name from the file rather than a position nobody can match up by eye.
 	 */
 	auto *content = new QHBoxLayout();
@@ -371,7 +371,7 @@ void CsvImportDialog::refreshPreview()
 
 	QString status = QStringLiteral("%1 %2").arg(moduleText("Import.RowCount")).arg(dataRows);
 	if (dataRows > shown)
-		status += QStringLiteral(" — %1 %2").arg(moduleText("Import.PreviewLimit")).arg(shown);
+		status += QStringLiteral(" - %1 %2").arg(moduleText("Import.PreviewLimit")).arg(shown);
 	statusLabel->setText(status);
 }
 

@@ -67,7 +67,7 @@ QString testLogoPath();
  *
  * Generated rather than committed for the reasons the still is, and by hand rather than through
  * Qt because Qt reads GIFs and does not write them. It is 16x16 and its two frames are two flat
- * colours, which is all any check here needs: the frame count, the frame timing, and the fact
+ * colors, which is all any check here needs: the frame count, the frame timing, and the fact
  * that the two differ.
  */
 QString testAnimatedLogoPath();

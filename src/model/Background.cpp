@@ -35,7 +35,7 @@ struct BackgroundFillInfo {
 
 const BackgroundFillInfo kFills[] = {
 	{BackgroundFill::None, "none", "None"},
-	{BackgroundFill::Color, "color", "Colour"},
+	{BackgroundFill::Color, "color", "Color"},
 	{BackgroundFill::LinearGradient, "linear_gradient", "Linear Gradient"},
 	{BackgroundFill::RadialGradient, "radial_gradient", "Radial Gradient"},
 	{BackgroundFill::Image, "image", "Image"},

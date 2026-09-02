@@ -64,10 +64,10 @@ const QVector<DividerPiece> &dividerPieces(const Section &section, PieceSlot slo
 		return section.dividerCap;
 	case PieceSlot::RightEnd:
 		return section.dividerEndCap;
-	case PieceSlot::Centre:
+	case PieceSlot::Center:
 		break;
 	}
-	return section.dividerCentre;
+	return section.dividerCenter;
 }
 
 QVector<DividerPiece> &dividerPieces(Section &section, PieceSlot slot)
@@ -139,9 +139,9 @@ Entry entryFromStash(const QVariant &value)
 	return entry;
 }
 
-/* Height the divider's centre table asks for before it starts scrolling, in pixels. A centre
+/* Height the divider's center table asks for before it starts scrolling, in pixels. A center
  * stack is a handful of pieces where an entry list is a cast, so it asks for less. */
-constexpr int kCentreTableMinimumHeight = 150;
+constexpr int kCenterTableMinimumHeight = 150;
 
 /* Image formats QImageReader can decode without extra plugins on every OBS platform. */
 QString imageFilter()
@@ -195,7 +195,7 @@ QString dividerPieceKindText(DividerPiece::Kind kind)
 	return text == key ? QString::fromUtf8(dividerPieceKindName(kind)) : text;
 }
 
-/* Columns of the divider's centre-piece table. */
+/* Columns of the divider's center-piece table. */
 enum PieceColumn {
 	/* Ornament, text or logo. */
 	PieceKind = 0,
@@ -205,12 +205,12 @@ enum PieceColumn {
 	PieceValue,
 	/* Ornament pieces only: a multiplier on the size its shape asks for. */
 	PieceSize,
-	/* Degrees clockwise about the piece's own centre; every kind reads it. */
+	/* Degrees clockwise about the piece's own center; every kind reads it. */
 	PieceRotation,
 	PieceColumnCount,
 };
 
-/* Width of the centre table's three narrow columns, none of which holds a long word. */
+/* Width of the center table's three narrow columns, none of which holds a long word. */
 constexpr int kPieceKindColumnWidth = 110;
 constexpr int kPieceSizeColumnWidth = 70;
 constexpr int kPieceRotationColumnWidth = 80;
@@ -343,9 +343,9 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	fillBox->addItem(moduleText("Designer.Fill.Radial"), static_cast<int>(TextFill::RadialGradient));
 	layout->addRow(moduleText("Designer.Fill"), fillBox);
 
-	colourButton = new ColourButton(this);
-	colourButton->setDialogTitle(moduleText("Designer.FontColor"));
-	layout->addRow(moduleText("Designer.FontColor"), colourButton);
+	colorButton = new ColorButton(this);
+	colorButton->setDialogTitle(moduleText("Designer.FontColor"));
+	layout->addRow(moduleText("Designer.FontColor"), colorButton);
 
 	gradientEditor = new GradientEditor(this);
 	layout->addRow(moduleText("Designer.Gradient"), gradientEditor);
@@ -359,9 +359,9 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	outlineWidth->setSingleStep(0.5);
 	outlineWidth->setSuffix(QStringLiteral(" px"));
 	outlineForm->addRow(moduleText("Designer.OutlineWidth"), outlineWidth);
-	outlineColour = new ColourButton(outlineGroup);
-	outlineColour->setDialogTitle(moduleText("Designer.OutlineColor"));
-	outlineForm->addRow(moduleText("Designer.OutlineColor"), outlineColour);
+	outlineColor = new ColorButton(outlineGroup);
+	outlineColor->setDialogTitle(moduleText("Designer.OutlineColor"));
+	outlineForm->addRow(moduleText("Designer.OutlineColor"), outlineColor);
 	layout->addRow(outlineGroup);
 
 	shadowGroup = new QGroupBox(moduleText("Designer.Shadow"), this);
@@ -389,9 +389,9 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	shadowBlur->setToolTip(moduleText("Designer.ShadowBlur.Tip"));
 	shadowForm->addRow(moduleText("Designer.ShadowBlur"), shadowBlur);
 
-	shadowColour = new ColourButton(shadowGroup);
-	shadowColour->setDialogTitle(moduleText("Designer.ShadowColor"));
-	shadowForm->addRow(moduleText("Designer.ShadowColor"), shadowColour);
+	shadowColor = new ColorButton(shadowGroup);
+	shadowColor->setDialogTitle(moduleText("Designer.ShadowColor"));
+	shadowForm->addRow(moduleText("Designer.ShadowColor"), shadowColor);
 	layout->addRow(shadowGroup);
 
 	const auto notify = [this] {
@@ -402,7 +402,7 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	connect(pixelSize, &QSpinBox::valueChanged, this, notify);
 	connect(alignment, &QComboBox::currentIndexChanged, this, notify);
 	connect(lineSpacing, &QDoubleSpinBox::valueChanged, this, notify);
-	connect(colourButton, &ColourButton::colourChanged, this, notify);
+	connect(colorButton, &ColorButton::colorChanged, this, notify);
 	connect(fillBox, &QComboBox::currentIndexChanged, this, &StyleEditor::onFillChanged);
 	connect(gradientEditor, &GradientEditor::changed, this, [this] {
 		gradient = gradientEditor->gradient();
@@ -410,12 +410,12 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	});
 	connect(outlineGroup, &QGroupBox::toggled, this, notify);
 	connect(outlineWidth, &QDoubleSpinBox::valueChanged, this, notify);
-	connect(outlineColour, &ColourButton::colourChanged, this, notify);
+	connect(outlineColor, &ColorButton::colorChanged, this, notify);
 	connect(shadowGroup, &QGroupBox::toggled, this, notify);
 	connect(shadowOffsetX, &QSpinBox::valueChanged, this, notify);
 	connect(shadowOffsetY, &QSpinBox::valueChanged, this, notify);
 	connect(shadowBlur, &QSpinBox::valueChanged, this, notify);
-	connect(shadowColour, &ColourButton::colourChanged, this, notify);
+	connect(shadowColor, &ColorButton::colorChanged, this, notify);
 	connect(presetBox, &QComboBox::currentIndexChanged, this, &StyleEditor::onPresetSelected);
 	connect(savePresetButton, &QPushButton::clicked, this, &StyleEditor::savePreset);
 	connect(deletePresetButton, &QPushButton::clicked, this, &StyleEditor::deletePreset);
@@ -438,7 +438,7 @@ void StyleEditor::writeFields(const TextStyle &style)
 	updateFontButton();
 
 	pixelSize->setValue(style.pixelSize);
-	colourButton->setColour(style.color);
+	colorButton->setColor(style.color);
 	selectByData(alignment, static_cast<int>(style.align));
 	lineSpacing->setValue(style.lineSpacing);
 
@@ -449,13 +449,13 @@ void StyleEditor::writeFields(const TextStyle &style)
 
 	outlineGroup->setChecked(style.outline.enabled);
 	outlineWidth->setValue(style.outline.width);
-	outlineColour->setColour(style.outline.color);
+	outlineColor->setColor(style.outline.color);
 
 	shadowGroup->setChecked(style.shadow.enabled);
 	shadowOffsetX->setValue(qRound(style.shadow.offsetX));
 	shadowOffsetY->setValue(qRound(style.shadow.offsetY));
 	shadowBlur->setValue(qRound(style.shadow.blur));
-	shadowColour->setColour(style.shadow.color);
+	shadowColor->setColor(style.shadow.color);
 
 	applyFillVisibility();
 }
@@ -619,24 +619,24 @@ TextStyle StyleEditor::style() const
 		style.lineSpacing = lineSpacing->value();
 	}
 
-	style.color = colourButton->colour();
+	style.color = colorButton->color();
 
 	style.fill = static_cast<TextFill>(fillBox->currentData().toInt());
 	/*
-	 * Carried whatever the fill is, so switching to a solid colour to see what the text
+	 * Carried whatever the fill is, so switching to a solid color to see what the text
 	 * looks like underneath and switching back does not cost the stops that were set up.
 	 */
 	style.gradient = gradient;
 
 	style.outline.enabled = outlineGroup->isChecked();
 	style.outline.width = outlineWidth->value();
-	style.outline.color = outlineColour->colour();
+	style.outline.color = outlineColor->color();
 
 	style.shadow.enabled = shadowGroup->isChecked();
 	style.shadow.offsetX = shadowOffsetX->value();
 	style.shadow.offsetY = shadowOffsetY->value();
 	style.shadow.blur = shadowBlur->value();
-	style.shadow.color = shadowColour->colour();
+	style.shadow.color = shadowColor->color();
 
 	return style;
 }
@@ -650,8 +650,8 @@ void StyleEditor::setInkOnly(bool value)
 	form->setRowVisible(alignment, !inkOnly);
 	form->setRowVisible(lineSpacing, !inkOnly);
 
-	/* "Font Color" is the wrong name for the colour of a run of dots. */
-	if (auto *label = qobject_cast<QLabel *>(form->labelForField(colourButton)))
+	/* "Font Color" is the wrong name for the color of a run of dots. */
+	if (auto *label = qobject_cast<QLabel *>(form->labelForField(colorButton)))
 		label->setText(moduleText(inkOnly ? "Designer.InkColor" : "Designer.FontColor"));
 }
 
@@ -660,7 +660,7 @@ void StyleEditor::applyFillVisibility()
 	const auto fill = static_cast<TextFill>(fillBox->currentData().toInt());
 	const bool gradientFill = fill != TextFill::Solid;
 
-	form->setRowVisible(colourButton, !gradientFill);
+	form->setRowVisible(colorButton, !gradientFill);
 	form->setRowVisible(gradientEditor, gradientFill);
 	gradientEditor->setFill(fill);
 }
@@ -670,12 +670,12 @@ void StyleEditor::onFillChanged()
 	const auto fill = static_cast<TextFill>(fillBox->currentData().toInt());
 
 	/*
-	 * A gradient still on its factory stops is seeded from the solid colour the style was
+	 * A gradient still on its factory stops is seeded from the solid color the style was
 	 * already using, so switching to one starts from the text as it looks now rather than
-	 * from an unrelated white-to-grey ramp.
+	 * from an unrelated white-to-gray ramp.
 	 */
 	if (fill != TextFill::Solid && gradient.stops == GradientSpec().stops) {
-		const QColor base = colourButton->colour();
+		const QColor base = colorButton->color();
 		gradient.stops = {GradientStop{0.0, base}, GradientStop{1.0, base.darker(220)}};
 		gradientEditor->setGradient(gradient);
 	}
@@ -752,14 +752,11 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	typeListContent->addItem(moduleText("Designer.ListContent.Text"), static_cast<int>(SectionListContent::Text));
 	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
 	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
+	typeListContent->setToolTip(moduleText("Designer.ListContent.Tip"));
 	addRow(moduleText("Designer.ListContent"), typeListContent);
 
 	visibleBox = new QCheckBox(moduleText("Designer.Visible"), this);
 	addRow(QString(), visibleBox);
-
-	showAdvanced = new QCheckBox(moduleText("Designer.ShowAdvanced"), this);
-	showAdvanced->setToolTip(moduleText("Designer.ShowAdvanced.Tip"));
-	addRow(QString(), showAdvanced);
 
 	/*
 	 * From here everything goes into one of the four tabs, in named groups that fold away. See
@@ -923,11 +920,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	bridgeFill->addItem(moduleText("Designer.BridgeFill.Fixed"), static_cast<int>(BridgeFill::Fixed));
 	bridgeFill->addItem(moduleText("Designer.BridgeFill.Repeat"), static_cast<int>(BridgeFill::Repeat));
 	bridgeFill->addItem(moduleText("Designer.BridgeFill.Stretch"), static_cast<int>(BridgeFill::Stretch));
+	bridgeFill->setToolTip(moduleText("Designer.BridgeFill.Tip"));
 	addRow(moduleText("Designer.BridgeFill"), bridgeFill);
 
 	bridgeSizing = new QComboBox(this);
 	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Split"), static_cast<int>(BridgeSizing::Split));
 	bridgeSizing->addItem(moduleText("Designer.BridgeSizing.Natural"), static_cast<int>(BridgeSizing::Natural));
+	bridgeSizing->setToolTip(moduleText("Designer.BridgeSizing.Tip"));
 	addRow(moduleText("Designer.BridgeSizing"), bridgeSizing);
 
 	bridgeSplit = new QSpinBox(this);
@@ -1042,6 +1041,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	fillOrder = new QComboBox(this);
 	fillOrder->addItem(moduleText("Designer.FillDown"), 0);
 	fillOrder->addItem(moduleText("Designer.FillAcross"), 1);
+	fillOrder->setToolTip(moduleText("Designer.FillOrder.Tip"));
 	addRow(moduleText("Designer.FillOrder"), fillOrder);
 
 	entryGap = new QSpinBox(this);
@@ -1290,13 +1290,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * see applyTypeVisibility. Everything else in the row acts on a row of the table whatever
 	 * the table happens to hold.
 	 */
-	setLogoButton = addButton(makeLabelledButton(entriesGroup, moduleText("Designer.SetLogo")),
+	setLogoButton = addButton(makeLabeledButton(entriesGroup, moduleText("Designer.SetLogo")),
 				  &SectionEditor::browseForEntryLogo);
 	buttons->addStretch();
-	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ExpandTable"),
-				     moduleText("Designer.ExpandTable.Tip")),
+	addButton(makeLabeledButton(entriesGroup, moduleText("Designer.ExpandTable"),
+				    moduleText("Designer.ExpandTable.Tip")),
 		  [this] { expandTable(entryTable, moduleText("Designer.Entries")); });
-	addButton(makeLabelledButton(entriesGroup, moduleText("Designer.ImportCsv")), &SectionEditor::importCsv);
+	addButton(makeLabeledButton(entriesGroup, moduleText("Designer.ImportCsv")), &SectionEditor::importCsv);
 
 	entriesLayout->addLayout(buttons);
 	tabLayout(EditorTab::Content)->addWidget(entriesGroup, 1);
@@ -1316,7 +1316,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	pieceTabs = new QTabWidget(dividerPiecesGroup);
 	dividerPiecesLayout->addWidget(pieceTabs);
 
-	static const char *const kSlotTitles[kPieceSlotCount] = {"Designer.DividerLeftEnd", "Designer.DividerCentre",
+	static const char *const kSlotTitles[kPieceSlotCount] = {"Designer.DividerLeftEnd", "Designer.DividerCenter",
 								 "Designer.DividerRightEnd"};
 
 	for (int index = 0; index < kPieceSlotCount; ++index) {
@@ -1335,7 +1335,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 			{moduleText("Designer.Column.PieceKind"), moduleText("Designer.Column.PieceShape"),
 			 moduleText("Designer.Column.PieceValue"), moduleText("Designer.Column.PieceSize"),
 			 moduleText("Designer.Column.PieceRotation")});
-		table->setMinimumHeight(kCentreTableMinimumHeight);
+		table->setMinimumHeight(kCenterTableMinimumHeight);
 
 		/*
 		 * The value column is the one thing in a row long enough to need reading -- a word,
@@ -1374,14 +1374,14 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		 * follows from the row it is pointed at: a logo piece wants an image, a custom
 		 * ornament an SVG.
 		 */
-		pieceFileButtons[index] = addPieceButton(makeLabelledButton(page, moduleText("Designer.SetPieceFile")),
+		pieceFileButtons[index] = addPieceButton(makeLabeledButton(page, moduleText("Designer.SetPieceFile")),
 							 [this, slot] { browseForPieceFile(slot); });
 		buttonRow->addStretch();
-		addPieceButton(makeLabelledButton(page, moduleText("Designer.ExpandTable"),
-						  moduleText("Designer.ExpandTable.Tip")),
+		addPieceButton(makeLabeledButton(page, moduleText("Designer.ExpandTable"),
+						 moduleText("Designer.ExpandTable.Tip")),
 			       [this, slot] {
 				       expandTable(pieceTable(slot),
-						   moduleText("Designer.DividerPieces") + QStringLiteral(" — ") +
+						   moduleText("Designer.DividerPieces") + QStringLiteral(" - ") +
 							   pieceTabs->tabText(static_cast<int>(slot)));
 			       });
 
@@ -1412,22 +1412,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 		tabStretchIndex[index] = tabLayouts[index]->count() - 1;
 	}
 
-	/*
-	 * The settings held back until the reader asks for everything.
-	 *
-	 * Chosen by how often a roll needs them rather than by how hard they are: the side margins
-	 * that a section box says better, the fine spacing of a divider's stack, the ordering of a
-	 * pair. The section box itself stays out in the open -- it is the setting that places a
-	 * section, and hiding it would leave the margin looking like the only way to.
-	 * Every one of them is a thing somebody eventually wants -- which is why the switch shows
-	 * them rather than the editor deciding they do not exist.
-	 */
-	for (QWidget *field : std::initializer_list<QWidget *>{
-		     marginX, logoAnimatedShadow, bridgeOffset, bridgeGap, bridgeRowAlign, bridgeSpanEmpty,
-		     bridgeSizing, dividerPieceGap, dividerRuleGap, dividerRuleInset, dividerTint, bridgeTint,
-		     subtitleOrder, fillOrder, stickyOffset, indentStep})
-		markAdvanced(field);
-
 	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
 	connect(typeBox, &QComboBox::currentIndexChanged, this, &SectionEditor::onTypeSwitchChanged);
 	connect(typeListContent, &QComboBox::currentIndexChanged, this, &SectionEditor::onTypeSwitchChanged);
@@ -1439,8 +1423,6 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * between two of the document's types -- so it runs the same path the switches do.
 	 */
 	connect(columns, &QSpinBox::valueChanged, this, &SectionEditor::onTypeSwitchChanged);
-
-	connect(showAdvanced, &QCheckBox::toggled, this, [this] { applyTypeVisibility(composedType()); });
 
 	connect(labelEdit, &QLineEdit::textChanged, this, notify);
 	connect(visibleBox, &QCheckBox::toggled, this, notify);
@@ -1490,7 +1472,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	for (QComboBox *box : {bridgeType, bridgeFill, bridgeSizing, logoPlacement})
 		connect(box, &QComboBox::currentIndexChanged, this, revisitVisibility);
 
-	/* Untinting a custom bridge leaves nothing for the bridge's own colours to reach. */
+	/* Untinting a custom bridge leaves nothing for the bridge's own colors to reach. */
 	connect(bridgeTint, &QCheckBox::toggled, this, revisitVisibility);
 
 	connect(dividerArmSvgPath, &QLineEdit::textChanged, this, notify);
@@ -1504,7 +1486,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	/*
 	 * Each of these decides which of the other divider rows is worth showing: a slot set to a
 	 * custom shape reveals its file picker, mirroring hides the second end, and untinting a
-	 * custom file leaves nothing for the artwork's own colours to reach.
+	 * custom file leaves nothing for the artwork's own colors to reach.
 	 */
 	for (QComboBox *box : {dividerArm})
 		connect(box, &QComboBox::currentIndexChanged, this, revisitVisibility);
@@ -1703,7 +1685,7 @@ void SectionEditor::setSection(const Section &source)
 	}
 
 	/*
-	 * The centre table is filled before the visibility pass rather than after it, because that
+	 * The center table is filled before the visibility pass rather than after it, because that
 	 * pass asks the table whether any piece is drawn from a file. Filling it afterwards would
 	 * have the question answered from the section the user just clicked away from.
 	 */
@@ -1732,7 +1714,7 @@ Section SectionEditor::section() const
 
 	/*
 	 * One set of controls, written to every logo the section places -- its own, its entries' and
-	 * its divider centre's alike. The entry table rebuilds each Entry from its cells, so a
+	 * its divider center's alike. The entry table rebuilds each Entry from its cells, so a
 	 * playback setting that lived only on an entry would be dropped by the next keystroke; this
 	 * is also what keeps a grid of sponsor logos animating as one block rather than as twelve
 	 * things that drifted apart.
@@ -1824,7 +1806,7 @@ Section SectionEditor::section() const
 	/* After both tables, which rebuild their logos from cells that carry no playback of their own. */
 	for (Entry &entry : result.entries)
 		entry.logo.playback = playback;
-	for (DividerPiece &piece : result.dividerCentre)
+	for (DividerPiece &piece : result.dividerCenter)
 		piece.logo.playback = playback;
 
 	return result;
@@ -1880,16 +1862,8 @@ void SectionEditor::setRowVisible(QWidget *field, bool visible)
 	if (!owner)
 		return;
 
-	/*
-	 * A held-back row is hidden on top of whatever the type says, never instead of it: the
-	 * switch decides whether a row *may* show, and the type still decides whether it applies.
-	 */
-	owner->setRowVisible(field, visible && (showAdvanced->isChecked() || !advancedRows.contains(field)));
-}
-
-void SectionEditor::markAdvanced(QWidget *field)
-{
-	advancedRows.insert(field);
+	/* The type is the only thing that decides whether a row applies; nothing is held back. */
+	owner->setRowVisible(field, visible);
 }
 
 QVBoxLayout *SectionEditor::addTab(EditorTab tab, const QString &title)
@@ -2036,15 +2010,6 @@ void SectionEditor::relayoutEntryTable(SectionType type)
 void SectionEditor::applyTypeVisibility(SectionType type)
 {
 	/*
-	 * Every held-back row starts from "as visible as the switch allows". Most are then set again
-	 * below by whatever decides they apply to this type; the handful nothing else manages --
-	 * where the section sits on the canvas, which is true of every type -- keep this answer,
-	 * which is the whole of how the switch reaches them.
-	 */
-	for (QWidget *field : advancedRows)
-		setRowVisible(field, true);
-
-	/*
 	 * The picker's own switches first: which of them apply is a property of the base type, and
 	 * the rest of this pass reads the type they add up to.
 	 */
@@ -2133,7 +2098,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(bridgeGap, drawnArt);
 	/* Only a Bridged section reserves the gap between two columns; a logo row spans what is left. */
 	setRowVisible(bridgeMinGap, emptyBridge && bridged);
-	/* The built-in tiles are drawn white to be tinted; only a user's file has colours to keep. */
+	/* The built-in tiles are drawn white to be tinted; only a user's file has colors to keep. */
 	setRowVisible(bridgeTint, artFromFile);
 	setRowVisible(bridgeFill, usesBridge && !emptyBridge);
 	/* Column sizing and row placement describe two texts, so they stay with that type. */
@@ -2192,7 +2157,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(dividerThickness, divider);
 	setRowVisible(dividerConnect, divider);
 	/*
-	 * The arm gap is what holds the rule clear of the cap and the centre, and a connected
+	 * The arm gap is what holds the rule clear of the cap and the center, and a connected
 	 * divider has it clear of neither. Nothing is switched off by hiding it -- the setting keeps
 	 * its value and comes straight back when the parts are unjoined.
 	 */
@@ -2205,7 +2170,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 
 	/*
 	 * The built-in shapes are drawn white to be tinted, so the flag only means anything once
-	 * some slot -- an end, an arm, or a piece of the centre stack -- is pointed at a file.
+	 * some slot -- an end, an arm, or a piece of the center stack -- is pointed at a file.
 	 */
 	const bool dividerFiles = armFromFile || (divider && dividerUsesFile());
 	setRowVisible(dividerTint, dividerFiles);
@@ -2265,7 +2230,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 
 	/*
 	 * A divider has a style even though it carries no section text: the artwork is inked from
-	 * it, and a word or a mark in the centre stack is drawn with it.
+	 * it, and a word or a mark in the center stack is drawn with it.
 	 */
 	styleGroup->setVisible(hasText || hasLogos || divider);
 	/*
@@ -2277,13 +2242,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 					      : moduleText("Designer.SecondaryStyle"));
 	/*
 	 * Both shapes that draw a bridge have one to ink separately -- except a custom file left in
-	 * the colours it was authored with, which is painted straight to the strip with nothing here
+	 * the colors it was authored with, which is painted straight to the strip with nothing here
 	 * getting a say over it.
 	 */
 	/*
 	 * A divider's artwork is the same thing to ink apart from the text as a bridge is, and takes
 	 * the same override -- so the group is on show for both, and titled after whichever is being
-	 * edited. It goes away for artwork left in a file's own colours, which nothing here reaches.
+	 * edited. It goes away for artwork left in a file's own colors, which nothing here reaches.
 	 */
 	const bool inkableDivider = divider && !(dividerFiles && !dividerTint->isChecked());
 	bridgeStyleGroup->setVisible((usesBridge && !(artFromFile && !bridgeTint->isChecked())) || inkableDivider);
@@ -2511,7 +2476,7 @@ bool SectionEditor::sectionHasAnimatedArt(const Section &source) const
 	}
 
 	if (source.type == SectionType::SectionDivider) {
-		for (const DividerPiece &piece : source.dividerCentre) {
+		for (const DividerPiece &piece : source.dividerCenter) {
 			if (piece.kind == DividerPiece::Kind::Logo && !piece.logo.isEmpty() &&
 			    logoPathLooksAnimated(piece.logo.path))
 				return true;
@@ -2695,7 +2660,7 @@ void SectionEditor::applyPieceRowVisibility(PieceSlot slot, int row)
 	const bool hasSize = kind != DividerPiece::Kind::Text;
 
 	/*
-	 * Greyed rather than blanked, so a cell that stops applying keeps what was typed into it
+	 * Grayed rather than blanked, so a cell that stops applying keeps what was typed into it
 	 * and gives it back when the kind is switched round again.
 	 */
 	const auto setEditable = [table, row](int column, bool editable) {

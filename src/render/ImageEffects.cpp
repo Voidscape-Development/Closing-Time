@@ -74,16 +74,16 @@ void blurImage(QImage &image, int radius)
 	}
 }
 
-QImage tintedImage(const QImage &image, const QColor &colour)
+QImage tintedImage(const QImage &image, const QColor &color)
 {
 	QImage tinted = image;
 	if (tinted.isNull())
 		return tinted;
 
 	QPainter painter(&tinted);
-	/* Keeps the silhouette's alpha and replaces everything under it with the one colour. */
+	/* Keeps the silhouette's alpha and replaces everything under it with the one color. */
 	painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-	painter.fillRect(tinted.rect(), colour);
+	painter.fillRect(tinted.rect(), color);
 	painter.end();
 
 	return tinted;

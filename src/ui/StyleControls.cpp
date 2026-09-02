@@ -50,7 +50,7 @@ QString moduleText(const char *key)
 constexpr int kCheckerSize = 8;
 
 /* Columns of the stop table. */
-enum StopColumn { StopPosition = 0, StopColour = 1, StopColumnCount = 2 };
+enum StopColumn { StopPosition = 0, StopColor = 1, StopColumnCount = 2 };
 
 /*
  * Tallest the stop table is allowed to get before it starts scrolling, in pixels. It sizes
@@ -73,27 +73,27 @@ constexpr const char *kStopRowProperty = "closingtime_stop_row";
 
 } // namespace
 
-/* --------------------------------------------------------------------- ColourButton */
+/* --------------------------------------------------------------------- ColorButton */
 
-ColourButton::ColourButton(QWidget *parent) : QPushButton(parent)
+ColorButton::ColorButton(QWidget *parent) : QPushButton(parent)
 {
 	refresh();
-	connect(this, &QPushButton::clicked, this, &ColourButton::pick);
+	connect(this, &QPushButton::clicked, this, &ColorButton::pick);
 }
 
-void ColourButton::setColour(const QColor &colour)
+void ColorButton::setColor(const QColor &color)
 {
-	current = colour;
+	current = color;
 	refresh();
 }
 
-void ColourButton::pick()
+void ColorButton::pick()
 {
 	/*
 	 * Parented to the window rather than to this button. A dialog is a child of whatever it is
 	 * parented to for style purposes as well as for stacking, so hanging one off a widget hands
-	 * it that widget's styling -- which is how the colour dialog came to be painted in the very
-	 * colour it was being opened to change.
+	 * it that widget's styling -- which is how the color dialog came to be painted in the very
+	 * color it was being opened to change.
 	 */
 	const QColor picked = QColorDialog::getColor(current, window(), dialogTitle, QColorDialog::ShowAlphaChannel);
 	if (!picked.isValid() || picked == current)
@@ -102,10 +102,10 @@ void ColourButton::pick()
 	current = picked;
 	refresh();
 
-	emit colourChanged();
+	emit colorChanged();
 }
 
-void ColourButton::refresh()
+void ColorButton::refresh()
 {
 	setText(current.name(QColor::HexArgb));
 	update();
@@ -116,14 +116,14 @@ void ColourButton::refresh()
  *
  * A stylesheet does not stop at the widget it is set on: it reaches everything beneath that
  * widget in the object tree, and a dialog parented to a widget is beneath it for styling as much
- * as for stacking. So the colour dialog this button opens was being painted in the very colour it
+ * as for stacking. So the color dialog this button opens was being painted in the very color it
  * had been opened to change -- and so was every control inside it. Painting the swatch here, and
  * hanging the dialog off the window instead, leaves nothing behind to cascade.
  *
  * It also stays crisp at whatever DPI OBS is running at, which was the reason the stylesheet was
  * preferred to an icon in the first place: a painted rectangle has no fixed resolution to lose.
  */
-void ColourButton::paintEvent(QPaintEvent *event)
+void ColorButton::paintEvent(QPaintEvent *event)
 {
 	/* The frame, the focus ring and the pressed state, all as the running theme draws them. */
 	QPushButton::paintEvent(event);
@@ -137,7 +137,7 @@ void ColourButton::paintEvent(QPaintEvent *event)
 
 	QPainter painter(this);
 
-	/* Colours here carry alpha, so the swatch needs something to be transparent against. */
+	/* Colors here carry alpha, so the swatch needs something to be transparent against. */
 	if (current.alpha() < 255) {
 		painter.fillRect(swatch, QColor(48, 48, 48));
 		for (int y = 0; y * kSwatchCheckerSize < swatch.height(); ++y) {
@@ -157,8 +157,8 @@ void ColourButton::paintEvent(QPaintEvent *event)
 	painter.fillRect(swatch, current);
 
 	/*
-	 * The hex code goes back on top of the fill, because the theme's own text colour is no
-	 * longer readable against it. Composited over the checkerboard, a colour with alpha reads
+	 * The hex code goes back on top of the fill, because the theme's own text color is no
+	 * longer readable against it. Composited over the checkerboard, a color with alpha reads
 	 * lighter than its own lightness says, so the test is made against what is actually shown.
 	 */
 	const QColor shown = QColor::fromRgbF(current.redF() * current.alphaF() + 0.22 * (1.0 - current.alphaF()),
@@ -241,7 +241,7 @@ GradientEditor::GradientEditor(QWidget *parent) : QWidget(parent)
 	table = new QTableWidget(this);
 	table->setColumnCount(StopColumnCount);
 	table->setHorizontalHeaderLabels(
-		{moduleText("Designer.GradientStop.Position"), moduleText("Designer.GradientStop.Colour")});
+		{moduleText("Designer.GradientStop.Position"), moduleText("Designer.GradientStop.Color")});
 	table->verticalHeader()->setVisible(false);
 	table->horizontalHeader()->setStretchLastSection(true);
 	table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -299,7 +299,7 @@ void GradientEditor::setGradient(const GradientSpec &spec)
 /*
  * Only called where the row order is allowed to change under the user -- loading a style and
  * adding a stop. Sorting on every position edit would renumber the rows mid-drag as a stop
- * passed its neighbour, which moves the spin box out from under the cursor.
+ * passed its neighbor, which moves the spin box out from under the cursor.
  */
 void GradientEditor::sortStops()
 {
@@ -335,26 +335,26 @@ void GradientEditor::rebuildTable()
 		});
 		table->setCellWidget(row, StopPosition, position);
 
-		auto *colour = new ColourButton(table);
+		auto *color = new ColorButton(table);
 		/*
 		 * The swatch takes the height the row is given rather than asking for one of its own.
 		 * A push button asks for more height than a spin box, and letting it have that made
 		 * every row taller than the value it exists to sit beside -- which cost a stop or two
 		 * off the bottom of the table and gained nothing that was any easier to read.
 		 */
-		colour->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-		colour->setMinimumHeight(0);
-		colour->setColour(stop.color);
-		colour->setDialogTitle(moduleText("Designer.GradientStop.Colour"));
-		connect(colour, &ColourButton::colourChanged, this, [this] {
+		color->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+		color->setMinimumHeight(0);
+		color->setColor(stop.color);
+		color->setDialogTitle(moduleText("Designer.GradientStop.Color"));
+		connect(color, &ColorButton::colorChanged, this, [this] {
 			if (loading)
 				return;
 			readTable();
 			notifyEdited();
 		});
-		table->setCellWidget(row, StopColour, colour);
+		table->setCellWidget(row, StopColor, color);
 
-		for (QWidget *cell : {static_cast<QWidget *>(position), static_cast<QWidget *>(colour)}) {
+		for (QWidget *cell : {static_cast<QWidget *>(position), static_cast<QWidget *>(color)}) {
 			cell->setProperty(kStopRowProperty, row);
 			cell->installEventFilter(this);
 		}
@@ -471,11 +471,11 @@ void GradientEditor::readTable()
 
 	for (int row = 0; row < table->rowCount(); ++row) {
 		const auto *position = qobject_cast<QSpinBox *>(table->cellWidget(row, StopPosition));
-		const auto *colour = qobject_cast<ColourButton *>(table->cellWidget(row, StopColour));
-		if (!position || !colour)
+		const auto *color = qobject_cast<ColorButton *>(table->cellWidget(row, StopColor));
+		if (!position || !color)
 			continue;
 
-		stops.append(GradientStop{position->value() / 100.0, colour->colour()});
+		stops.append(GradientStop{position->value() / 100.0, color->color()});
 	}
 
 	current.stops = stops;
@@ -486,13 +486,13 @@ void GradientEditor::addStop()
 	readTable();
 
 	/*
-	 * The new stop lands in the widest gap the sweep has, carrying the colour already shown
-	 * there, so adding one changes nothing on screen until it is moved or recoloured.
+	 * The new stop lands in the widest gap the sweep has, carrying the color already shown
+	 * there, so adding one changes nothing on screen until it is moved or recolored.
 	 */
 	const QVector<QPair<qreal, QColor>> resolved = current.resolvedStops();
 
 	qreal position = 0.5;
-	QColor colour(255, 255, 255);
+	QColor color(255, 255, 255);
 	qreal widest = -1.0;
 
 	for (int i = 1; i < resolved.size(); ++i) {
@@ -505,13 +505,12 @@ void GradientEditor::addStop()
 
 		const QColor &before = resolved.at(i - 1).second;
 		const QColor &after = resolved.at(i).second;
-		colour = QColor::fromRgbF((before.redF() + after.redF()) / 2.0,
-					  (before.greenF() + after.greenF()) / 2.0,
-					  (before.blueF() + after.blueF()) / 2.0,
-					  (before.alphaF() + after.alphaF()) / 2.0);
+		color = QColor::fromRgbF((before.redF() + after.redF()) / 2.0, (before.greenF() + after.greenF()) / 2.0,
+					 (before.blueF() + after.blueF()) / 2.0,
+					 (before.alphaF() + after.alphaF()) / 2.0);
 	}
 
-	current.stops.append(GradientStop{position, colour});
+	current.stops.append(GradientStop{position, color});
 	sortStops();
 
 	rebuildTable();

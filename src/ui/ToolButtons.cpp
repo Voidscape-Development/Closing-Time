@@ -62,7 +62,7 @@ QToolButton *makeArrowButton(QWidget *parent, Qt::ArrowType arrow, const QString
 	return button;
 }
 
-QToolButton *makeLabelledButton(QWidget *parent, const QString &text, const QString &tooltip)
+QToolButton *makeLabeledButton(QWidget *parent, const QString &text, const QString &tooltip)
 {
 	QToolButton *button = makeButton(parent, tooltip.isEmpty() ? text : tooltip);
 	button->setText(text);

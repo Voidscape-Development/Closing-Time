@@ -48,12 +48,12 @@ constexpr int kCanvasInset = 10;
 constexpr int kUpcomingScrimAlpha = 64;
 
 /*
- * The layout overlay's colours, one per kind of box.
+ * The layout overlay's colors, one per kind of box.
  *
  * Chosen to stay apart from each other rather than to be pretty: the point of the overlay is to
- * say at a glance which rectangle is which, over a roll whose own colours are the user's.
+ * say at a glance which rectangle is which, over a roll whose own colors are the user's.
  */
-QColor layoutBoxColour(LayoutBox::Kind kind)
+QColor layoutBoxColor(LayoutBox::Kind kind)
 {
 	switch (kind) {
 	case LayoutBox::Kind::Section:
@@ -335,8 +335,7 @@ void PreviewWidget::paintStickyBlocks(QPainter &painter, const QRect &canvasColu
 		if (top + blockHeight < 0 || top > height())
 			continue;
 
-		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), blockHeight),
-				  placement.image);
+		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), blockHeight), placement.image);
 	}
 }
 
@@ -404,10 +403,10 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 
 			const bool dim = highlightedSection >= 0 && box.section != highlightedSection;
 
-			QColor colour = layoutBoxColour(kind);
-			colour.setAlpha(dim ? 60 : 230);
+			QColor color = layoutBoxColor(kind);
+			color.setAlpha(dim ? 60 : 230);
 
-			QPen boxPen(colour, 1);
+			QPen boxPen(color, 1);
 			/*
 			 * A sticky block's slot is dashed for the reason a section box is: it is a
 			 * bound rather than something drawn -- and doubly so here, since the block is

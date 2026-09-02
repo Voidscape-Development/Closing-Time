@@ -92,7 +92,7 @@ BridgeArtLayout layoutBridgeArt(const Section &section, BridgeArtCache *cache, q
 	const bool scales = bridgeTypeInfo(section.bridgeType).stretch == BridgeStretch::Scale;
 
 	if (section.bridgeFill == BridgeFill::Fixed) {
-		/* One tile at its own width, centred in the gap, as a fixed text bridge is. */
+		/* One tile at its own width, centered in the gap, as a fixed text bridge is. */
 		tileAt((width - tileWidth) / 2.0, tileWidth);
 	} else if (scales) {
 		/* A continuous rule has no copies to count, so it covers the span it was given. */
@@ -133,8 +133,8 @@ void paintBridgeArt(QPainter *painter, const BridgeArtLayout &layout, const Sect
 
 	/*
 	 * The built-in tiles are drawn white so they can be used as a stencil for the section's
-	 * own fill, which is what keeps a leader in the same colour, sweep, outline and shadow as
-	 * the text either side of it. Only a file the user supplied has colours of its own worth
+	 * own fill, which is what keeps a leader in the same color, sweep, outline and shadow as
+	 * the text either side of it. Only a file the user supplied has colors of its own worth
 	 * keeping, so only there does the flag get a say.
 	 */
 	if (bridgeTypeUsesFile(section.bridgeType) && !section.bridgeTint) {

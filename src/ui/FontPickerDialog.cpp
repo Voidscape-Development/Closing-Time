@@ -53,20 +53,20 @@ constexpr int kSamplePointSize = 20;
  *
  * The real ones come first and in the order the font database reports them, which is the family's
  * own order -- weights ascending, upright before italic -- and is what somebody looking for
- * Semibold expects to scan. The synthesised ones are appended and marked, because "Bold" that is
- * a designed face and "Bold" that is the regular face thickened by the rasteriser are not the
+ * Semibold expects to scan. The synthesized ones are appended and marked, because "Bold" that is
+ * a designed face and "Bold" that is the regular face thickened by the rasterizer are not the
  * same thing and the difference shows at large sizes.
  */
-QVector<QString> synthesisedLabels()
+QVector<QString> synthesizedLabels()
 {
 	return {moduleText("FontPicker.Face.Regular"), moduleText("FontPicker.Face.Bold"),
 		moduleText("FontPicker.Face.Italic"), moduleText("FontPicker.Face.BoldItalic")};
 }
 
-/* What to call a face that has no name of its own, which is what a synthesised one is. */
-QString synthesisedName(bool bold, bool italic)
+/* What to call a face that has no name of its own, which is what a synthesized one is. */
+QString synthesizedName(bool bold, bool italic)
 {
-	const QVector<QString> labels = synthesisedLabels();
+	const QVector<QString> labels = synthesizedLabels();
 
 	if (bold && italic)
 		return labels.at(3);
@@ -89,7 +89,7 @@ QString describeFontChoice(const FontChoice &choice)
 	 * beside it: "DejaVu Sans · DejaVu Sans Condensed Bold" says the same thing twice.
 	 */
 	parts.append(choice.family);
-	parts.append(choice.styleName.isEmpty() ? synthesisedName(choice.bold, choice.italic) : choice.styleName);
+	parts.append(choice.styleName.isEmpty() ? synthesizedName(choice.bold, choice.italic) : choice.styleName);
 
 	if (choice.underline)
 		parts.append(moduleText("FontPicker.Underline"));
@@ -278,7 +278,7 @@ void FontPickerDialog::refillFaces()
 
 	/*
 	 * No family selected at all, which is what a filter matching nothing leaves behind. The list
-	 * is left empty rather than filled with the synthesised faces below: those would be the faces
+	 * is left empty rather than filled with the synthesized faces below: those would be the faces
 	 * of no family, and accepting the dialog on one would quietly drop the face the style arrived
 	 * with. With nothing here, choice() keeps what it opened on.
 	 */
@@ -334,12 +334,12 @@ void FontPickerDialog::refillFaces()
 	 * The faces the family does not ship, offered anyway. Qt thickens and slants the letterforms
 	 * itself, which is precisely what the bold and italic checkboxes used to get, so leaving them
 	 * out would be a feature removed rather than a dropdown replaced. Marked, because a
-	 * synthesised bold is a rasteriser's guess at a face a designer never drew.
+	 * synthesized bold is a rasterizer's guess at a face a designer never drew.
 	 */
-	const QVector<QString> labels = synthesisedLabels();
-	const QString mark = moduleText("FontPicker.Face.Synthesised");
+	const QVector<QString> labels = synthesizedLabels();
+	const QString mark = moduleText("FontPicker.Face.Synthesized");
 
-	const auto addSynthesised = [&](int labelIndex, bool bold, bool italic) {
+	const auto addSynthesized = [&](int labelIndex, bool bold, bool italic) {
 		Face face;
 		face.label = QStringLiteral("%1 %2").arg(labels.at(labelIndex), mark);
 		face.bold = bold;
@@ -353,13 +353,13 @@ void FontPickerDialog::refillFaces()
 	 * own, under whatever name it gives it.
 	 */
 	if (!hasUpright)
-		addSynthesised(0, false, false);
+		addSynthesized(0, false, false);
 	if (!hasBold)
-		addSynthesised(1, true, false);
+		addSynthesized(1, true, false);
 	if (!hasItalic)
-		addSynthesised(2, false, true);
+		addSynthesized(2, false, true);
 	if (!hasBoldItalic)
-		addSynthesised(3, true, true);
+		addSynthesized(3, true, true);
 
 	for (const Face &face : faces)
 		faceList->addItem(face.label);
@@ -368,7 +368,7 @@ void FontPickerDialog::refillFaces()
 	 * Which face to land on. A style that names one is matched by name. A style from before the
 	 * picker names none, and is matched by the flags it does carry -- against the family's real
 	 * faces first, so opening the picker on an old bold heading lands on the family's designed
-	 * Bold rather than on the synthesised one underneath it.
+	 * Bold rather than on the synthesized one underneath it.
 	 */
 	int selected = -1;
 

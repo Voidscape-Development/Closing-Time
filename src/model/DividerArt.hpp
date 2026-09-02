@@ -30,10 +30,10 @@ namespace closingtime {
  * inward from it, and whatever sits in the middle -- so a handful of tiles here produce far more
  * dividers than there are rows in the table. That is the whole reason this is a separate library
  * from BridgeArt rather than more rows added to it: a bridge is one tile laid across a gap and
- * has no notion of an end or a centre, and the two would only have `svg` and `aspect` in common.
+ * has no notion of an end or a center, and the two would only have `svg` and `aspect` in common.
  *
  * Which slots a shape may be picked for is `roles`, not its name: a diamond is a perfectly good
- * end cap and a perfectly good centrepiece, and saying so once is better than a second Diamond
+ * end cap and a perfectly good centerpiece, and saying so once is better than a second Diamond
  * in a second table that has to be kept looking like the first. Every shape that is drawn once at
  * its own size now carries the one role that says so, so anything offered at an end is offered in
  * the middle and the other way about.
@@ -41,7 +41,7 @@ namespace closingtime {
  * Persisted by string id (dividerShapeId), never by ordinal, so the enum may be reordered.
  */
 enum class DividerShape {
-	/* No part at all: a divider with no caps, or an unbroken rule with no centre. */
+	/* No part at all: a divider with no caps, or an unbroken rule with no center. */
 	None,
 
 	/* Ends. */
@@ -61,7 +61,7 @@ enum class DividerShape {
 	DiamondChain,
 	DecoTicks,
 
-	/* Centrepieces. Diamond, Dot and Sparkle cap an arm just as well as they break one. */
+	/* Centerpieces. Diamond, Dot and Sparkle cap an arm just as well as they break one. */
 	Diamond,
 	NestedDiamond,
 	Sparkle,
@@ -108,7 +108,7 @@ enum class DividerShape {
  * once at its own size.
  */
 enum DividerRole : unsigned {
-	/* An end cap or a centrepiece: anything drawn once, at its own size, in a stack. */
+	/* An end cap or a centerpiece: anything drawn once, at its own size, in a stack. */
 	DividerRolePiece = 1u << 0,
 	DividerRoleArm = 1u << 1,
 };
@@ -123,7 +123,7 @@ enum DividerRole : unsigned {
  *            it would leave it short of the cap by up to a whole tile, and on an unbroken line
  *            that reads as damage rather than as design.
  *
- * Only ever consulted for a shape in the arm slot. A cap and a centrepiece are each drawn once,
+ * Only ever consulted for a shape in the arm slot. A cap and a centerpiece are each drawn once,
  * at their own size, so neither has a span to cover.
  */
 enum class DividerStretch { Spread, Scale };
@@ -143,7 +143,7 @@ struct DividerShapeInfo {
 	 *
 	 * Drawn white, so the renderer can use the tile as a stencil for the section's own fill --
 	 * which is what lets a divider carry the same gold sweep as the title above it instead of
-	 * being a separate colour that has to be matched by hand.
+	 * being a separate color that has to be matched by hand.
 	 *
 	 * Empty for None, which draws nothing, and for Custom, whose art is a file.
 	 */
@@ -154,7 +154,7 @@ struct DividerShapeInfo {
 	 * How tall the shape is drawn, as a multiple of the divider's thickness.
 	 *
 	 * An arm is the rule itself and so is exactly the thickness: 1.0. Everything else is a
-	 * proportion of it -- an arrowhead some five times the rule it caps, a centre diamond four
+	 * proportion of it -- an arrowhead some five times the rule it caps, a center diamond four
 	 * -- and keeping that ratio here rather than in a second set of spin boxes is what lets one
 	 * thickness size a whole divider and still have an arrowhead look like an arrowhead.
 	 */

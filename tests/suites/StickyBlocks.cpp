@@ -91,7 +91,7 @@ CT_SUITE(sticky_hole, "The strip leaving the block's slot empty")
 	 * Nothing is painted into the slot. A block that stops scrolling while the roll carries on
 	 * cannot be part of the picture that scrolls, so the strip has to come out empty where it
 	 * would otherwise have drawn it -- otherwise the block would be on screen twice, once
-	 * pinned and once travelling.
+	 * pinned and once traveling.
 	 */
 	check(inkOf(flatten(strip), slot).isEmpty(), "the strip draws nothing in the slot");
 
@@ -135,7 +135,7 @@ CT_SUITE(sticky_anchor, "Where a pinned block lands on the canvas")
 
 	placement.anchor = StickyAnchor::Center;
 	checkNear(placement.pinnedTop(document.height), 540.0 - blockHeight / 2.0, 0.001,
-		  "a centre anchor straddles it");
+		  "a center anchor straddles it");
 
 	placement.anchor = StickyAnchor::Bottom;
 	checkNear(placement.pinnedTop(document.height), 540.0 - blockHeight, 0.001, "a bottom anchor ends on it");
@@ -154,8 +154,8 @@ CT_SUITE(sticky_backdrop, "The panel drawn behind a pinned block")
 {
 	Section plain = stickyBlock();
 
-	Section panelled = plain;
-	BackgroundPanel &panel = panelled.backgroundEntry(BackgroundSlot::Section).panel;
+	Section paneled = plain;
+	BackgroundPanel &panel = paneled.backgroundEntry(BackgroundSlot::Section).panel;
 	panel.fill = BackgroundFill::Color;
 	panel.color = QColor(0, 0, 0, 255);
 	panel.outsetLeft = 40.0;
@@ -164,10 +164,10 @@ CT_SUITE(sticky_backdrop, "The panel drawn behind a pinned block")
 	panel.outsetBottom = 40.0;
 
 	/* The panel is part of the picture rather than a quad behind it, and does not move the roll. */
-	checkEq(measure(documentWith(panelled)), measure(documentWith(plain)),
+	checkEq(measure(documentWith(paneled)), measure(documentWith(plain)),
 		"a backdrop changes nothing about the layout");
 
-	const Strip strip = renderStrip(documentWith(panelled));
+	const Strip strip = renderStrip(documentWith(paneled));
 	if (strip.stickyBlocks.isEmpty()) {
 		fail("the strip carries no block");
 		return;

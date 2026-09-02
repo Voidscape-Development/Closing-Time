@@ -48,8 +48,9 @@ namespace closingtime {
  * signal, `toggled` and `expandedChanged`, so a caller listening for a document change is not woken
  * by somebody tidying the pane.
  *
- * The fold state is per group and per window; nothing about it is written to the document. The
- * checked state is a document setting and belongs to whoever put the checkbox there.
+ * A group starts folded. The fold state is per group and per window -- unfolding one keeps it
+ * unfolded as the reader moves between sections -- and nothing about it is written to the document.
+ * The checked state is a document setting and belongs to whoever put the checkbox there.
  */
 class CollapsibleGroup : public QWidget {
 	Q_OBJECT

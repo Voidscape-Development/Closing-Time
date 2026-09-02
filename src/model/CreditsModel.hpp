@@ -108,7 +108,7 @@ bool sectionUsesSecondaryText(SectionType type);
  * Derived from the predicates above rather than tabulated beside them, for the same reason
  * `sectionUsesSecondaryText` is: "does it place logos" already answers "can it have a panel behind
  * a logo", and a second table would be a second place for the answer to drift. Every type gets the
- * Section slot -- a spacer's panel is a plain band of colour in the middle of a roll, which is a
+ * Section slot -- a spacer's panel is a plain band of color in the middle of a roll, which is a
  * use rather than an oversight -- and a sticky block gets that one alone, since what it holds are
  * whole sections carrying slots of their own.
  */
@@ -152,7 +152,7 @@ SectionType composeSectionType(const SectionTypeSwitches &switches);
  * The pin is a pair of points: one on the block and one down the canvas. Saying "the middle of the
  * block, halfway down the frame" needs both halves, and a single number could only ever express
  * one of them -- which is why a block's top edge landing at a fixed distance from the top of the
- * frame and a block *centred* in the frame are two settings rather than one with a fudge in it.
+ * frame and a block *centered* in the frame are two settings rather than one with a fudge in it.
  */
 enum class StickyAnchor { Top, Center, Bottom };
 
@@ -203,7 +203,7 @@ LogoSide logoSideFromId(const char *id, LogoSide fallback = LogoSide::Left);
  *
  *   Edge    - the logo is pinned to the section's edge and the text is handed the whole of
  *             what is left. The text then aligns inside that entire column, which is what
- *             leaves a centred title stranded halfway across the frame from its own logo:
+ *             leaves a centered title stranded halfway across the frame from its own logo:
  *             `logoGap` sets the minimum separation between the two columns, never the
  *             distance actually drawn.
  *   Hug     - logo, gap and text are measured as one group and aligned as one, so the logo
@@ -293,11 +293,11 @@ void visitSections(QVector<Section> &sections, const std::function<void(Section 
  *
  *   Solid  - TextStyle::color, exactly as text has always been drawn.
  *   Linear - the gradient's stops run along an axis across the block of text.
- *   Radial - the stops run outward from the centre of the block to its corners.
+ *   Radial - the stops run outward from the center of the block to its corners.
  *
  * Both gradients are mapped over the block of text being drawn -- one section's title, one
  * list entry, one side of a bridged row -- rather than over the canvas or the whole strip.
- * Mapping over the strip would make a stop's colour depend on how long the roll happens to
+ * Mapping over the strip would make a stop's color depend on how long the roll happens to
  * be; mapping per block means a run of names all share the same sweep as each other.
  */
 enum class TextFill { Solid, LinearGradient, RadialGradient };
@@ -380,7 +380,7 @@ struct TextStyle {
 	TextShadow shadow;
 
 	/*
-	 * True when the text needs more than a pen colour to draw. The renderer keeps a fast
+	 * True when the text needs more than a pen color to draw. The renderer keeps a fast
 	 * path for the plain case, so this is what decides which one a style takes.
 	 */
 	bool hasEffects() const;
@@ -541,7 +541,7 @@ struct Entry {
 	 * as having a shape -- a department over the names under it, a sub-heading inside a run --
 	 * and steps of one size are what make several entries line up without each one being
 	 * measured. The whole entry moves: its column is translated rather than narrowed, so a
-	 * centred or right-aligned list steps by exactly as much as a left-aligned one and an
+	 * centered or right-aligned list steps by exactly as much as a left-aligned one and an
 	 * indent means the same thing whatever the list is set to.
 	 */
 	int indent = 0;
@@ -553,7 +553,7 @@ struct Entry {
 /*
  * One item in the middle of a Section Divider, between the two arms.
  *
- * The centre is a list rather than a single choice because the shapes that turn up there in
+ * The center is a list rather than a single choice because the shapes that turn up there in
  * practice are compounds: a diamond with a dot either side of it, a word flanked by two
  * ornaments, a monogram between a pair of curls. Offering one slot would mean either shipping
  * every one of those combinations as its own tile, or drawing them by hand in a file; a list of
@@ -590,12 +590,12 @@ struct DividerPiece {
 	LogoRef logo;
 
 	/*
-	 * How far the piece is turned, in degrees clockwise, about its own centre. Read for every
+	 * How far the piece is turned, in degrees clockwise, about its own center. Read for every
 	 * kind: an arrowhead stood on end, a year set sideways, a mark tilted to match it.
 	 *
 	 * Turned where it stands rather than turned and re-measured: along the rule a piece keeps
-	 * the room its untilted shape took, so its neighbours and the arms keep still while the angle
-	 * is dialled in. A wide shape turned a quarter of the way round therefore reaches out over
+	 * the room its untilted shape took, so its neighbors and the arms keep still while the angle
+	 * is dialed in. A wide shape turned a quarter of the way round therefore reaches out over
 	 * the gaps beside it, which is what makes an angle something that can be nudged rather than
 	 * something that shuffles the whole divider every time it moves.
 	 *
@@ -712,7 +712,7 @@ struct Section {
 	double bridgeGap = 8.0;
 	/*
 	 * Custom bridges only: paint the file's art in the section's own fill rather than in the
-	 * colours it was authored with. The built-in tiles are always painted this way -- they
+	 * colors it was authored with. The built-in tiles are always painted this way -- they
 	 * are drawn white precisely so they can be -- so this only has a say over a user's file.
 	 */
 	bool bridgeTint = true;
@@ -721,7 +721,7 @@ struct Section {
 	/*
 	 * Split sizing only: the left column's share of the space the two texts divide between
 	 * them, 0.0 to 1.0. At the default 0.5 with a Fixed bridge this is an even split with
-	 * the bridge centred -- the layout Bridged sections have always had.
+	 * the bridge centered -- the layout Bridged sections have always had.
 	 */
 	double bridgeSplit = 0.5;
 	/*
@@ -757,21 +757,21 @@ struct Section {
 	 * Section Divider sections only.
 	 *
 	 * A divider is composed rather than drawn from one piece of artwork: an end cap, an arm
-	 * running inward from it, whatever the centre stack holds, then the same again mirrored.
+	 * running inward from it, whatever the center stack holds, then the same again mirrored.
 	 * `dividerThickness` is the one number that sizes all of it -- every shape's table row
 	 * declares its own height as a multiple of the rule it belongs to -- so a divider stays in
 	 * proportion when it is made heavier rather than needing each part resized in turn.
 	 *
 	 * The artwork is inked exactly as a bridge is: the section's own style, or `bridgeStyle`
 	 * when `useBridgeStyle` is set. That is deliberate reuse rather than a field left lying
-	 * around -- "colour the art separately from the text" is the same want in both places, and
+	 * around -- "color the art separately from the text" is the same want in both places, and
 	 * a divider whose text is white while its rule carries the title's gold sweep is precisely
 	 * what the override is for.
 	 */
 	/*
 	 * The left-hand end, outermost piece first.
 	 *
-	 * A list of the same `DividerPiece` the centre holds rather than a single shape, because an
+	 * A list of the same `DividerPiece` the center holds rather than a single shape, because an
 	 * end is the same kind of thing a middle is: something drawn once at its own size, and just
 	 * as often a compound -- a diamond outside an arrowhead, a year set against the rule. Making
 	 * them the same list means a shape offered in one place is offered in the other, a piece can
@@ -805,11 +805,11 @@ struct Section {
 	double dividerThickness = 4.0;
 	/*
 	 * Space left clear where an arm meets something, in pixels: the cap outside it and the
-	 * centre stack inside it. One number rather than two, because a divider whose gaps differ
+	 * center stack inside it. One number rather than two, because a divider whose gaps differ
 	 * at the two ends of the same arm reads as a mistake rather than as a setting.
 	 *
 	 * Negative is a join rather than a gap: the arm runs *under* what it meets by that much, and
-	 * because every tinted part of a divider is rasterised into one silhouette and inked once,
+	 * because every tinted part of a divider is rasterized into one silhouette and inked once,
 	 * an overlap unions into a single continuous ornament instead of showing a seam or a second
 	 * outline. That is the whole of what makes the parts connectable rather than merely adjacent.
 	 */
@@ -824,7 +824,7 @@ struct Section {
 	 * Run the rule the whole way through instead of stopping at what it meets.
 	 *
 	 * The arm becomes one unbroken span from the middle of one end cap to the middle of the
-	 * other, passing behind the centre stack rather than breaking either side of it -- so a
+	 * other, passing behind the center stack rather than breaking either side of it -- so a
 	 * diamond sits *on* the line the way an ornamental rule is actually drawn, rather than
 	 * beside two lines that stop short of it. The middle of the outermost piece rather than the
 	 * stack's outer edge, because that point is inside every cap's silhouette whatever the cap
@@ -838,11 +838,11 @@ struct Section {
 	bool dividerConnect = false;
 
 	/* What sits between the two arms, in order, left to right. Empty is an unbroken rule. */
-	QVector<DividerPiece> dividerCentre;
+	QVector<DividerPiece> dividerCenter;
 
 	/*
 	 * How many rules run in parallel, stacked about the divider's midline, and the vertical
-	 * space between them in pixels. The centre stack is drawn once over the whole stack rather
+	 * space between them in pixels. The center stack is drawn once over the whole stack rather
 	 * than once per rule -- three lines broken by one ornament is the deco figure; three
 	 * complete dividers touching is not.
 	 */
@@ -857,10 +857,10 @@ struct Section {
 	double dividerRuleInset = 0.0;
 
 	/*
-	 * Custom artwork only: paint the files in the section's own fill rather than in the colours
+	 * Custom artwork only: paint the files in the section's own fill rather than in the colors
 	 * they were authored with. The built-in shapes are always painted this way -- they are drawn
 	 * white precisely so they can be -- so this only has a say over a user's files, and covers
-	 * all three slots at once because a divider whose cap is tinted and whose centre is not is
+	 * all three slots at once because a divider whose cap is tinted and whose center is not is
 	 * not a design anyone reaches for on purpose.
 	 */
 	bool dividerTint = true;
@@ -967,7 +967,7 @@ struct Section {
 	 *
 	 * A translation rather than a narrowing, and applied to the whole content rather than to the
 	 * text alone -- a heading and the logo beside it shift together, keeping the arrangement they
-	 * were given. That is what the setting is for: a section deliberately off its own centre,
+	 * were given. That is what the setting is for: a section deliberately off its own center,
 	 * where `marginX` insets both edges equally and `sectionAlign` only ever picks one of three
 	 * places. Content pushed past the edge of the section's box is drawn there rather than
 	 * wrapped back inside it; the offset is a nudge, and a nudge large enough to leave the canvas
@@ -987,12 +987,12 @@ struct Section {
 	 * The share of the canvas width the section's box occupies, 0.0 to 1.0, and where that
 	 * box sits within the canvas.
 	 *
-	 * `marginX` insets both edges of the box equally, so on its own it can only ever centre
+	 * `marginX` insets both edges of the box equally, so on its own it can only ever center
 	 * the content: a margin large enough to push a block to one side pushes it in from the
 	 * other by just as much. These two are what let a section be narrower than the canvas and
 	 * then be placed against an edge, with the margin still holding it clear of that edge.
 	 *
-	 * At the defaults -- the full width, centred -- the box is the canvas and the layout is
+	 * At the defaults -- the full width, centered -- the box is the canvas and the layout is
 	 * exactly what it was before either setting existed.
 	 */
 	double sectionWidth = 1.0;
@@ -1088,7 +1088,7 @@ struct Document {
 
 	QColor background = QColor(0, 0, 0, 0);
 
-	/* Scroll rate in pixels per second of the credits strip travelling upward. */
+	/* Scroll rate in pixels per second of the credits strip traveling upward. */
 	double scrollSpeed = 90.0;
 
 	/*
@@ -1150,7 +1150,7 @@ struct Document {
 	 * Returned by value rather than by reference because this is a merge rather than a choice:
 	 * the bridge keeps the row's font, size, alignment and line spacing and takes only the ink
 	 * -- fill, gradient, outline and shadow -- from the bridge style. That split is what lets a
-	 * leader be coloured separately without any of a bridged row's geometry moving, since every
+	 * leader be colored separately without any of a bridged row's geometry moving, since every
 	 * width, baseline and height in the row is measured from the fields the merge leaves alone.
 	 */
 	TextStyle effectiveBridgeStyle(const Section &section) const;
@@ -1243,7 +1243,7 @@ struct Document {
 	 *
 	 * On by default, which is the setting that makes a scene collection self-contained without
 	 * anybody having to know that fonts are a problem before they hit it. Off is for the roll
-	 * whose fonts may not be passed on -- most commercial licences say so -- and for the one whose
+	 * whose fonts may not be passed on -- most commercial licenses say so -- and for the one whose
 	 * collection has to stay small.
 	 */
 	bool bundleFonts = true;
@@ -1325,7 +1325,7 @@ struct Document {
 	void load(obs_data_t *data, bool *migrated = nullptr);
 	static void defaults(obs_data_t *data);
 
-	/* Serialises to a standalone JSON string for the designer's export button. */
+	/* Serializes to a standalone JSON string for the designer's export button. */
 	QString toJson() const;
 	bool fromJson(const QString &json, QString *error = nullptr);
 };
