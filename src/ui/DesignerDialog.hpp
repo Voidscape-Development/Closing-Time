@@ -35,7 +35,6 @@ class QDialogButtonBox;
 class QFileSystemWatcher;
 class QLabel;
 class QPushButton;
-class QScrollArea;
 class QSplitter;
 class QTimer;
 class QToolButton;
@@ -377,7 +376,6 @@ private:
 	int listExpandedWidth = 0;
 
 	SectionEditor *editor = nullptr;
-	QScrollArea *editorScroll = nullptr;
 	PreviewWidget *preview = nullptr;
 	QWidget *previewPane = nullptr;
 	QLabel *previewLabel = nullptr;

@@ -39,7 +39,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QTimer>
@@ -464,12 +463,15 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 
 	splitter->addWidget(listPane);
 
-	/* --- middle: the editor for whichever section is selected --- */
-	editorScroll = new QScrollArea(splitter);
-	editorScroll->setWidgetResizable(true);
-	editor = new SectionEditor(editorScroll);
-	editorScroll->setWidget(editor);
-	splitter->addWidget(editorScroll);
+	/*
+	 * --- middle: the editor for whichever section is selected ---
+	 *
+	 * Added straight to the splitter rather than wrapped in a scroll area: the editor is tabbed
+	 * and scrolls each of its pages itself, which is what keeps its type picker and its tab strip
+	 * on screen while a long page is scrolled. See SectionEditor::addTab.
+	 */
+	editor = new SectionEditor(splitter);
+	splitter->addWidget(editor);
 
 	/* --- right: live preview of the whole strip --- */
 	previewPane = new QWidget(splitter);
@@ -986,7 +988,7 @@ void DesignerDialog::refreshSectionList(int selectRow)
 	if (const Section *section = sectionAt(currentPath))
 		editor->setSection(*section);
 
-	editorScroll->setEnabled(row >= 0);
+	editor->setEnabled(row >= 0);
 }
 
 DesignerDialog::DocumentSnapshot DesignerDialog::snapshot() const
@@ -1128,8 +1130,8 @@ void DesignerDialog::setPaneFolded(QWidget *pane, QToolButton *button, int *reme
 	pane->setMaximumWidth(QWIDGETSIZE_MAX);
 
 	const int width = *rememberedWidth > 0 ? *rememberedWidth : kDefaultPaneSizes.value(index);
-	const int editor = splitter->indexOf(editorScroll);
-	if (index == editor || editor < 0 || sizes.size() != splitter->count()) {
+	const int editorIndex = splitter->indexOf(editor);
+	if (index == editorIndex || editorIndex < 0 || sizes.size() != splitter->count()) {
 		splitter->setSizes(kDefaultPaneSizes);
 		return;
 	}
@@ -1139,7 +1141,7 @@ void DesignerDialog::setPaneFolded(QWidget *pane, QToolButton *button, int *reme
 	 * where the user last put it. The editor is the pane with room to spare -- and never let
 	 * below nothing, which the splitter would only hand back at the next resize anyway.
 	 */
-	sizes[editor] = std::max(0, sizes.value(editor) - (width - sizes.value(index)));
+	sizes[editorIndex] = std::max(0, sizes.value(editorIndex) - (width - sizes.value(index)));
 	sizes[index] = width;
 	splitter->setSizes(sizes);
 }
@@ -1161,7 +1163,7 @@ void DesignerDialog::onSelectionChanged()
 	const int row = sectionList->currentRow();
 	currentRow = row;
 	currentPath = row >= 0 && row < rowPaths.size() ? rowPaths.at(row) : SectionPath{};
-	editorScroll->setEnabled(row >= 0);
+	editor->setEnabled(row >= 0);
 	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
 
 	if (const Section *section = sectionAt(currentPath))
