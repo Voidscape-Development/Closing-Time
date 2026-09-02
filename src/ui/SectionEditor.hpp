@@ -19,7 +19,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <QHash>
-#include <QSet>
 #include <QWidget>
 
 #include "model/CreditsModel.hpp"
@@ -70,7 +69,7 @@ constexpr int kEditorTabCount = 4;
  * implementation serves all three and this is what says which one a call means. The order is the
  * order they are drawn in, which is also the order the tabs read in.
  */
-enum class PieceSlot { LeftEnd, Centre, RightEnd };
+enum class PieceSlot { LeftEnd, Center, RightEnd };
 
 constexpr int kPieceSlotCount = 3;
 
@@ -79,7 +78,7 @@ const QVector<DividerPiece> &dividerPieces(const Section &section, PieceSlot slo
 QVector<DividerPiece> &dividerPieces(Section &section, PieceSlot slot);
 
 /*
- * Everything one TextStyle carries: font, colour and alignment, plus how the glyphs are
+ * Everything one TextStyle carries: font, color and alignment, plus how the glyphs are
  * filled and what is drawn around them.
  */
 class StyleEditor : public QWidget {
@@ -158,7 +157,7 @@ private:
 	 */
 	QPushButton *fontButton = nullptr;
 	QSpinBox *pixelSize = nullptr;
-	ColourButton *colourButton = nullptr;
+	ColorButton *colorButton = nullptr;
 	QComboBox *alignment = nullptr;
 	QDoubleSpinBox *lineSpacing = nullptr;
 
@@ -167,13 +166,13 @@ private:
 
 	QGroupBox *outlineGroup = nullptr;
 	QDoubleSpinBox *outlineWidth = nullptr;
-	ColourButton *outlineColour = nullptr;
+	ColorButton *outlineColor = nullptr;
 
 	QGroupBox *shadowGroup = nullptr;
 	QSpinBox *shadowOffsetX = nullptr;
 	QSpinBox *shadowOffsetY = nullptr;
 	QSpinBox *shadowBlur = nullptr;
-	ColourButton *shadowColour = nullptr;
+	ColorButton *shadowColor = nullptr;
 
 	QVector<StylePreset> presets;
 	QString selectedPreset;
@@ -243,16 +242,6 @@ private:
 	void setRowVisible(QWidget *field, bool visible);
 
 	/*
-	 * Marks a row as one of the settings held back until the reader asks for everything.
-	 *
-	 * What makes this editor daunting is not any one control, it is meeting forty at once -- so
-	 * the ones reached for rarely, or that only make sense once the obvious ones have been tried,
-	 * sit behind a switch. Nothing is *removed* by it: a marked row still comes and goes with the
-	 * type exactly as it did, and is simply not shown while the switch is off.
-	 */
-	void markAdvanced(QWidget *field);
-
-	/*
 	 * Builds one tab and returns the layout its groups go into.
 	 *
 	 * Each tab scrolls on its own, so the header above the tab strip and the strip itself stay
@@ -316,7 +305,7 @@ private:
 	void writeEntriesToTable(const Section &source);
 
 	/*
-	 * The divider's centre stack. Unlike the entry table these go through the model rather than
+	 * The divider's center stack. Unlike the entry table these go through the model rather than
 	 * shuffling cells: the rows carry combo boxes, which QTableWidget::takeItem knows nothing
 	 * about, and rebuilding from a reordered vector cannot leave a row's widgets behind while
 	 * its text moves.
@@ -362,17 +351,15 @@ private:
 	QFormLayout *form = nullptr;
 	/* Which form each row's field belongs to, for setRowVisible. */
 	QHash<QWidget *, QFormLayout *> rowOwner;
-	/* The rows held back until the reader asks for everything. */
-	QSet<QWidget *> advancedRows;
 
 	/*
 	 * The handful of rows above the tab strip: what kind of section this is, what it is called,
-	 * whether it is drawn, and whether the rarely-wanted settings are on show.
+	 * and whether it is drawn.
 	 *
 	 * They stay out of the tabs because they are not settings of one job -- the type decides what
-	 * every tab holds, the name is how the section is found again, and the advanced switch reaches
-	 * rows on three of the four pages. A reader who had to leave the tab they were working in to
-	 * flip one of these would lose their place to change something that governs all of them.
+	 * every tab holds, and the name is how the section is found again. A reader who had to leave
+	 * the tab they were working in to flip one of these would lose their place to change something
+	 * that governs all of them.
 	 */
 	QFormLayout *headerForm = nullptr;
 
@@ -409,8 +396,6 @@ private:
 	QComboBox *typeListContent = nullptr;
 	/* One line saying what the selected type is for, under the picker. */
 	QLabel *typeHelp = nullptr;
-	/* Shows the settings that are otherwise held back; see markAdvanced. */
-	QCheckBox *showAdvanced = nullptr;
 
 	QLineEdit *labelEdit = nullptr;
 	QCheckBox *visibleBox = nullptr;
@@ -426,7 +411,7 @@ private:
 	 *
 	 * One set of controls for the whole section rather than one per logo. The document holds
 	 * playback on each LogoRef -- a list can carry a different setting per entry, and one
-	 * hand-written or imported that way is honoured -- but a Multi-List of Logos is a grid of
+	 * hand-written or imported that way is honored -- but a Multi-List of Logos is a grid of
 	 * sponsor marks that read as one block, and a loop switch on each of twelve cells is a
 	 * column of checkboxes nobody wants to fill in. Writing the section's settings to every logo
 	 * it holds is what these do.
@@ -458,7 +443,7 @@ private:
 	QCheckBox *rowSubtitles = nullptr;
 
 	QCheckBox *dividerMirrorEnds = nullptr;
-	/* Runs the rule through the ends and the centre rather than stopping at them. */
+	/* Runs the rule through the ends and the center rather than stopping at them. */
 	QCheckBox *dividerConnect = nullptr;
 	QComboBox *dividerArm = nullptr;
 	QLineEdit *dividerArmSvgPath = nullptr;

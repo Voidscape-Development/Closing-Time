@@ -117,10 +117,10 @@ CT_SUITE(logo_row_pairs, "A logo beside a stacked pair, against the same row hol
 	if (lines.size() != 2 || logo.isNull())
 		return;
 
-	/* The logo centres against the whole block, not against the title line. */
+	/* The logo centers against the whole block, not against the title line. */
 	const QRectF block(lines.at(0).left(), lines.at(0).top(), lines.at(0).width(),
 			   lines.at(1).bottom() - lines.at(0).top());
-	checkNear(logo.center().y(), block.center().y(), 1.0, "the logo is centred against the two-line block");
+	checkNear(logo.center().y(), block.center().y(), 1.0, "the logo is centered against the two-line block");
 
 	/* Both lines share one column, sized by the wider of them. */
 	checkNear(lines.at(0).width(), lines.at(1).width(), 0.5, "both lines are laid out into the same column");
@@ -189,11 +189,11 @@ CT_SUITE(logo_row_bridged, "The leader of a bridged logo row reaching the words 
 	};
 
 	const int left = gapWithAlign(HAlign::Left);
-	const int centre = gapWithAlign(HAlign::Center);
+	const int center = gapWithAlign(HAlign::Center);
 	const int right = gapWithAlign(HAlign::Right);
-	check(left < centre && centre < right, "the title's own alignment moves it within the pair's column");
+	check(left < center && center < right, "the title's own alignment moves it within the pair's column");
 
-	/* A single line has no wider neighbour to float against, so alignment cannot move it. */
+	/* A single line has no wider neighbor to float against, so alignment cannot move it. */
 	const auto singleGapWithAlign = [&single](HAlign align) {
 		Section section = single;
 		section.style.align = align;
@@ -241,7 +241,7 @@ CT_SUITE(logo_row_bridged, "The leader of a bridged logo row reaching the words 
 	/*
 	 * Which regime the row is in decides whether the *baseline itself* moves. With a logo
 	 * shorter than the block, the block sets the row height and starts at its top, so a subtitle
-	 * costs the leader nothing; with a taller logo the block is centred against it, so a taller
+	 * costs the leader nothing; with a taller logo the block is centered against it, so a taller
 	 * block starts higher and takes the leader up with it by half the height it gained.
 	 */
 	const auto leaderTop = [](const Document &document) {
@@ -267,7 +267,7 @@ CT_SUITE(logo_row_bridged, "The leader of a bridged logo row reaching the words 
 						boxOf(documentWith(tallLogoPaired), LayoutBox::Kind::Text).bottom()
 				      : 0.0;
 	checkNear(leaderTop(documentWith(tallLogoSingle)) - leaderTop(documentWith(tallLogoPaired)), gained / 2.0, 1.0,
-		  "under a taller logo the block is centred, so the leader rises by half what the block gained");
+		  "under a taller logo the block is centered, so the leader rises by half what the block gained");
 
 	/* Flipping the stack moves it to whichever line took the top. */
 	Section flipped = paired;
@@ -310,7 +310,7 @@ CT_SUITE(logo_row_containment, "The whole logo-row configuration matrix staying 
 			       [](Section &s, LogoSide v) { s.logoSide = v; }),
 		axis<HAlign>(QStringLiteral("align"),
 			     {{QStringLiteral("left"), HAlign::Left},
-			      {QStringLiteral("centre"), HAlign::Center},
+			      {QStringLiteral("center"), HAlign::Center},
 			      {QStringLiteral("right"), HAlign::Right}},
 			     [](Section &s, HAlign v) {
 				     s.style.align = v;

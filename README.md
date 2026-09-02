@@ -19,7 +19,7 @@ columns — which between them cover every shape in the table below:
 | Title / Header | A heading, at two default sizes |
 | Title w/ Subtitle, Header w/ Subtitle | A heading with a second line under it, in a style of its own |
 | Title w/ Logo, Header w/ Logo | A heading with a logo beside it, hugging the text, pinned to the edge, or bridged across to it |
-| Title w/ Subtitle & Logo, Header w/ Subtitle & Logo | The same logo beside the stacked pair, centred against both lines |
+| Title w/ Subtitle & Logo, Header w/ Subtitle & Logo | The same logo beside the stacked pair, centered against both lines |
 | Logo Title, Logo Header | A heading that *is* an image — a wordmark, no text |
 | Text to Text Bridged | `Director ······ Jane Doe` role-to-person pairs, joined by a leader of dots, dashes, diamonds, a rule, your own SVG, or plain text |
 | Text List | A single column of names |
@@ -32,12 +32,12 @@ columns — which between them cover every shape in the table below:
 | Spacer | A blank run, for pacing |
 | Sticky Ending Block | Sections that hold still on the frame while the rest of the roll scrolls past behind them — a closing card that stays up, and can be the end of the roll |
 
-Any section can carry a **background** — a colour, a gradient or an image, with rounded corners and
+Any section can carry a **background** — a color, a gradient or an image, with rounded corners and
 a border — behind the whole section or behind the individual things it draws. See *Backgrounds*
 below.
 
 A **title and subtitle** list is the other way to set what a bridged row sets on one line: the
-position on top and the name under it, each with its own font, size, weight, colour and
+position on top and the name under it, each with its own font, size, weight, color and
 alignment, so the pair reads as one item. The gap inside a pair is set separately from the gap
 between pairs — that difference is what groups the two lines together — and the whole list can
 be flipped to put the name on top instead without retyping anything. Leave one of the two blank
@@ -49,7 +49,7 @@ title over its tagline, a section head over the line explaining it, a name under
 Everything the list offers applies: two independent styles, the gap inside the pair, and the
 flip that puts the smaller line on top without retyping either field. Leave the subtitle blank
 and the section is exactly a plain Title again, to the pixel. The logo variants put a logo
-beside the whole pair — centred against both lines together, not just the title — and can hug
+beside the whole pair — centered against both lines together, not just the title — and can hug
 it, sit against the section edge, or bridge across to it, with the leader running along the
 baseline of whichever line ends up on top.
 
@@ -60,7 +60,7 @@ put something. The leader stays on the top line of the row, so adding one leaves
 In a bridged row the **bridge** joining the two texts is drawn from artwork rather than from
 characters, so a leader is a real shape at a thickness you set instead of whatever full stops
 your font happens to draw: pick dots, dashes, diamonds, a line or a double rule, or point it at
-an SVG of your own. It picks up the section's own colour, gradient, outline and shadow, so it
+an SVG of your own. It picks up the section's own color, gradient, outline and shadow, so it
 belongs to the row rather than sitting on it, and it can be lifted off the baseline to run a
 rule through the middle of the text. Plain text is still one of the styles, for when a word —
 `and`, `with` — is what belongs in the gap, and so is nothing at all, for two columns held apart
@@ -69,7 +69,7 @@ by a plain gap you set the width of.
 Bridged rows are fully placeable on top of that: the bridge can be drawn once, repeated, or
 spread to span whatever gap the two texts leave; the columns can be fixed (so the leader starts
 at the same place on every row) or sized to the text (so the row reaches both edges); a short
-row can hug either edge or sit centred; and a row with only one side filled in can run its
+row can hug either edge or sit centered; and a row with only one side filled in can run its
 leader out to the far edge, for a heading inside an otherwise bridged list.
 
 A **section divider** is the ornamental rule that separates one part of a roll from the next,
@@ -90,7 +90,7 @@ monogram between a pair of scrolls, `MMXXVI` set against the end of the rule. Pi
 ornaments, a word set in the section's own font, or an image, each at a size and an angle of its
 own and in whatever order you put them; leave a list empty and you get an end with nothing on it,
 or an unbroken rule. A turned piece keeps the room along the rule that its untilted shape had, so
-its neighbours stay where they are while you dial an angle in — a square set on its corner, a
+its neighbors stay where they are while you dial an angle in — a square set on its corner, a
 triangle pointing up out of the line, a year set sideways — and the far end of a mirrored rule
 leans the other way, so the two ends stay each other's reflection. Two
 or three rules can run in parallel with a single ornament breaking all of them, and they can be
@@ -104,20 +104,20 @@ restarting at every diamond, and it carries the same outline and shadow. Its art
 be inked separately from a word in its middle, the same way a bridge can be inked apart from
 the names either side of it.
 
-Each section carries its own font family, size, weight, colour, alignment and line spacing,
+Each section carries its own font family, size, weight, color, alignment and line spacing,
 plus padding and side margins. It can also be **nudged sideways** — everything the section draws
 slides left or right together, keeping the arrangement inside it, which is how a heading sits
-deliberately off centre where a margin can only ever inset both edges at once. Within a list,
+deliberately off center where a margin can only ever inset both edges at once. Within a list,
 individual entries can be **tabbed in** by a step you set once for the list: a department over the
-names under it, a sub-heading inside a run, or an entry hung back the other way. Text can be filled with a flat colour or with a **linear or
-radial gradient** of as many colour stops as you like — a gold sweep down a title, a fade
+names under it, a sub-heading inside a run, or an entry hung back the other way. Text can be filled with a flat color or with a **linear or
+radial gradient** of as many color stops as you like — a gold sweep down a title, a fade
 across a name — and can carry an **outline** and a soft or hard **drop shadow**, which is
 what keeps white credits legible over bright footage. The gradient runs across each block of
 text rather than across the whole roll, so every name in a list gets the same sweep instead
 of a different slice of one long one, and an outline or shadow never moves anything: it
 paints outside the text without changing where a line sits or how long the roll runs.
 
-**Backgrounds** put a panel behind a section — a flat colour, a linear or radial gradient, or an
+**Backgrounds** put a panel behind a section — a flat color, a linear or radial gradient, or an
 image fitted by cover, contain, stretch or tile — with a corner radius on each of its four corners
 and an optional border. A panel can sit behind the whole section or behind the individual things it
 draws: the title, the subtitle, each logo, each row of a list, the leader joining a bridged row, or
@@ -149,7 +149,7 @@ imported from a CSV/TSV file with a column-mapping step.
 a machine that does not have that font — so the roll carries the font files themselves, inside the
 scene collection, and renders the same wherever the collection is opened. **Fonts...** in the
 designer lists every family the roll is set in and where each one stands; for a font that cannot be
-carried, because its licence says so or because it is not a file at all, you name the installed
+carried, because its license says so or because it is not a file at all, you name the installed
 family that stands in for it, and that choice renders the same everywhere rather than leaving each
 machine to pick. Anything still unaccounted for is called out under the preview and in the OBS log
 rather than quietly substituted. Carrying font files is redistributing them, so the switch can be
@@ -171,7 +171,7 @@ any other part of the roll, and when it reaches the place you pinned it to, it s
 the rest of the credits carries on past behind it. In the designer's section list a block's contents are drawn as
 branches off it, with a count of what it holds and an arrow that folds them away while you work on
 the rest of the roll. You pick which part of the block is pinned —
-its top edge, its middle, its bottom — and where down the frame that lands, so "centred in the
+its top edge, its middle, its bottom — and where down the frame that lands, so "centered in the
 frame" and "top edge a third of the way down" are both one setting rather than a number to work
 out. It can hold for a set time or until something else stops the roll, and when the hold ends it
 either stays put and ends the roll, carries on up and off the top, or does both at once. Give it a
@@ -183,8 +183,8 @@ is; drag them under the block in the section list and they are inside it. Nothin
 moves for it, and you can have as many as you like — the same mechanism gives you a chapter
 heading that holds while the section under it scrolls by.
 
-The source properties cover canvas size, background colour, scroll speed, lead-in and
-lead-out padding, start behaviour, looping, and the ending action.
+The source properties cover canvas size, background color, scroll speed, lead-in and
+lead-out padding, start behavior, looping, and the ending action.
 
 ## Playback
 
@@ -223,6 +223,6 @@ See the [OBS plugin template wiki](https://github.com/obsproject/obs-plugintempl
 for platform-specific build setup; this project keeps the template's CMake layout and CI
 workflows unchanged.
 
-## Licence
+## License
 
 GPL-2.0-or-later. See [LICENSE](LICENSE).

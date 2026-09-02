@@ -45,7 +45,7 @@ bool BundledFont::supplies(const QString &wantedFamily, const QString &styleName
 
 	/*
 	 * A bundle written before faces were recorded says nothing about which of them it holds, so
-	 * it answers for the whole family rather than for none of it -- the behaviour every such
+	 * it answers for the whole family rather than for none of it -- the behavior every such
 	 * bundle already has.
 	 */
 	if (styleNames.isEmpty())

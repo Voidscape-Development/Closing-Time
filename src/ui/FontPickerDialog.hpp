@@ -42,7 +42,7 @@ namespace closingtime {
  * `styleName` is the face's own name and empty means the family's default face, exactly as in
  * TextStyle. `bold` and `italic` are kept in step with it, because they are what renders on a
  * machine that does not have the named face -- and, for a family that ships no bold or no italic
- * at all, they are what Qt synthesises one from.
+ * at all, they are what Qt synthesizes one from.
  */
 struct FontChoice {
 	QString family = QStringLiteral("Sans Serif");
@@ -72,7 +72,7 @@ QString describeFontChoice(const FontChoice &choice);
  * Semibold, Condensed, Book, Black -- which a bold checkbox has no way to ask for and which a
  * family with four weights has no way to answer.
  *
- * A family that does not ship a bold or an italic still offers one, marked as synthesised: it is
+ * A family that does not ship a bold or an italic still offers one, marked as synthesized: it is
  * what the checkboxes did, Qt slants and thickens the letterforms itself, and dropping it would
  * take faux-bold away from every single-face family on the machine.
  */
@@ -89,7 +89,7 @@ private:
 	/*
 	 * One row of the face list.
 	 *
-	 * A synthesised row names no face -- there is no file behind it -- and carries only the flags
+	 * A synthesized row names no face -- there is no file behind it -- and carries only the flags
 	 * Qt fakes the face from, which is exactly what `styleName` being empty means in a style.
 	 */
 	struct Face {

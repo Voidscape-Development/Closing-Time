@@ -130,12 +130,12 @@ FontDialog::FontDialog(Document *document, QWidget *parent) : QDialog(parent), d
 	layout->addWidget(bundleCheck);
 
 	/*
-	 * The licence note is not a warning box that can be clicked away, because it is not about
+	 * The license note is not a warning box that can be clicked away, because it is not about
 	 * anything that has gone wrong: carrying a font file is redistributing it, most commercial
-	 * licences say something about that, and the person choosing is the only one who can know
+	 * licenses say something about that, and the person choosing is the only one who can know
 	 * what theirs says. It sits under the switch it is about, permanently.
 	 */
-	noteLabel = new QLabel(moduleText("Fonts.Bundle.Licence"), this);
+	noteLabel = new QLabel(moduleText("Fonts.Bundle.License"), this);
 	noteLabel->setWordWrap(true);
 	noteLabel->setEnabled(false);
 	layout->addWidget(noteLabel);
@@ -183,13 +183,13 @@ void FontDialog::refreshRows()
 		 * row has already said.
 		 */
 		if (status.available) {
-			row->setText(SubstituteColumn, QStringLiteral("—"));
+			row->setText(SubstituteColumn, QStringLiteral("-"));
 
 			for (const FontFaceStatus &face : status.faces) {
 				auto *faceRow = new QTreeWidgetItem(row);
 				faceRow->setText(FamilyColumn, face.styleName);
 				faceRow->setText(StateColumn, describeFaceState(face));
-				faceRow->setText(SubstituteColumn, QStringLiteral("—"));
+				faceRow->setText(SubstituteColumn, QStringLiteral("-"));
 			}
 
 			/* Expanded, because a missing face is the thing this window is open to find. */

@@ -86,7 +86,7 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
-	/* Joins the rasterisation thread before this module's code is unmapped. */
+	/* Joins the rasterization thread before this module's code is unmapped. */
 	closingtime::stopRenderThread();
 
 	obs_log(LOG_INFO, "Closing Time unloaded");

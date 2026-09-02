@@ -35,7 +35,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * Two kinds of question, and the difference matters when a test is written. The **layout boxes**
  * say where the layout *put* something -- the column a run of text was given, the rectangle a logo
  * was fitted into. The **ink** says where pixels actually landed. A column is not its contents: a
- * centred title in a wide column inks the middle of it, and a check that means "the leader reaches
+ * centered title in a wide column inks the middle of it, and a check that means "the leader reaches
  * the words" has to ask about ink, while one that means "the column is the full content width" has
  * to ask about boxes. Asking the wrong one is the most common way a check here passes while the
  * thing it names is broken.
@@ -45,7 +45,7 @@ namespace closingtime::test {
 
 /* --- rendering --------------------------------------------------------------------------- */
 
-/* The document's height in pixels, without rasterising anything. */
+/* The document's height in pixels, without rasterizing anything. */
 int measure(const Document &document);
 
 /* Every rectangle the layout reported, in strip space. */
@@ -70,7 +70,7 @@ Strip renderStrip(const Document &document);
  * Kept apart from renderStrip because the difference is the point: without an animation cache an
  * animated logo is baked into the strip as its first frame, and with one it is left as a hole with
  * a placement reported beside it. Suites that are not about animation use the plain call and get
- * the behaviour the renderer has always had.
+ * the behavior the renderer has always had.
  */
 Strip renderAnimatedStrip(const Document &document);
 QImage renderImage(const Document &document);
@@ -123,7 +123,7 @@ bool inksColumn(const QImage &image, int x);
  * Zero is the invariant; the count is returned rather than a bool so a failure says how badly.
  *
  * Horizontal and vertical both, since a section that overflows either way is drawing into its
- * neighbour or off the canvas.
+ * neighbor or off the canvas.
  */
 int boxesOutsideContent(const Document &document);
 
@@ -177,7 +177,7 @@ int sweepSize(const QVector<Axis> &axes);
  * artifacts. Named so it is safe to call unconditionally from a suite: a normal run pays a render
  * it was doing anyway and no disk at all.
  *
- * There are deliberately no golden images to compare against. Text rasterises differently across
+ * There are deliberately no golden images to compare against. Text rasterizes differently across
  * font versions, hinting settings and platforms, so a committed PNG would fail on machines where
  * nothing is wrong -- these are for looking at, and the checks that must hold are measurements.
  */

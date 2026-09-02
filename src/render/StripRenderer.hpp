@@ -83,7 +83,7 @@ struct StripTile {
 /*
  * An animated logo the layout placed, and everything needed to draw it.
  *
- * The strip is rasterised once and scrolled; an animation is by definition not that. So an
+ * The strip is rasterized once and scrolled; an animation is by definition not that. So an
  * animated logo is not painted into the strip at all. The tile it would have occupied is left
  * empty and the artwork is drawn over the strip afterwards, from its own texture -- by the source
  * on the graphics thread, or by the designer's preview widget on the UI thread. This is what
@@ -131,7 +131,7 @@ struct AnimatedLogoPlacement {
 struct StickyBlockPlacement {
 	/* The slot, in strip space. Consumers add the scroll offset to find where it would be. */
 	QRectF rect;
-	/* The block itself, rasterised at the strip's width, exactly `rect` in size. */
+	/* The block itself, rasterized at the strip's width, exactly `rect` in size. */
 	QImage image;
 
 	/* Everything about how it pins, copied off the section so the compositor reads no model. */
@@ -148,10 +148,10 @@ struct StickyBlockPlacement {
 	 * carries one. The picture is `rect.height() + margin * 2` tall and its top edge belongs
 	 * `margin` pixels above wherever the block is drawn.
 	 *
-	 * The backdrop itself is painted into the picture rather than carried here as a colour to be
+	 * The backdrop itself is painted into the picture rather than carried here as a color to be
 	 * drawn behind it. A flat quad would mean a second effect -- libobs draws solids and textures
 	 * from different ones -- started inside the pass that is drawing the strip, and the panel is
-	 * a rectangle the rasteriser can fill for nothing at rebuild time.
+	 * a rectangle the rasterizer can fill for nothing at rebuild time.
 	 */
 	int margin = 0;
 
@@ -179,7 +179,7 @@ struct Strip {
 	/*
 	 * Collected in the same pass, and for the same reason: a block straddling a tile seam is
 	 * reported once rather than once per tile. Empty for a roll with no sticky blocks in it,
-	 * and always empty from `measure()`, which rasterises nothing.
+	 * and always empty from `measure()`, which rasterizes nothing.
 	 */
 	QVector<StickyBlockPlacement> stickyBlocks;
 	int width = 0;
@@ -220,7 +220,7 @@ struct LayoutBox {
 		/*
 		 * A Section Divider's own box, over the height its artwork occupies -- which is not
 		 * the same as its content box, since a divider narrower than its section sits
-		 * centred in it and a stack of rules is taller than any one of them.
+		 * centered in it and a stack of rules is taller than any one of them.
 		 */
 		Divider,
 	};
@@ -248,7 +248,7 @@ public:
 	 * animated file contributes its first frame, baked into the strip exactly as artwork always
 	 * was. That is the fallback the test harness and any caller with nowhere to draw an overlay
 	 * quad want, and it means animation is something a consumer opts into by being able to
-	 * honour it rather than something the renderer assumes of everybody.
+	 * honor it rather than something the renderer assumes of everybody.
 	 */
 	explicit StripRenderer(LogoCache *logos, AnimatedLogoCache *animations = nullptr)
 		: logos(logos),
@@ -260,7 +260,7 @@ public:
 	static constexpr int kTileHeight = 2048;
 
 	/*
-	 * Rasterises the document. When `boxes` is given it is filled with the rectangles the
+	 * Rasterizes the document. When `boxes` is given it is filled with the rectangles the
 	 * layout placed things in, for the designer's overlay; the source passes nothing and
 	 * pays for none of it.
 	 *
@@ -272,7 +272,7 @@ public:
 
 	/*
 	 * Total content height in pixels, excluding lead-in and lead-out. Cheaper than a full
-	 * render because nothing is rasterised; used by the designer to show roll duration
+	 * render because nothing is rasterized; used by the designer to show roll duration
 	 * while the user is still typing. Fonts are resolved exactly as they are for a render,
 	 * so the duration is measured against the metrics the roll will really be laid out with.
 	 */

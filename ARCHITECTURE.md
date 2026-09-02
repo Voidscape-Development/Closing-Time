@@ -28,7 +28,7 @@ action live in the normal OBS properties dialog.
 Rendering with QPainter rather than native libobs text sources buys exact WYSIWYG parity
 between the designer preview and the video output, real text layout (wrapping, alignment,
 line spacing, multi-column flow), and a per-frame cost of nothing more than a few textured
-quads. What it cannot do is move: a strip is rasterised once and scrolled. Animated logos are
+quads. What it cannot do is move: a strip is rasterized once and scrolled. Animated logos are
 therefore *not* in the strip at all — see *Animated logos* below — which is the one place the
 renderer has two draw paths instead of one, and the reason that split exists.
 
@@ -38,7 +38,7 @@ renderer has two draw paths instead of one, and the reason that split exists.
 src/
   plugin-main.cpp          module entry; registers the source and the global signal
   model/
-    CreditsModel.{hpp,cpp} TextStyle, StylePreset, LogoRef, Entry, Section, Document + obs_data (de)serialisation
+    CreditsModel.{hpp,cpp} TextStyle, StylePreset, LogoRef, Entry, Section, Document + obs_data (de)serialization
     Background.{hpp,cpp}   BackgroundPanel, the slots a section holds them in, and BackgroundPreset
     Gradient.{hpp,cpp}     GradientSpec and its stops, shared by a text fill and a panel alike
     BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
@@ -47,9 +47,9 @@ src/
     StyleLibrary.{hpp,cpp} the machine-wide style library file, and reading it into a document
     FontBundle.{hpp,cpp}   the font files a document carries, and collecting them off the machine
   render/
-    RenderThread.{hpp,cpp} the shared rasterisation thread and its job queue
+    RenderThread.{hpp,cpp} the shared rasterization thread and its job queue
     AnimatedLogo.{hpp,cpp} decoding animated artwork with Qt, and frame timing
-    StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterisation
+    StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterization
     BackgroundPainter.{hpp,cpp} a panel's path, its fills and its border; the one gradient mapping
     SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
@@ -62,7 +62,7 @@ src/
     DesignerDialog.{hpp,cpp} three-pane designer window
     SectionEditor.{hpp,cpp}  per-section editor + StyleEditor
     BackgroundControls.{hpp,cpp} BackgroundEditor: one panel's fill, shape, edge and preset
-    StyleControls.{hpp,cpp}  colour button, gradient stop editor and its swatch
+    StyleControls.{hpp,cpp}  color button, gradient stop editor and its swatch
     ToolButtons.{hpp,cpp}    the compact button shapes a list's controls are built from
     PreviewWidget.{hpp,cpp}  scaled preview of the rendered strip
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
@@ -90,7 +90,7 @@ fields a given type actually uses are described by five predicates —
 `sectionUsesText/Logos/Entries/Columns/Subtitles` — which drive both the layout switch and the
 editor's field visibility, plus `sectionUsesSecondaryText`, derived from two of them rather than
 tabulated because "it carries two texts" is true of a bridged row, a title/subtitle pair and a
-heading with a line under it alike, however differently the three are laid out. One struct keeps serialisation trivial and
+heading with a line under it alike, however differently the three are laid out. One struct keeps serialization trivial and
 makes changing a section's type in the designer a non-destructive operation: nothing is thrown
 away, the unused fields simply stop being read.
 
@@ -98,10 +98,10 @@ away, the unused fields simply stop being read.
 
 Every section is laid out inside a box rather than across the canvas: `sectionWidth` is the
 share of the canvas width it occupies, `sectionAlign` where that share sits, and `marginX` an
-inset taken off each of the box's own edges. At the defaults — the full width, centred — the box
+inset taken off each of the box's own edges. At the defaults — the full width, centered — the box
 *is* the canvas and the result is the plain inset from both edges that a margin has always given.
 
-The box exists because a margin alone can only ever centre things: it insets both sides equally,
+The box exists because a margin alone can only ever center things: it insets both sides equally,
 so a margin large enough to push a block towards one edge pushes it in from the other by exactly
 as much. Splitting "how wide" from "where" is what lets a run of credits sit hard against one
 side of the frame while still keeping a margin's worth of clear space off that side.
@@ -120,7 +120,7 @@ that translates one entry's column within the list. Steps rather than pixels bec
 is *for* is a list with a shape to it — a department over the names under it — and several entries
 line up only if the step is one decision about the list rather than a number typed into each row.
 It translates rather than narrows for the same reason the offset does, so a tab means the same
-thing in a centred list as in a left-aligned one. Every list shape reads it, the multi-column ones
+thing in a centered list as in a left-aligned one. Every list shape reads it, the multi-column ones
 stepping the entry within its own column rather than off it.
 
 ### Section types
@@ -155,7 +155,7 @@ same branch. **`logoPlacement`** decides what "against" means:
 
 `Edge` came first and has a trap in it that is worth naming, because it looks like a bug and
 is really a layout consequence: the text is given the *entire* remaining column and then
-aligns inside it, so a centred title ends up halfway across the frame from its own logo.
+aligns inside it, so a centered title ends up halfway across the frame from its own logo.
 `logoGap` cannot pull them together, because under `Edge` it only ever sets the minimum
 distance between two columns, never the distance drawn. `Hug` is the fix — measuring the
 pair together and placing the group is what makes the gap the real separation — and it is
@@ -167,14 +167,14 @@ A `Hug` group is placed by **`sectionAlign`**, not by the style's own alignment.
 text runs to the other — so the box, and with it the section's placement, is what decides where
 they land. A `Hug` group is narrower than its box by construction, and aligning it by the text
 left the one setting named after placing a section unable to move it: a header placed hard left
-sat centred in that left-hand box because its title happened to be centred, which reads as the
+sat centered in that left-hand box because its title happened to be centered, which reads as the
 placement being ignored rather than as two settings interacting. The style's alignment keeps its
 own job inside the text column, which is where a wrapped or multi-line title needs it.
 
 The four shapes differ in **what goes in the text column and in nothing else**, which is why
 they share one layout branch rather than a second copy of the placement: `placeLogoRow` is
 handed the width the column wants and whether there is anything in it, and a pair hands over
-the wider of its two lines. The logo is centred against the whole block, so a subtitle makes
+the wider of its two lines. The logo is centered against the whole block, so a subtitle makes
 the row taller and moves the logo down with it rather than leaving it level with the title and
 the pair hanging off the bottom. A single-line type is just the pair with an empty subtitle —
 which the stack already draws as one line at one height, taking no gap with it — so the plain
@@ -193,13 +193,13 @@ so the leader touches neither the logo nor the text.
 One consequence of a pair is worth naming, because it looks like the `Edge` trap and is not one.
 A single line's column *is* that line, so `logoGap` is the distance drawn to the words whatever
 the style's alignment says. A pair's column is sized by the **wider** of its two lines, and the
-narrower one is then placed inside it by its own alignment — so a centred title over a longer
+narrower one is then placed inside it by its own alignment — so a centered title over a longer
 subtitle sits further from the logo than `logoGap` asks, measured to the *title*, while the block
 as a whole still clears the logo by exactly that gap. That is the documented rule (each line
 aligned by its own style) doing its job rather than the gap being ignored: the block has to clear
 its widest line, and pointing the two lines at the logo — `Left` with the logo on the left —
 closes the distance to precisely what a single line gets. The alternative, a placement that
-overrides the style's alignment, was rejected: it would buy the invariant by taking away a centred
+overrides the style's alignment, was rejected: it would buy the invariant by taking away a centered
 title over a wider strapline, which is a layout people actually want.
 
 ### Bridged rows
@@ -223,7 +223,7 @@ something invisible.
 | | |
 |---|---|
 | `Fixed` | drawn once at its natural width |
-| `Repeat` | tiled as many *whole* times as fit, centred in the gap |
+| `Repeat` | tiled as many *whole* times as fit, centered in the gap |
 | `Stretch` | spread across the gap, so the run meets both ends of it exactly |
 
 `Repeat` deliberately refuses a partial copy: cutting a leader mid-glyph — or mid-dot — reads
@@ -312,13 +312,13 @@ cannot drift. One number — `bridgeThickness`, in pixels — then sizes the who
 because it is vector art it is as crisp at 3 px as at 30 without a font to supply it.
 
 **Art is a stencil, not a picture.** The built-in tiles are painted white so the renderer can
-rasterise them and fill the silhouette with a `TextStyle`, by default the section's own: the same
-colour, the same gradient mapped over the same block, the same outline, the same shadow the words
+rasterize them and fill the silhouette with a `TextStyle`, by default the section's own: the same
+color, the same gradient mapped over the same block, the same outline, the same shadow the words
 either side get. That parity is the default because a leader belongs to the row rather than
 sitting on it — and it is exactly what gets in the way when the leader is the part meant to stand
 out, which is what `bridgeStyle` is for; see *The bridge's own ink* below. The one thing there is
 no path left to stroke, so an outline grows the silhouette by a ring of offset copies instead,
-dense enough that consecutive ones overlap within half a pixel. Only a custom file has colours of
+dense enough that consecutive ones overlap within half a pixel. Only a custom file has colors of
 its own worth keeping, so only there does `bridgeTint` get a say.
 
 **Tiling belongs to the type.** `Spread` types (dots, dashes, diamonds) keep whole tiles at
@@ -347,9 +347,9 @@ without going through it, the same guarantee `effectiveStyle` gives the text.
 outline and the shadow come from the bridge style; the family, size, weight, alignment and line
 spacing stay the row's. That split is not a simplification, it is what makes the feature free:
 every width, baseline and height a bridged row is built from is measured off the fields the merge
-leaves alone, so a leader that has been recoloured reserves exactly the width it did before and
+leaves alone, so a leader that has been recolored reserves exactly the width it did before and
 nothing else in the row moves for it. A text bridge is still set in the face the words either side
-of it are, at their size — the string is what the user typed, drawn in a different colour.
+of it are, at their size — the string is what the user typed, drawn in a different color.
 
 It follows that a preset written for a run of headings can be pointed at a leader without dragging
 a heading's font size across with it, which is why `bridgeStylePresetName` binds to the same
@@ -366,7 +366,7 @@ predicate disagree with the layout switch about which types draw bridges would c
 a tile seam for exactly the sections it was wrong about.
 
 The one place it does not reach is a custom tile with `bridgeTint` off, which is painted to the
-strip in the colours it was authored with before any of this runs. The designer hides the whole
+strip in the colors it was authored with before any of this runs. The designer hides the whole
 group in that case rather than offering settings that do nothing.
 
 Tiles are parsed into a `BridgeArtCache` that lives for the length of one measure or render
@@ -392,8 +392,8 @@ two lists that had to be argued about shape by shape. An arm stays its own role 
 itself, tiled along a span, which is a different job from being drawn once at its own size.
 
 **An end is a stack, exactly as the middle is.** `dividerCap` and `dividerEndCap` are
-`QVector<DividerPiece>` like `dividerCentre`, so a diamond outside an arrowhead, or `MMXXVI` set
-against the rule, is an end as readily as it is a centre. Nothing about it is a second
+`QVector<DividerPiece>` like `dividerCenter`, so a diamond outside an arrowhead, or `MMXXVI` set
+against the rule, is an end as readily as it is a center. Nothing about it is a second
 implementation: one helper measures a run of pieces and one places it, and the three stacks differ
 only in where they are put and whether they are mirrored. A document that wrote an end as a single
 shape — which is every document there is — loads as the one-piece stack that draws the same
@@ -418,10 +418,10 @@ way on both sides and leave the divider lopsided. Mirroring a symmetric tile cos
 and changes nothing, which is why it is not a property each shape has to remember to declare.
 
 **A piece may be turned, and a turn moves nothing along the rule.** `DividerPiece::rotation` is
-degrees clockwise about the piece's own centre, read for all three kinds — the artwork through a
+degrees clockwise about the piece's own center, read for all three kinds — the artwork through a
 painter transform, a word and an image through the same transform wrapped around the helpers that
 draw them. What it deliberately does *not* do is re-measure: the piece keeps the width its
-untilted shape asked for, so its neighbours and the arms stay put while an angle is dialled in,
+untilted shape asked for, so its neighbors and the arms stay put while an angle is dialed in,
 and a wide shape turned a quarter round reaches out over the gaps beside it. Height is the one
 exception and has to be — a section is only as tall as it says it is, so the measured stack takes
 each piece's *swept* height and the divider grows to hold what it draws rather than cutting the
@@ -430,7 +430,7 @@ itself is negated for a word or an image, which are not flipped: either way the 
 stay each other's reflection.
 
 **Every shape declares its own height as a multiple of the rule it belongs to.** `height` in the
-table is that proportion — an arrowhead some four and a half times the rule, a centre diamond
+table is that proportion — an arrowhead some four and a half times the rule, a center diamond
 three and a half — so `dividerThickness` scales all of it and an arrowhead stays an arrowhead
 when a divider is made heavier. The one exception is the **arm**, whose height is *always* the
 thickness whatever its row says: an arm is the rule, and a rule has no proportion to itself.
@@ -438,10 +438,10 @@ thickness whatever its row says: an arm is the rule, and a rule has no proportio
 An arm has no fill setting, unlike a bridge. A bridge has three because the user is choosing how
 a leader sits between two words; an arm has two fixed ends and only one sensible answer, so a
 `Scale` shape covers its span exactly and a `Spread` shape lays whole tiles and shares the
-leftover out *between* them rather than at the ends, meeting the cap outside it and the centre
+leftover out *between* them rather than at the ends, meeting the cap outside it and the center
 inside it.
 
-**The middle is a list, not a choice.** `dividerCentre` is a `QVector<DividerPiece>`, each an
+**The middle is a list, not a choice.** `dividerCenter` is a `QVector<DividerPiece>`, each an
 ornament, a word or an image, drawn in order. The figures that actually turn up in the middle of
 a rule are compounds — a diamond with a dot either side of it, `PART II` between two curls — and
 offering a single slot would mean shipping every one of those as its own tile or making the user
@@ -451,14 +451,14 @@ once across it instead of twice across two halves. A piece that measures to noth
 word, a logo that would not decode, an ornament whose file is missing — is dropped along with the
 gap that would have sat beside it, rather than left as a hole in the rule.
 
-A word and an image in the centre go through **exactly the helpers that draw a section's own
+A word and an image in the center go through **exactly the helpers that draw a section's own
 title and its own logo**, which is why they can be there at all: they pick up the style's
 gradient, outline and shadow with no second implementation of any of it. That is also why the
 composition lives in `StripRenderer.cpp` beside the other section geometry while
 `DividerArtRenderer` handles only the artwork — the same split `prepareBridge`/`paintBridge`
 already make.
 
-`dividerRules` runs two or more rules in parallel about the midline, and the caps and the centre
+`dividerRules` runs two or more rules in parallel about the midline, and the caps and the center
 are drawn **once** across the whole stack rather than once per rule: three lines broken by one
 ornament is the deco figure, where three complete dividers touching is not. `dividerRuleInset`
 makes each rule shorter than the one nearer the midline by a fixed amount, so a stack tapers to
@@ -466,7 +466,7 @@ a wedge; an even-numbered stack has no middle rule to measure from, so its two i
 a step out and the figure stays symmetric either way.
 
 Ink comes from the **bridge's** override. `useBridgeStyle`/`bridgeStyle` are reused outright
-rather than duplicated under a divider name, because "colour the artwork apart from the text" is
+rather than duplicated under a divider name, because "color the artwork apart from the text" is
 one want with two names: a divider whose rule carries the title's gold sweep while its own label
 stays white is the same edit as yellow leader dots under white names. The designer retitles the
 group by section type, the way it already retitles the secondary style group.
@@ -485,7 +485,7 @@ however carefully the shapes were chosen. Two settings answer that, and they com
   two passes computing it separately would be two chances to disagree about a width the section
   below is positioned from.
 - `dividerConnect` **runs the rule the whole way through**. One unbroken arm from the middle of one
-  end cap to the middle of the other, passing behind the centre stack rather than breaking either
+  end cap to the middle of the other, passing behind the center stack rather than breaking either
   side of it, so a diamond sits *on* the line the way an ornamental rule is actually composed. The
   middle of the outermost piece rather than the stack's outer edge, because that point is inside
   every cap's silhouette whatever the cap is — run to the edge instead and the rule pokes a blunt
@@ -496,13 +496,13 @@ None of this needed new painting machinery, which is the point: the silhouette b
 an overlap union seamlessly instead of showing a seam, a doubled outline or a restarted gradient.
 What it did need was the arms placed into `DividerLayout::art` **before** the stacks rather than
 after, so a piece is drawn over the rule it sits on. That is invisible for tinted artwork — it all
-goes into the one silhouette — but a custom picture left in its own colours is painted straight to
+goes into the one silhouette — but a custom picture left in its own colors is painted straight to
 the strip, and a rule running across the front of it is not the ornament anybody placed.
 
 Whatever a join is set to, the arms are held inside the section's own box. A setting somebody can
-drag to its end is one that will be, and past that edge the rule paints over its neighbours.
+drag to its end is one that will be, and past that edge the rule paints over its neighbors.
 
-Every tinted part of a divider is rasterised into **one** silhouette and inked once — not part by
+Every tinted part of a divider is rasterized into **one** silhouette and inked once — not part by
 part — so an outline surrounds the divider rather than each diamond in it, and one gradient runs
 the whole way across instead of restarting at every piece. That is what `render/SvgArt.{hpp,cpp}`
 exists for: the tile cache and the paint-through-ink path (shadow, grown outline, gradient
@@ -584,7 +584,7 @@ Three decisions are worth recording:
 
 **A gradient is mapped over the block of text being drawn** — one title, one list entry, one
 side of a bridged row — not over the canvas and not over the strip. Mapping over the strip
-would make a stop's colour depend on how long the roll happened to be, so adding a section at
+would make a stop's color depend on how long the roll happened to be, so adding a section at
 the bottom would restyle everything above it. Per block, a run of names all share the same
 sweep as each other. The block is the run's *laid-out* height and the horizontal extent its
 lines actually ink: laid-out height rather than ink bounds is what keeps a bridged row
@@ -606,17 +606,17 @@ see below — so the bleed is taken over every visible section that sets text *o
 wanted, and a wordmark used as a heading is that section's content as much as a line of type
 would be; leaving it flat while the headings either side of it were lifted off the background
 made the setting look broken rather than deliberate. The artwork is its own silhouette — its
-alpha is the shape — so there is no path to offset, only the image recoloured to the shadow's
+alpha is the shape — so there is no path to offset, only the image recolored to the shadow's
 ink at the size it is about to be drawn, softened by the same box passes as everything else.
 The outline is deliberately not carried across: a stroke around a photograph's rectangle is a
 frame, which is a different feature wanting its own controls, not this one applied to art.
 
 **Effects render through glyph paths, plain text does not.** `QTextLayout::draw()` can only
-put a pen colour through the glyphs, so a style with a fill, an outline or a shadow is
+put a pen color through the glyphs, so a style with a fill, an outline or a shadow is
 converted to a `QPainterPath` by way of `QRawFont::pathForGlyph` — which keeps the shaping
 `QTextLayout` already did, unlike rebuilding the run from the source string. A style with
 none of the three keeps the original `layout.draw()` path, so documents that predate this
-rasterise exactly as they did before. Outlines are stroked at twice their width underneath
+rasterize exactly as they did before. Outlines are stroked at twice their width underneath
 the fill, which covers the inner half back up and leaves the outline growing outward only.
 Shadows are drawn into a scratch buffer and softened with three box passes; the buffer is
 bounded, and a blur too large to buffer falls back to a hard shadow with a log line.
@@ -628,18 +628,18 @@ across both. United rather than added, because two overlapping contours wound op
 cancel — adding the rule would punch its own shape out of every descender it crossed. The plain
 path leaves the rules to `QTextLayout::draw()`, which does them from the font's own flags.
 
-All of that cost lands on rasterisation, which happens once per document change on the render
+All of that cost lands on rasterization, which happens once per document change on the render
 thread, not per frame — playback still draws the same tiles it always did.
 
 ### Backgrounds
 
-A **panel** is a rectangle drawn behind something: a colour, a linear or radial gradient, or an
+A **panel** is a rectangle drawn behind something: a color, a linear or radial gradient, or an
 image; four corner radii; an optional border; a per-side outset and an opacity. `BackgroundPanel`
 carries all of it, and the whole of the design turns on one rule.
 
 **A panel never takes part in layout.** It is painted behind a box the layout has already decided
 and its outset reaches outside that box exactly the way a text shadow does — see *Text fills,
-outlines and shadows*, which this is deliberately modelled on. Switching a panel on, at any size, on
+outlines and shadows*, which this is deliberately modeled on. Switching a panel on, at any size, on
 any slot, cannot move a section, grow the roll or change how long it runs, so a roll can be given
 cards and bands after it has been timed. The cost is the same cost a shadow pays: `sectionBleed`
 counts the outset, so a band drawn across a tile seam is drawn into both tiles rather than being cut
@@ -700,7 +700,7 @@ renderer could casually start doing. So `SectionPanels::wants` is asked first: a
 it — every slot on every section until somebody sets one — costs one comparison and the content is
 laid out exactly once, as it always was. Only a slot that will really paint pays for the extra
 measure. The section's own panel is the same trick one level up: it needs the section's finished
-height, so a panelled section lays itself out once with no painter and then draws, with the
+height, so a paneled section lays itself out once with no painter and then draws, with the
 recursion terminating on the painter being null.
 
 The gradient mapping is shared outright rather than copied. `gradientBrush` in
@@ -716,7 +716,7 @@ make a heavier border a wider panel — and the bleed, which counts the outset a
 describing what is painted. An **image** is clipped to the panel's own path rather than to the
 rectangle around it, which is the whole of what makes a rounded corner mean anything to an image
 fill: `Cover` crops to the shape, not merely to the box the shape sits in. An animated file
-contributes its first frame only; the strip is rasterised once and scrolled, and a panel — unlike a
+contributes its first frame only; the strip is rasterized once and scrolled, and a panel — unlike a
 logo — has no quad of its own to be drawn from.
 
 ### Background presets
@@ -837,7 +837,7 @@ source rewrites them on the next tick — outside `update()`, since writing sett
 
 `Document::save`/`load` write directly to the source's settings object. Section lists are
 `obs_data` arrays of objects; ending-action fields are flat `ea_`-prefixed keys on the same
-object so `obs_properties` can bind to them without the source marshalling a sub-object on
+object so `obs_properties` can bind to them without the source marshaling a sub-object on
 every edit.
 
 Enums persist by **string id**, never by ordinal (`sectionTypeId`, `endingActionId`,
@@ -877,12 +877,12 @@ allocating one enormous texture when only a screenful is ever visible. Total str
 capped at 200 000 px as a backstop against a runaway import.
 
 **Alpha.** QPainter needs a premultiplied buffer; OBS composites with straight alpha. Each
-tile is unpremultiplied once at the end of rasterisation (`Format_ARGB32`, which is `GS_BGRA`
+tile is unpremultiplied once at the end of rasterization (`Format_ARGB32`, which is `GS_BGRA`
 in memory on little-endian) rather than corrected per frame on the GPU.
 
 ### Animated logos
 
-A strip is rasterised once and scrolled; an animation is by definition not that. So an animated
+A strip is rasterized once and scrolled; an animation is by definition not that. So an animated
 logo is **not painted into the strip at all**. The tile it would have occupied is left empty and
 the artwork is drawn over the strip afterwards, from a texture of its own:
 
@@ -902,7 +902,7 @@ not decode animations at all — it has no cache to decode into and does not nee
 **Placements are collected in the measure pass**, which visits each section exactly once, so a
 logo straddling a tile seam is reported once rather than once per tile. A renderer built without
 an animation cache — the test harness, `measure()` — draws every logo as a still, which is the
-behaviour the renderer has always had.
+behavior the renderer has always had.
 
 **Decoding is whole-file, up front.** `AnimatedLogoCache` decodes every frame once, scaled to
 the height the logo is drawn at, and keeps them: playback becomes an index into an array rather
@@ -979,15 +979,15 @@ parked in manual scroll show every block where it belongs with none of the timin
 
 **A block's panel is painted into its own picture** rather than drawn as a quad behind it. libobs
 draws solids and textures from different effects, and starting a second one inside the pass that is
-drawing the strip is not something to do for a shape the rasteriser can fill for nothing at rebuild
+drawing the strip is not something to do for a shape the rasterizer can fill for nothing at rebuild
 time. The picture is grown by a margin at each end for it, and for whatever the children paint
-outside their own boxes — unlike the strip, there is no neighbouring tile here to catch a shadow.
+outside their own boxes — unlike the strip, there is no neighboring tile here to catch a shadow.
 
 The panel itself is the ordinary `BackgroundSlot::Section` one every type carries (see *Backgrounds*
 above); a block simply cannot use the pre-switch paint site the other types do, because it leaves a
 hole in the strip rather than drawing into it, and a panel painted there would be a card hanging in
 the roll where the block used to be. It replaced a `stickyBackdrop`/`Color`/`Padding` trio that was
-this feature in miniature for one section type — a flat colour and a padding, with no corners, no
+this feature in miniature for one section type — a flat color and a padding, with no corners, no
 gradient, no image and no preset behind it.
 
 A block spans the canvas: `sectionWidth`, `sectionAlign` and `marginX` are ignored for it, because
@@ -1009,7 +1009,7 @@ offset 0 and travels upward, so the roll enters from the bottom. Total travel is
 `canvasHeight + stripHeight`; `leadIn`/`leadOut` are baked into the strip itself as blank
 space at its top and bottom.
 
-The distance travelled per tick comes from the **video's own frame interval**, not from the
+The distance traveled per tick comes from the **video's own frame interval**, not from the
 gap `video_tick` reports. That gap is wall-clock and jitters — a percent or two either side of
 the interval on an idle machine, more when anything else on the system takes a moment — while
 frames are composited on a fixed cadence regardless. Feeding the measured gap straight in moves
@@ -1043,7 +1043,7 @@ otherwise has no use for.
 
 **Rebuilds are gated on content.** Every setting reaches the source through the same `update()`,
 and scrubbing sends one per frame of the drag. `renderKey()` reduces the document to everything
-the strip is rasterised from — by blanking the playback fields rather than by listing the content
+the strip is rasterized from — by blanking the playback fields rather than by listing the content
 ones, so a field added later counts towards it by default — and a rebuild is queued only when that
 string changes. Wrong in the direction the default takes, that costs a redundant rebuild; wrong
 the other way it would leave a stale strip on screen. The same comparison decides whether a
@@ -1077,7 +1077,7 @@ Three threads touch the source, and the split is deliberate:
 - **Graphics thread** owns `document`, all playback advancement, the GPU textures, and
   drawing. libobs defers `update()` for video sources to the graphics thread, so the
   document has exactly one writer.
-- **Render thread** owns rasterisation. One thread, shared by every source and every open
+- **Render thread** owns rasterization. One thread, shared by every source and every open
   designer window, running jobs strictly in the order they were posted (`RenderThread.hpp`).
   Rebuilds coalesce: while one is in flight, further edits set a re-run flag instead of
   queueing another job, so a long roll cannot accumulate a backlog of stale frames behind
@@ -1117,7 +1117,7 @@ is still on screen.
 
 `StyleLibrary` is the one genuinely shared thing, since a machine has one of it. Its own mutex
 covers every accessor, but the render path never touches it: a library change is folded into the
-document by `refreshLinkedPresets()` on the thread that owns the document, and rasterisation goes
+document by `refreshLinkedPresets()` on the thread that owns the document, and rasterization goes
 on reading the document's own presets.
 
 `obs_module_unload` calls `stopRenderThread()`, which discards queued jobs, waits for the
@@ -1195,11 +1195,10 @@ its content, and its Content tab holds them alone). *Layout* holds the type's ow
 placement rows. *Style* holds the up-to-five `StyleEditor`s. *Background* holds the eight panel
 slots.
 
-**The type picker, the label, the visible box and the advanced switch stay above the tab strip.**
-They are not settings of any one job: the type decides what every tab holds, the name is how the
-section is found again in the list, and the advanced switch reaches rows on three of the four
-pages. A reader who had to leave the tab they were working in to flip one of them would lose their
-place to change something that governs all of them.
+**The type picker, the label and the visible box stay above the tab strip.** They are not settings
+of any one job: the type decides what every tab holds, and the name is how the section is found
+again in the list. A reader who had to leave the tab they were working in to flip one of them would
+lose their place to change something that governs all of them.
 
 **Each tab scrolls on its own**, so the header and the strip cannot be scrolled off the top and
 each page keeps the place it was left at — going back to *Style* should be going back to where you
@@ -1217,7 +1216,7 @@ with it, and `desiredTab` is what brings them back to it once the next section h
 `restoringTab` keeps that shuffle from being read as a choice of theirs.
 
 **Within a tab the rows are still gathered into named groups that fold away** — *Content
-Properties*, the type's own settings, *Placement on the Canvas* — with the middle one titled after
+Properties*, the type's own settings, *Canvas Placement* — with the middle one titled after
 the type in it, since "Bridge settings" and "Divider settings" are never on screen at once. A
 `CollapsibleGroup` rather than a checkable `QGroupBox`: a checkbox on a group reads as switching the
 group *off*, which is what the checkable groups already in this editor mean. A group whose every row
@@ -1231,16 +1230,21 @@ next, which is the length that made the editor feel endless before they had a ta
 `CollapsibleGroup` grew the checkbox it was originally written to avoid: it sits *beside* the
 title rather than replacing the disclosure triangle, and the two readings stay apart — the checkbox
 says whether the style applies, the triangle says whether it is on screen, and neither moves the
-other. A group switched off greys its settings where they are rather than hiding them, exactly as
+other. A group switched off grays its settings where they are rather than hiding them, exactly as
 the checkable `QGroupBox` it replaces did: taking them away at the moment somebody is deciding
 whether they want them is the opposite of helpful. They have separate signals (`toggled`,
 `expandedChanged`) so that tidying the pane never marks the document dirty.
 
-**The settings reached for rarely sit behind one switch.** Nothing is switched off by it: a
-held-back row still comes and goes with the type exactly as it did, and `setRowVisible` simply ands
-the two together. The section box is deliberately not among them — it is the setting that places a
-section, and hiding it would leave `marginX` looking like the only way to, which is the confusion
-the box was added to end.
+**Every group opens folded, and every setting a type has applies is inside one of them.** There was
+a switch here that held the rarely-reached settings back until they were asked for, and the tabs
+made it redundant: once the pane is four pages of named groups rather than one column of forty rows,
+the thing that overwhelmed a reader is already gone, and a second axis of hiding only means a
+setting somebody can see the name of but not find. A group's fold is per group and per window, and
+`CollapsibleGroup` now starts folded, so a tab opens as a table of contents for what the selected
+type offers and stays however the reader left it while they work down the section list. That is the
+fold arrow only: a checkable group's checkbox is still a document setting, and starting folded says
+nothing about whether the settings inside apply. `setRowVisible` is now the type's answer and
+nothing else's.
 
 Because the entry table's columns follow the type, changing the type takes the entries out through
 the old columns and puts them back through the new ones (`relayoutEntryTable`). Rebuilding without
@@ -1289,7 +1293,7 @@ the three-digit pixel height beside it. The gradient stop table sizes itself the
 the stops it actually holds up to a cap, rather than at a fixed height that turned every sweep
 past four stops into a four-row window and gave a two-stop one empty rows it had no use for.
 
-Within that table a row is sized from the **position spin box** and nothing else, and the colour
+Within that table a row is sized from the **position spin box** and nothing else, and the color
 swatch beside it takes whatever height the row comes out at. A push button asks for more height
 than a spin box — several pixels more under the themes OBS ships — and sizing the row against
 the taller of the two made every row taller than the value it exists to sit beside, which cost a
@@ -1299,8 +1303,8 @@ every cell here holds a widget instead, so the column was coming out the width o
 and clipping the value it was showing.
 
 Preview re-renders are debounced by
-250 ms so typing does not re-rasterise the strip on every keystroke, and the render itself
-happens off-thread, so even a roll that takes seconds to rasterise leaves the window usable.
+250 ms so typing does not re-rasterize the strip on every keystroke, and the render itself
+happens off-thread, so even a roll that takes seconds to rasterize leaves the window usable.
 
 Sections reorder by drag-and-drop as well as by the move buttons. The list widget reports
 the drop rather than performing it — the document owns the order, and letting the view
@@ -1381,7 +1385,7 @@ be scrolled at all.
 does, so the pane composites the animated logos into them itself, from the placements the strip
 carries. With **Play animations** off — the default — every one of them shows its first frame,
 which is the frame the layout was measured from. With it on, the pane runs a repaint timer and
-looks each frame up from one elapsed clock, honouring loop, speed and play-once.
+looks each frame up from one elapsed clock, honoring loop, speed and play-once.
 
 Off by default for the same reason the layout overlay is: this pane is what a roll is written in,
 and something moving in the corner of it while a name is being typed is a distraction rather than
@@ -1403,7 +1407,7 @@ the content area dotted so both read as bounds rather than as something drawn, a
 outside the selected section dimmed to a quarter strength. The boxes come back with **every**
 preview render rather than only while the overlay is showing, which is what lets it be switched
 on over the strip already on screen instead of waiting on a rebuild; the cost is a handful of
-rectangles per section against a full rasterisation.
+rectangles per section against a full rasterization.
 
 Both halves of the framing below are corrections to an outline that had stopped saying anything. The strip
 was drawn edge to edge, which put the canvas's left and right edges exactly on the pane's own
@@ -1418,15 +1422,15 @@ the canvas and a border around a pane.
 The section list's own controls, and the entry table's, are the compact buttons OBS uses for the
 same job: a square carrying a glyph or an arrow, with the word it used to show moved to its
 tooltip (`ui/ToolButtons.hpp`). That is a legibility decision second and a width decision first —
-five labelled buttons held the section pane open at over 400 px whether or not the user had any
+five labeled buttons held the section pane open at over 400 px whether or not the user had any
 use for the space, and a splitter cannot be dragged past what the widgets underneath it demand.
 The same row of glyphs comes to under half of that, so the pane now goes as narrow as the list
 itself is useful at. Duplicate keeps its word: no glyph says it without a theme icon behind it.
 
-A colour swatch is **painted**, not set as a stylesheet background. A stylesheet does not stop at
+A color swatch is **painted**, not set as a stylesheet background. A stylesheet does not stop at
 the widget it is set on — it reaches everything beneath that widget in the object tree, and a
-dialog parented to a widget is beneath it for styling as much as for stacking, so the colour
-dialog these buttons open was being painted in the very colour it had been opened to change.
+dialog parented to a widget is beneath it for styling as much as for stacking, so the color
+dialog these buttons open was being painted in the very color it had been opened to change.
 Painting the swatch and hanging the dialog off the window rather than the button leaves nothing
 to cascade, and a painted rectangle has no fixed resolution to lose at high DPI, which was the
 reason a stylesheet was preferred to an icon in the first place.
@@ -1447,7 +1451,7 @@ replaces or appends, per a checkbox.
 
 The mapping sits in a panel beside the preview rather than in a strip above it: one row per
 column, scrolling down as far as the file is wide, so a dozen-column spreadsheet needs no
-sideways scrolling to reach its last column. Each row is labelled with the column's own name
+sideways scrolling to reach its last column. Each row is labeled with the column's own name
 from the header, which is also what the preview's header shows, falling back to `Column N`
 when there is no header row or the name is blank. Toggling the header checkbox re-labels the
 rows in place rather than rebuilding them, so a mapping the user has already set survives.
@@ -1474,7 +1478,7 @@ switches off Qt's synthetic bold and slant: naming a face the machine does not h
 roll designed in Semibold to the family's plain face rather than to the nearest weight it can
 reach. So `makeFont()` asks `fontStyleAvailable()` first and only names the face when the answer
 is yes, leaving the flags standing when it is not. They are also what a family shipping no bold
-or no italic at all is drawn with — the picker offers those faces marked as synthesised, since
+or no italic at all is drawn with — the picker offers those faces marked as synthesized, since
 dropping them would take faux-bold away from every single-face family on the machine.
 
 **A face is a file, not a family.** `DejaVuSans-Bold.ttf` holds the Bold and nothing else, so the
@@ -1505,9 +1509,9 @@ A style written before any of this names no face, which is exactly what an empty
 means, so there is nothing to migrate. A bundle written before faces were recorded declares none,
 which means *unknown* rather than *none*: such a file answers for its whole family, exactly as it
 always has. The picker matches such a style by its flags and prefers a
-real face over a synthesised one, so opening an old bold heading lands on the family's designed
+real face over a synthesized one, so opening an old bold heading lands on the family's designed
 Bold. A face the machine does not have is kept in the list, marked, and preselected: opening the
-picker to see what a travelled roll is set in must not rewrite it on the way out.
+picker to see what a traveled roll is set in must not rewrite it on the way out.
 
 ### When the machine does not have the font
 
@@ -1560,7 +1564,7 @@ changed underneath — a font installed since.
 
 **A file that cannot be found here never un-carries the one in hand.** This is the point at which
 the feature could quietly undo itself: a roll opened on a machine that does not have its fonts,
-edited, and applied would re-collect, find nothing, and throw away exactly the files it travelled
+edited, and applied would re-collect, find nothing, and throw away exactly the files it traveled
 with. So a family the document already carries keeps what it carries whenever this machine offers
 nothing for it. A family the roll has *stopped using* is dropped, which is a different question and
 one this machine can answer.
@@ -1580,19 +1584,19 @@ caller with nowhere to write — the bytes go to Qt directly instead.
 There are caps, because a scene collection is rewritten on every save and read back on every load,
 so a bundle is paid for over and over rather than once: 8 MB per file, 32 MB per roll. Past them
 the family keeps its name, reports as uncarried, and is left to a stand-in or an install. For the
-same reason `renderKey()` reduces the bundle to its file sizes rather than serialising it — that
+same reason `renderKey()` reduces the bundle to its file sizes rather than serializing it — that
 key is built once per frame of a slider drag.
 
 Bundling is on by default and switchable off per roll, which is the setting that makes a
 collection self-contained without anybody having to know fonts are a problem before they hit one.
 The window says, permanently and next to the switch, that carrying a font file is redistributing
-it and that most commercial licences have something to say about that. It is not a dialog to be
+it and that most commercial licenses have something to say about that. It is not a dialog to be
 clicked away, because nothing has gone wrong: the person choosing is the only one who can know
-what their licence says.
+what their license says.
 
 ### Standing in for what cannot be carried
 
-The other half is for the fonts that cannot travel — a licence that forbids passing the file on, a
+The other half is for the fonts that cannot travel — a license that forbids passing the file on, a
 webfont that is not a file at all, a family this machine does not have either.
 `fontSubstitutions` records a stand-in per family, and the renderer rewrites styles set in a
 missing family to it.
@@ -1629,18 +1633,18 @@ same reason: reporting it would send the user after a font nothing uses.
    plays only its first part. This is a deliberate trade — see *Animated logos* — but it does
    mean a long clip is not a logo as far as this plugin is concerned.
 5. **A logo is a picture, never a video.** GIF, APNG and animated WebP animate; WebM, MP4 and
-   the rest are not decoded at all, on any platform or build, and are not recognised as
+   the rest are not decoded at all, on any platform or build, and are not recognized as
    anything either — a video in a logo slot is an unreadable file, logged as one and drawn as
    a placeholder. Converting a clip to an animated WebP is the answer, and the reason is in
    *Animated logos*: a linked libav is a plugin that stops loading the day OBS changes its
    FFmpeg, which is a far worse failure than not playing an MP4.
 6. **Playback settings are per section in the designer, per logo in the document.** The model
    carries `LogoPlayback` on every `LogoRef`, and a hand-written or imported document with
-   different settings per entry is honoured; the editor writes one set of settings to every
+   different settings per entry is honored; the editor writes one set of settings to every
    logo in a section, because a loop switch on each of twelve sponsor cells is a column of
    checkboxes nobody wants to fill in.
 7. **A sticky block is one level deep, and its logos do not animate.** A block cannot hold another
-   block. Its children are rasterised into the block's own picture, which is drawn as a single
+   block. Its children are rasterized into the block's own picture, which is drawn as a single
    quad, so an animated logo inside one shows its first frame — the strip's hole-and-overlay
    trick has nowhere to put a second hole. Both are deliberate: pinning something to something
    already pinned is a second set of rules, and a card that holds still is not where a moving
@@ -1652,7 +1656,7 @@ same reason: reporting it would send the user after a font nothing uses.
    grow the strip is exactly the power to change the roll's duration that the feature is built not
    to have.
 9. **A panel's image is a still.** An animated file in a panel contributes its first frame. The
-   strip is rasterised once and scrolled, and unlike a logo a panel has no quad of its own to be
+   strip is rasterized once and scrolled, and unlike a logo a panel has no quad of its own to be
    drawn over the top of it — the hole-and-overlay trick has nothing to hang a background on.
 10. **A library rename is followed but never forced.** A document that already has a preset of
    its own under the new name keeps its link under the old one — merging two presets is not a
@@ -1661,7 +1665,7 @@ same reason: reporting it would send the user after a font nothing uses.
 
 ### Addressed since the first cut
 
-- Backgrounds: a panel — a colour, a gradient or an image, with rounded corners and a border —
+- Backgrounds: a panel — a color, a gradient or an image, with rounded corners and a border —
   behind a section and behind each of the things it draws, bindable to named presets that publish
   into the machine-wide library alongside the text styles. It never takes part in layout, so a roll
   can be given cards and bands after it has been timed.
@@ -1679,7 +1683,10 @@ same reason: reporting it would send the user after a font nothing uses.
   switched off and folded — the checkbox and the disclosure triangle side by side, saying different
   things.
 - The section editor asks for a base type and a few switches rather than one of twenty types, and
-  its rows are gathered into groups that fold away, with the rarely-used ones behind a switch.
+  its rows are gathered into groups that fold away, every one of them opening folded.
+- Adding or duplicating a section asks what it is called, so a roll of forty reads as a list of
+  names rather than of types. The name is optional and the field stays in the editor for changing
+  it later.
 - Deleting a section asks first.
 
 - Animated logos: GIF, APNG and animated WebP through Qt, drawn as their own quads over a hole
@@ -1691,7 +1698,7 @@ same reason: reporting it would send the user after a font nothing uses.
 - Renaming a library preset takes the rolls bound to it along: the library records the rename and
   every document rewrites its own preset and bindings the next time it is brought up to date,
   including a scene collection that was not open when it happened.
-- Rasterisation moved off the UI thread onto a shared render thread, for both the source and
+- Rasterization moved off the UI thread onto a shared render thread, for both the source and
   the designer preview.
 - Drag-and-drop reordering in the section list.
 - `HideSelf` now walks every scene rather than only the current one.
@@ -1710,7 +1717,7 @@ same reason: reporting it would send the user after a font nothing uses.
   reached only through the properties window.
 - The preview's canvas frame means something again: the canvas is inset from the pane's edges and
   the roll below one screenful is dimmed.
-- Colour buttons paint their swatch instead of carrying a stylesheet that leaked into the colour
+- Color buttons paint their swatch instead of carrying a stylesheet that leaked into the color
   dialog they opened.
 - A layout overlay in the designer, drawing every section box, content area, text block, logo and
   bridge the layout placed.
@@ -1723,14 +1730,14 @@ same reason: reporting it would send the user after a font nothing uses.
 - Gradient stop rows are sized from the value they hold rather than from the button beside it.
 - Title/subtitle lists, in one column and over several, for the run of pairs — a position over
   the name that holds it — that the bridged row was the only way to set.
-- A bridge can be inked separately from the text either side of it — colour, gradient, outline and
+- A bridge can be inked separately from the text either side of it — color, gradient, outline and
   shadow — without any of the row's geometry moving for it.
 - A manual scroll mode on the source, parking the roll at a position on a slider instead of
   playing it, so a section in the middle of a long roll can be looked at while it is being written.
 - Rebuilds are queued only when the document's *content* changes, rather than on every settings
-  edit, so a slider drag no longer re-rasterises the whole strip once a frame.
+  edit, so a slider drag no longer re-rasterizes the whole strip once a frame.
 - A Section Divider type: an ornamental rule composed from an end cap, a rule and a list of
-  centrepieces, drawn from a shape library that takes a new shape without the renderer, the
+  centerpieces, drawn from a shape library that takes a new shape without the renderer, the
   editor or the persistence format changing.
 - Title and Header types that carry a subtitle of their own, with and without a logo, so the
   stacked pair the lists have always offered can be set as a single heading.
@@ -1753,12 +1760,12 @@ milliseconds — fast enough to sit in a loop with while a layout is being worke
 Three things about its shape are deliberate, and each of them was arrived at by getting it wrong:
 
 **Boxes and ink are different questions.** The layout boxes say where the layout *put* something;
-the ink says where pixels landed. A centred title in a wide column inks the middle of it, so a
+the ink says where pixels landed. A centered title in a wide column inks the middle of it, so a
 check meaning "the leader reaches the words" has to ask about ink while one meaning "the column
 is the full width" has to ask about boxes. Asking the wrong one is the main way a check passes
 while the thing it names is broken, and `Probe.hpp` offers both under names that say which.
 
-**No golden images.** Text rasterises differently across font versions, hinting settings and
+**No golden images.** Text rasterizes differently across font versions, hinting settings and
 platforms, so a committed PNG would fail on machines where nothing is wrong. `--artifacts` writes
 the scenes out to look at; everything that must hold is a measurement, and measurements are
 written as relations between two renders rather than as absolute pixel counts wherever they can
@@ -1769,7 +1776,7 @@ not.
 asserting nothing. Writing the break first is also what catches a check that is *too strong*: the
 first version of the bridged-leader check asserted that adding a subtitle never moves the leader,
 which is only true when the text block is taller than the logo beside it — with a taller logo the
-block is centred and the leader rises with it. The invariant that actually holds everywhere is
+block is centered and the leader rises with it. The invariant that actually holds everywhere is
 that the leader hangs a fixed distance below the top line of the block, and that is what is
 asserted now, with the two regimes checked separately underneath it.
 
@@ -1797,23 +1804,23 @@ where the summed alpha of the rows either side of the boundary has to stay conti
 than dropping to zero on one side.
 
 Section dividers were validated offscreen the same way, over roughly four thousand checks: the
-`obs_data` round trip for every new field and every kind of centre piece, including through the
+`obs_data` round trip for every new field and every kind of center piece, including through the
 designer's JSON export, and with a stored zero for each of the three gaps told apart from a
 missing key; a section written before dividers existed loading with `None` in both end slots,
-`Rule` in the arm, mirrored ends, one rule, an empty centre and a drawable thickness; every
+`Rule` in the arm, mirrored ends, one rule, an empty center and a drawable thickness; every
 built-in shape in every slot it serves, crossed against every other, checking measure/render
 agreement and that nothing is drawn outside the content box or into the padding; a stack of one
 to five rules drawing one run of rows per rule, symmetric about its midline and never widening
-outward; custom artwork taking the section's colour with `dividerTint` on and keeping its own
+outward; custom artwork taking the section's color with `dividerTint` on and keeping its own
 with it off, and a missing file leaving the rest of the divider drawn; and the degenerate cases
-— a divider with no cap, no arm and no centre, one narrower than its own parts, one whose only
-centre piece is an empty word, and a hidden one taking no height at all.
+— a divider with no cap, no arm and no center, one narrower than its own parts, one whose only
+center piece is an empty word, and a hidden one taking no height at all.
 
 Joining the parts was checked the same way, and by the absence it is for: a composed divider held
 apart has columns with no ink in them, and the same divider joined has none — the figure staying
 exactly as wide and as tall either way, since a section that grew when its parts were joined would
 move everything under it, and the end gap making no difference at all once it is not consulted.
-Overlap was measured on a centre stack with no arm drawn, where the ink *is* the stack's width:
+Overlap was measured on a center stack with no arm drawn, where the ink *is* the stack's width:
 three equal diamonds opening by exactly the gap asked for, and an unbounded overlap taking back
 exactly one piece width across the two joins rather than however much was typed. A join dragged to
 its far end leaves no ink outside the section's own box.
@@ -1823,15 +1830,15 @@ as the new one so that each case is known to fail before it passes: every bridge
 one line across both sizing modes and both filling modes, including a left text that overruns its
 tab stop with the rest of the row free; both sides of a row keeping a shared baseline when one of
 them carries a character the family cannot supply and the line is really laid out against a
-fallback engine's ascent; a half-width section placed left, right and centred keeping its ink
+fallback engine's ascent; a half-width section placed left, right and centered keeping its ink
 inside the box it was given while a full-width one still spans margin to margin; measure/render
 agreement over a document holding every section type; the `obs_data` round trip for the two new
-fields and a document written before them loading full width and centred; and a logo's shadow
+fields and a document written before them loading full width and centered; and a logo's shadow
 landing at its offset without changing the strip's height.
 
 The layout overlay, the logo row's placement and the two designer sizing fixes were checked
 offscreen against the previous build as well as the new one, so each case is known to fail before
-it passes: a Hug logo row landing hard left, centred and hard right as the section placement says,
+it passes: a Hug logo row landing hard left, centered and hard right as the section placement says,
 at full width as well as half; every combination of placement, logo side, alignment, margin and
 overlong text keeping its ink inside the section box it was given; one section box and one content
 box per visible section, contiguous from the lead-in to the strip's end, with every text, logo and
@@ -1861,7 +1868,7 @@ measure/render agreement plus tile contiguity over a document holding all ninete
 
 The subtitle headings were validated offscreen the same way, each case against a deliberately
 broken build as well as the working one so that it is known to fail before it passes — a logo
-centred on the title line rather than on the block, a leader pinned to the title's baseline
+centered on the title line rather than on the block, a leader pinned to the title's baseline
 whatever the stacking order says, a `Section::save` that drops the new field, and a `Hug` group
 measured from the title alone. Over 311 checks: every section type's id round-tripping and
 staying unique, with the four new ids checked by name since a scene collection carries them; the
@@ -1872,7 +1879,7 @@ export, a section written before the type existed loading without a subtitle, an
 defaults it had; a heading with its subtitle blank measuring *exactly* as tall as a plain
 `Title`; the two lines separated by `subtitleGap` and by nothing else, both laid out into the
 full content column, with flipping the stack swapping which line is on top and leaving the height
-alone; nothing drawn into either padding; the logo row's block centred against the logo rather
+alone; nothing drawn into either padding; the logo row's block centered against the logo rather
 than the title line, `logoGap` holding exactly, the hugged column widening for a subtitle wider
 than the title with both lines sharing it, and a short logo leaving the pair deciding the row's
 height; a `Bridged` logo row's leader staying put when a subtitle is added under it and moving
@@ -1889,7 +1896,7 @@ configurations of a logo row — three types across placement × side × alignme
 width × margin × nine title/subtitle pairs — with no box the layout places leaving its content
 area, and it catches a `Bridged` column that stops being clamped to the space the logo leaves.
 What the report *did* turn up is the gap above: measured, a bridged pair's leader reached the
-title at 86 px against the 28 px a single line gets, purely because the title was centred in a
+title at 86 px against the 28 px a single line gets, purely because the title was centered in a
 column its subtitle had sized. That is now pinned from both ends — a pair pointed at its leader
 closing the gap to exactly what a single line closes it to, and the alignment demonstrably being
 the knob that moves it, so a placement that silently overrode alignment could not pass by
@@ -1912,10 +1919,10 @@ every layout box and the strip's own tiling all identical — against a bridge s
 unlike the row's in family, size, weight, alignment, line spacing, fill, gradient, outline and
 shadow at once, over the whole bridge type × fill × sizing × one-sided matrix and for a `Bridged`
 logo row, since that invariant is the entire justification for merging only the ink; that the
-leader really is recoloured, read off the rendered pixels, while the pixels of the text either side
+leader really is recolored, read off the rendered pixels, while the pixels of the text either side
 of it come out byte-identical, for a text bridge as well as for dots and diamonds; that
 `effectiveBridgeStyle` takes each ink field from the override and each layout field from the row;
-that a preset bound to the bridge contributes its colour and not its font size, and that deleting
+that a preset bound to the bridge contributes its color and not its font size, and that deleting
 that preset unbinds the bridge rather than leaving it dangling; that the bridge style's own bleed
 is the one `effectBleed` reports when it is the heaviest, with a fixture long enough to be tiled
 keeping ink either side of the seam; and the `obs_data` round trip for all three new fields, with a
@@ -1933,7 +1940,7 @@ Font resolution is checked the same way, and against the same deliberately broke
 `applyFontSubstitutions` that returns without doing anything, an extraction that never writes the
 cache, and a `name` table reader that indexes the full name instead of the family. What is pinned
 is that `usedFontFamilies()` reports what is really drawn — hidden sections and logo headings
-contributing nothing, a divider only when its centre stack holds text, a bound section's preset
+contributing nothing, a divider only when its center stack holds text, a bound section's preset
 rather than its own style, and never a bridge style; that a bundle and its stand-ins survive the
 `obs_data` round trip byte for byte, that a document written before any of it existed loads
 carrying fonts by default, and that an unreadable bundle entry is dropped rather than taken; that
@@ -1959,7 +1966,7 @@ harness should take:
 - `RenderThread` needs only Qt Core — post ordering, posting from several threads at once, a
   job posting its own follow-up, and jobs posted after `stopRenderThread()` being dropped.
 - Row placement needs only Qt Gui, for real font metrics. Worth covering because the geometry
-  is where these section types' behaviour lives: that the Bridged defaults still reproduce
+  is where these section types' behavior lives: that the Bridged defaults still reproduce
   the old 50/50 layout, that the tab stop holds across rows of different lengths, that both
   edges are met whenever the mode says they should be, that overlong rows shrink in
   proportion, that a filled bridge covers the gap it was given, and — across the whole

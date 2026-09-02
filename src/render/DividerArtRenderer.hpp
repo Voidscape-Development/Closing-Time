@@ -34,7 +34,7 @@ namespace closingtime {
 /*
  * The divider's view of an SvgArtCache: it knows how a shape names its tile, and leaves the
  * parsing, caching and failure handling to the shared cache underneath. One cache serves all
- * three slots, so a diamond used as both a cap and a centrepiece is parsed once.
+ * three slots, so a diamond used as both a cap and a centerpiece is parsed once.
  */
 class DividerArtCache {
 public:
@@ -56,13 +56,13 @@ struct DividerArtPlacement {
 	/* Set only when `shape` is Custom. */
 	QString file;
 	/*
-	 * Flipped along x about the rect's own centre. Caps are authored pointing outward along
+	 * Flipped along x about the rect's own center. Caps are authored pointing outward along
 	 * -x, so the right-hand end of a divider is always its cap drawn mirrored -- which is
 	 * what makes a cap a single choice that cannot come out different at the two ends.
 	 */
 	bool mirrored = false;
 	/*
-	 * Degrees clockwise about the rect's own centre, from the piece that placed it. Applied
+	 * Degrees clockwise about the rect's own center, from the piece that placed it. Applied
 	 * inside the mirror above, so a turned cap and its reflection at the other end lean away
 	 * from each other rather than both the same way.
 	 *
@@ -73,7 +73,7 @@ struct DividerArtPlacement {
 };
 
 /*
- * The drawn size of a shape in one of the slots that place it whole -- a cap or a centrepiece.
+ * The drawn size of a shape in one of the slots that place it whole -- a cap or a centerpiece.
  *
  * The height is the divider's thickness times the proportion the shape's own table row declares
  * times `scale`, and the width follows from the artwork's proportions, so one thickness sizes a
@@ -100,12 +100,12 @@ QVector<QRectF> layoutDividerArm(DividerShape shape, const QString &file, Divide
  * Paints placed artwork through the section's ink -- the same fill, gradient, outline and shadow
  * the text around it gets.
  *
- * Every tinted piece is rasterised into one silhouette and inked once, so an outline surrounds
+ * Every tinted piece is rasterized into one silhouette and inked once, so an outline surrounds
  * the divider rather than each part of it and one gradient runs the whole way across instead of
  * restarting at every diamond. `fillBox` is the block that gradient is mapped over; callers pass
  * the divider's whole box rather than any one part's few pixels of height.
  *
- * Custom artwork left untinted is drawn straight to the strip in the colours it was authored
+ * Custom artwork left untinted is drawn straight to the strip in the colors it was authored
  * with, and so takes no part in that silhouette.
  */
 void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art, const Section &section,

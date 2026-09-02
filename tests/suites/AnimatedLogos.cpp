@@ -49,7 +49,7 @@ CT_SUITE(animated_logo_decode, "Decoding an animation, and telling one from a st
 	const QString animated = testAnimatedLogoPath();
 	check(!animated.isEmpty(), "the animated fixture was written");
 
-	check(logoPathLooksAnimated(animated), "an animated GIF is recognised without decoding it");
+	check(logoPathLooksAnimated(animated), "an animated GIF is recognized without decoding it");
 	check(!logoPathLooksAnimated(testLogoPath()), "a still PNG is not mistaken for an animation");
 	check(!logoPathLooksAnimated(missingLogoPath()), "a missing file is not an animation");
 
@@ -179,13 +179,13 @@ CT_SUITE(animated_logo_slots, "Every kind of logo slot reports its animation")
 	}
 
 	{
-		const Context context(QStringLiteral("divider centre"));
+		const Context context(QStringLiteral("divider center"));
 		Section divider = unpadded(SectionType::SectionDivider);
 		DividerPiece piece;
 		piece.kind = DividerPiece::Kind::Logo;
 		piece.logo.path = testAnimatedLogoPath();
 		piece.logo.maxHeight = 48;
-		divider.dividerCentre = {piece};
+		divider.dividerCenter = {piece};
 
 		const Strip strip = renderAnimatedStrip(documentWith(divider));
 		checkEq(strip.animatedLogos.size(), 1, "a divider's own logo animates like any other");

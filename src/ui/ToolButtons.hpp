@@ -28,7 +28,7 @@ namespace closingtime {
  * a word each.
  *
  * The shape is worth sharing because the width it saves is what a pane can then be dragged
- * down to. Five labelled buttons under the section list held that pane open at well over
+ * down to. Five labeled buttons under the section list held that pane open at well over
  * 400 px whether or not the user had any use for the space; the same five as glyphs come to
  * less than half of it, and the label each one loses moves to its tooltip.
  */
@@ -43,6 +43,6 @@ QToolButton *makeArrowButton(QWidget *parent, Qt::ArrowType arrow, const QString
  * A button that keeps its label, for actions no glyph says clearly. Still a QToolButton, so a
  * row mixing the two reads as one set of controls.
  */
-QToolButton *makeLabelledButton(QWidget *parent, const QString &text, const QString &tooltip = QString());
+QToolButton *makeLabeledButton(QWidget *parent, const QString &text, const QString &tooltip = QString());
 
 } // namespace closingtime

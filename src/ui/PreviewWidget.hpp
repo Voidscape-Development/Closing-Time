@@ -59,7 +59,7 @@ public:
 	 * type into. With it off every animated logo shows its first frame, which is also the frame
 	 * the layout was measured from.
 	 *
-	 * The roll is not scrolling here, so what plays is each animation on its own clock, honouring
+	 * The roll is not scrolling here, so what plays is each animation on its own clock, honoring
 	 * loop, speed and play-once. `startOnEnter` has no meaning without a scroll and is ignored:
 	 * an animation held off until its logo enters a frame it will never enter would simply never
 	 * be seen.

@@ -29,24 +29,24 @@ class QTableWidget;
 namespace closingtime {
 
 /*
- * A button that shows the colour it holds and opens a colour dialog when pressed. The style
- * editor picks four separate colours -- fill, outline, shadow and each gradient stop -- so
+ * A button that shows the color it holds and opens a color dialog when pressed. The style
+ * editor picks four separate colors -- fill, outline, shadow and each gradient stop -- so
  * the swatch, the dialog and the "did it actually change" test live here once.
  */
-class ColourButton : public QPushButton {
+class ColorButton : public QPushButton {
 	Q_OBJECT
 
 public:
-	explicit ColourButton(QWidget *parent = nullptr);
+	explicit ColorButton(QWidget *parent = nullptr);
 
-	QColor colour() const { return current; }
-	void setColour(const QColor &colour);
+	QColor color() const { return current; }
+	void setColor(const QColor &color);
 
-	/* Shown in the colour dialog's title bar. */
+	/* Shown in the color dialog's title bar. */
 	void setDialogTitle(const QString &title) { dialogTitle = title; }
 
 signals:
-	void colourChanged();
+	void colorChanged();
 
 protected:
 	/* Draws the swatch over the theme's own button, and the hex code back on top of it. */
@@ -78,9 +78,9 @@ private:
 };
 
 /*
- * Angle and colour stops for one gradient, with a preview of the result. Stops are edited in
+ * Angle and color stops for one gradient, with a preview of the result. Stops are edited in
  * place in a small table; the list is kept sorted by the renderer rather than by the table,
- * so dragging a stop past its neighbour does not renumber the rows under the user's cursor.
+ * so dragging a stop past its neighbor does not renumber the rows under the user's cursor.
  */
 class GradientEditor : public QWidget {
 	Q_OBJECT

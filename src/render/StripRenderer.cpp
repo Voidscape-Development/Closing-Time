@@ -121,7 +121,7 @@ qreal alignOffset(HAlign align, qreal available, qreal used)
 /*
  * The glyphs of a laid-out run as one filled path, positioned at `origin`.
  *
- * Only styles that need more than a pen colour go through this: an outline has to be stroked
+ * Only styles that need more than a pen color go through this: an outline has to be stroked
  * around the letterforms and a shadow has to be cast by their silhouette, neither of which
  * QTextLayout::draw() can be asked for. Going by way of QRawFont::pathForGlyph keeps the
  * shaping QTextLayout already did -- ligatures, marks and bidi runs all stay as laid out --
@@ -323,7 +323,7 @@ void paintStyledLayout(QPainter *painter, const QTextLayout &layout, const TextS
 /*
  * Lays `text` out into `width` pixels with an already-prepared font, optionally painting it
  * at (x, y), and returns the height it occupies. Passing a null painter measures without
- * rasterising, which is how the two-pass layout keeps measurement and painting from
+ * rasterizing, which is how the two-pass layout keeps measurement and painting from
  * drifting apart.
  *
  * `font` and `align` are passed separately from `style` because the bridge of a Bridged
@@ -347,7 +347,7 @@ int layoutPreparedText(QPainter *painter, const QString &text, const TextStyle &
 	/*
 	 * Alignment is deliberately left off the text option and applied per line below.
 	 * Setting both makes QTextLayout offset the line and then get offset again here,
-	 * which pushes centred text a full half-width to the right.
+	 * which pushes centered text a full half-width to the right.
 	 */
 	layout.setTextOption(option);
 
@@ -490,7 +490,7 @@ QSize logoDrawSize(const QImage &image, const LogoRef &ref, int available)
  * The shadow a logo casts, softened exactly the way the text's and the bridge art's are.
  *
  * The artwork is its own silhouette -- its alpha is the shape -- so there is no path to offset
- * here, only the image recoloured to the shadow's ink at the size it is about to be drawn. Like
+ * here, only the image recolored to the shadow's ink at the size it is about to be drawn. Like
  * every other effect in the renderer this paints outside the section's box without growing it,
  * which is why `effectBleed` has to count the sections that place logos as well as the ones that
  * set text.
@@ -662,7 +662,7 @@ struct BoxCollector {
  * Collects the sticky blocks the layout placed, the way AnimatedCollector collects animated logos.
  *
  * Only a caller that can actually draw a block over the strip asks for these -- the source and the
- * designer's preview. `measure()` passes nothing and rasterises nothing, so asking a roll how tall
+ * designer's preview. `measure()` passes nothing and rasterizes nothing, so asking a roll how tall
  * it is stays as cheap as it was.
  */
 struct StickyCollector {
@@ -769,7 +769,7 @@ public:
 		paintBackgroundPanel(painter, document->effectiveBackground(*section, slot), box, images);
 	}
 
-	/* Which slot the entry at `index` in this section's list is panelled from. */
+	/* Which slot the entry at `index` in this section's list is paneled from. */
 	BackgroundSlot entrySlot(int index) const
 	{
 		return alternating && (index % 2) == 1 ? BackgroundSlot::EntryAlt : BackgroundSlot::Entry;
@@ -1029,7 +1029,7 @@ PreparedBridge prepareTextBridge(const Section &section, const TextStyle &style,
 
 	case BridgeFill::Repeat: {
 		/*
-		 * Whole copies only, centred in the gap by the caller. A partial copy would cut
+		 * Whole copies only, centered in the gap by the caller. A partial copy would cut
 		 * a leader mid-glyph, which reads as damage rather than design once the bridge
 		 * is a word instead of a run of dots. The leftover is at most one copy wide, so
 		 * a short bridge unit is what makes this look tight.
@@ -1177,7 +1177,7 @@ StackedLine topStackedLine(const Section &section, const QString &title, const Q
  *
  * Each line is aligned by its own style within the full column rather than the two being
  * measured and placed as one group, which is what lets a title sit left with its subtitle
- * right, or either of them be centred against a run of names of differing lengths.
+ * right, or either of them be centered against a run of names of differing lengths.
  *
  * `subtitleFirst` swaps only the placement. The title is still `title` drawn in `titleStyle`
  * and the subtitle still `subtitle` drawn in `subtitleStyle`, so flipping the order never
@@ -1258,7 +1258,7 @@ qreal indentedX(const Section &section, const Entry &entry, qreal x)
 }
 
 /*
- * Turns the painter about a rectangle's centre for as long as it is in scope, so a divider piece
+ * Turns the painter about a rectangle's center for as long as it is in scope, so a divider piece
  * drawn by the very helpers that draw a section's own title and its own logo comes out at the
  * angle its row asked for without either of them learning what an angle is.
  *
@@ -1297,13 +1297,13 @@ private:
  * The artwork is separated from the text and the logos because the three are painted by
  * different machinery: art goes through the divider renderer's stencil, while a word and a mark
  * in the middle of a divider are drawn by exactly the helpers that draw a section's own title
- * and its own logo -- which is the point of letting the centre hold them at all.
+ * and its own logo -- which is the point of letting the center hold them at all.
  */
 struct DividerLayout {
 	struct TextPiece {
 		QString text;
 		QRectF rect;
-		/* Degrees clockwise about the rect's centre; see DividerPiece::rotation. */
+		/* Degrees clockwise about the rect's center; see DividerPiece::rotation. */
 		qreal rotation = 0.0;
 	};
 	struct LogoPiece {
@@ -1314,7 +1314,7 @@ struct DividerLayout {
 		 */
 		const LogoRef *ref = nullptr;
 		QRect rect;
-		/* Degrees clockwise about the rect's centre; see DividerPiece::rotation. */
+		/* Degrees clockwise about the rect's center; see DividerPiece::rotation. */
 		qreal rotation = 0.0;
 	};
 
@@ -1326,7 +1326,7 @@ struct DividerLayout {
 	qreal height = 0.0;
 };
 
-/* One piece of a divider -- an end or a centrepiece -- measured but not yet placed. */
+/* One piece of a divider -- an end or a centerpiece -- measured but not yet placed. */
 struct MeasuredPiece {
 	const DividerPiece *piece;
 	QSizeF size;
@@ -1365,7 +1365,7 @@ struct MeasuredStack {
  * square, and the height that box sweeps out once it does not.
  *
  * Height only. A turn moves nothing along the rule -- the piece keeps the width its untilted shape
- * asked for, so its neighbours and the arms stay where they were while an angle is dialled in (see
+ * asked for, so its neighbors and the arms stay where they were while an angle is dialed in (see
  * DividerPiece::rotation) -- but the divider still has to be tall enough to hold what it draws, or
  * a square set on its corner would have the corners cut off by the section's own box.
  */
@@ -1457,7 +1457,7 @@ MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const Tex
 }
 
 /*
- * Places a measured stack, left to right from `left`, centred on `midY`.
+ * Places a measured stack, left to right from `left`, centered on `midY`.
  *
  * `mirrored` is what an end at the right-hand side of the divider is drawn with: the pieces run in
  * reverse, so the figure is a mirror image of the same list, and each piece's *artwork* is flipped
@@ -1540,7 +1540,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 		return measureDividerStack(pieces, style, logos, dividers, thickness, pieceGap, width);
 	};
 
-	const MeasuredStack centre = measure(section.dividerCentre);
+	const MeasuredStack center = measure(section.dividerCenter);
 	const MeasuredStack leftEnd = measure(section.dividerCap);
 	/*
 	 * Mirroring says the two ends are the same list, not that the right-hand one is drawn
@@ -1552,7 +1552,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	const int rules = std::clamp(section.dividerRules, 1, 16);
 	const qreal stackHeight = rules * thickness + (rules - 1) * section.dividerRuleGap;
 
-	layout.height = std::max({stackHeight, leftEnd.height, rightEnd.height, centre.height});
+	layout.height = std::max({stackHeight, leftEnd.height, rightEnd.height, center.height});
 	if (layout.height <= 0.0)
 		return layout;
 
@@ -1561,10 +1561,10 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	/* --- Work out where the arms run ------------------------------------------------- */
 
 	/*
-	 * Centred on the section's own box rather than between the two arms, so a divider whose
+	 * Centered on the section's own box rather than between the two arms, so a divider whose
 	 * ends differ still has its ornament on the middle of the line the eye follows.
 	 */
-	const qreal centreLeft = x + (width - centre.width) / 2.0;
+	const qreal centerLeft = x + (width - center.width) / 2.0;
 
 	const bool connect = section.dividerConnect;
 
@@ -1598,7 +1598,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	 * Before the stacks rather than after them, so a piece is drawn over the rule it sits on
 	 * rather than under it. It makes no difference to tinted artwork -- every tinted part goes
 	 * into one silhouette, which is what lets an overlap union seamlessly in the first place --
-	 * but a custom picture left in its own colours is painted straight to the strip, and a rule
+	 * but a custom picture left in its own colors is painted straight to the strip, and a rule
 	 * running across the front of it is not the ornament anybody placed.
 	 */
 	const qreal stackTop = midY - stackHeight / 2.0;
@@ -1637,7 +1637,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 			}
 		};
 
-		if (centre.isEmpty() || connect) {
+		if (center.isEmpty() || connect) {
 			/*
 			 * Nothing in the way -- or nothing the rule is asked to stop for -- so it
 			 * runs from one cap straight to the other, as one arm rather than two
@@ -1646,7 +1646,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 			 * to it points one way along the whole rule, which for an unbroken line is
 			 * the only reading there is.
 			 *
-			 * Connected, the centre is then drawn on top of this, which is how an
+			 * Connected, the center is then drawn on top of this, which is how an
 			 * ornamental rule is actually composed: the diamond sits *on* the line
 			 * rather than between two lines that stop short of it.
 			 */
@@ -1654,15 +1654,15 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 		} else {
 			/*
 			 * Each arm still stops at its own end of the span. A join negative enough
-			 * to run one arm past the centre would otherwise carry it out through the
+			 * to run one arm past the center would otherwise carry it out through the
 			 * far cap and off the section's box.
 			 */
-			placeArm(left, std::min(right, centreLeft - section.dividerGap), false);
-			placeArm(std::max(left, centreLeft + centre.width + section.dividerGap), right, true);
+			placeArm(left, std::min(right, centerLeft - section.dividerGap), false);
+			placeArm(std::max(left, centerLeft + center.width + section.dividerGap), right, true);
 		}
 	}
 
-	/* --- Place the ends and the centre ------------------------------------------------ */
+	/* --- Place the ends and the center ------------------------------------------------ */
 
 	/*
 	 * The ends sit at the divider's full extent and on its midline, and are drawn once however
@@ -1671,7 +1671,7 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 	 */
 	placeDividerStack(&layout, leftEnd, x, midY, false);
 	placeDividerStack(&layout, rightEnd, x + width - rightEnd.width, midY, true);
-	placeDividerStack(&layout, centre, centreLeft, midY, false);
+	placeDividerStack(&layout, center, centerLeft, midY, false);
 
 	return layout;
 }
@@ -1685,7 +1685,7 @@ double sectionBleed(const Document &document, const Section &section)
 	/*
 	 * A panel's outset reaches outside the box it was given exactly as a shadow does, and is
 	 * counted first because it is the one thing here a section of *any* type can carry -- a
-	 * Spacer with a band of colour across it draws nothing else at all, and a bleed taken only
+	 * Spacer with a band of color across it draws nothing else at all, and a bleed taken only
 	 * from the styles would cut that band off at the nearest tile seam.
 	 */
 	double bleed = 0.0;
@@ -1694,7 +1694,7 @@ double sectionBleed(const Document &document, const Section &section)
 
 	/*
 	 * Logos cast the style's shadow as well, so a section that only places art counts
-	 * too -- and a divider counts whatever its centre holds, since its rule is inked by
+	 * too -- and a divider counts whatever its center holds, since its rule is inked by
 	 * the same style and can carry the same shadow with nothing but artwork in it.
 	 */
 	if (!(sectionUsesText(section.type) || sectionUsesLogos(section.type) ||
@@ -1771,11 +1771,11 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 	/*
 	 * The section's box: a share of the canvas width, placed within it by `sectionAlign`, with
-	 * `marginX` taken off each of the box's own edges. A margin alone can only ever centre the
+	 * `marginX` taken off each of the box's own edges. A margin alone can only ever center the
 	 * content, since it insets both sides equally; the box is what lets a section sit against
 	 * one edge of the canvas with the margin still holding it clear of that edge.
 	 *
-	 * At the defaults -- the full width, centred -- the box is the canvas and this is exactly
+	 * At the defaults -- the full width, centered -- the box is the canvas and this is exactly
 	 * the inset from both edges that it has always been.
 	 */
 	/*
@@ -1851,14 +1851,14 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		if (sticky && height > 0) {
 			/*
-			 * Rasterised at the strip's full width, because a child places itself across
+			 * Rasterized at the strip's full width, because a child places itself across
 			 * the canvas exactly as a top-level section does -- its own `sectionWidth` and
 			 * placement are what narrow it, and they would mean something different if the
 			 * block handed them a narrower canvas to sit in.
 			 *
 			 * The picture is grown by the roll's bleed at top and bottom: a shadow cast by
 			 * the first or last child reaches outside the slot, and unlike the strip -- where
-			 * the neighbouring tile catches it -- there is nothing outside this picture to
+			 * the neighboring tile catches it -- there is nothing outside this picture to
 			 * catch it in.
 			 */
 			const int bleed = qCeil(sectionBleed(document, section));
@@ -1897,9 +1897,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * The panel goes down first, under everything the block holds: keeping the roll
 			 * running past behind the block from reading through its lettering is a job it
 			 * can only do from underneath. It is painted into the picture rather than carried
-			 * out as a colour to be drawn behind it, because a flat quad would mean a second
+			 * out as a color to be drawn behind it, because a flat quad would mean a second
 			 * effect started inside the pass that is drawing the strip, and the panel is a
-			 * shape the rasteriser can fill for nothing at rebuild time.
+			 * shape the rasterizer can fill for nothing at rebuild time.
 			 */
 			paintBackgroundPanel(&blockPainter, blockPanel, QRectF(0, y, document.width, height),
 					     stills.stills);
@@ -1926,13 +1926,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			/*
 			 * The divider's own panel, over the box its artwork occupies rather than the
 			 * section's -- which is the narrower and shorter of the two, since a divider set
-			 * narrower than its section sits centred in it. Down before the art, so a rule
+			 * narrower than its section sits centered in it. Down before the art, so a rule
 			 * drawn on a band reads as being on it.
 			 */
 			panels.paint(BackgroundSlot::Divider, fillBox);
 
 			/*
-			 * The artwork takes the bridge's ink override, because "colour the art
+			 * The artwork takes the bridge's ink override, because "color the art
 			 * apart from the words" is one want with two names: a divider whose rule
 			 * carries the title's gold sweep while its own label stays white is the
 			 * same edit as yellow leader dots under white names.
@@ -2021,7 +2021,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	case SectionType::HeaderWithSubtitleAndLogo: {
 		/*
 		 * The four shapes differ in what goes in the text column and in nothing else: the column
-		 * is measured, divided from the logo and centred against it the same way whether it holds
+		 * is measured, divided from the logo and centered against it the same way whether it holds
 		 * one line or a pair. That is why they share a branch rather than a second copy of the
 		 * placement -- the alternative is two logo rows that agree until one of them is edited.
 		 *
@@ -2051,7 +2051,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const int rowHeight = std::max(logoSize.height(), textHeight);
 		const qreal textTop = y + (rowHeight - textHeight) / 2.0;
 
-		/* The logo and the text block are centred against each other within the row. */
+		/* The logo and the text block are centered against each other within the row. */
 		const QRect logoBox(QPoint(qRound(row.logoX), y + (rowHeight - logoSize.height()) / 2), logoSize);
 		panels.paint(BackgroundSlot::Logo, QRectF(logoBox));
 		paintLogo(painter, art, logoBox, style, section.logo.playback);
@@ -2063,7 +2063,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		if (section.logoPlacement == LogoPlacement::Bridged) {
 			/*
-			 * The bridge's own ink over the row's own font, so recolouring a leader cannot
+			 * The bridge's own ink over the row's own font, so recoloring a leader cannot
 			 * move the row it runs through. Resolved here rather than beside `style`
 			 * because it is a merge and costs a copy, which only the two bridged shapes
 			 * have any use for.
@@ -2124,7 +2124,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		/*
 		 * The bridge's own ink over the row's own font. Everything below measures from the
 		 * fields the merge leaves alone -- the string is set in the row's face at the row's
-		 * size -- so a leader given a colour of its own reserves exactly the width it did.
+		 * size -- so a leader given a color of its own reserves exactly the width it did.
 		 */
 		const TextStyle bridgeStyle = document.effectiveBridgeStyle(section);
 		const qreal naturalBridge = naturalBridgeWidth(section, bridgeStyle, bridges);
@@ -2358,7 +2358,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		/*
 		 * Across-fill walks the row before wrapping; the default down-fill completes each column
-		 * before moving right, which is what reads naturally in a long alphabetised list.
+		 * before moving right, which is what reads naturally in a long alphabetized list.
 		 */
 		const auto indexAt = [&](int row, int column) {
 			return section.fillAcross ? row * columns + column : column * rows + row;
@@ -2368,7 +2368,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			return qRound(indentedX(section, entry, contentX + column * (columnWidth + section.columnGap)));
 		};
 
-		/* What one cell comes to, drawing nothing. Only a panelled row ever asks. */
+		/* What one cell comes to, drawing nothing. Only a paneled row ever asks. */
 		const auto measureCell = [&](const Entry &entry, int x, int top) {
 			if (logoMode) {
 				const LogoArt art = logos.resolve(entry.logo);
@@ -2388,17 +2388,17 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * A cell's panel is the height of its *row* rather than of its own content, so the
 			 * cards across a row line up instead of stepping with whichever name happened to
 			 * wrap. That means the row has to be measured before any of it is drawn -- but only
-			 * when something in it will actually paint, which is what keeps an unpanelled grid
+			 * when something in it will actually paint, which is what keeps an unpaneled grid
 			 * laying its text out exactly once.
 			 */
-			bool rowPanelled = false;
-			for (int column = 0; column < columns && !rowPanelled; ++column) {
+			bool rowPaneled = false;
+			for (int column = 0; column < columns && !rowPaneled; ++column) {
 				const int index = indexAt(row, column);
 				if (index < count && panels.wants(panels.entrySlot(index)))
-					rowPanelled = true;
+					rowPaneled = true;
 			}
 
-			if (rowPanelled) {
+			if (rowPaneled) {
 				int measured = 0;
 				for (int column = 0; column < columns; ++column) {
 					const int index = indexAt(row, column);
@@ -2497,7 +2497,7 @@ int effectBleed(const Document &document)
 
 	/*
 	 * A sticky block's own children are counted too. They are not drawn into the strip, so they
-	 * cannot bleed across a tile seam -- but the block is rasterised into a picture of its own,
+	 * cannot bleed across a tile seam -- but the block is rasterized into a picture of its own,
 	 * and that picture has to be big enough to hold what they paint outside their boxes.
 	 */
 	visitSections(document.sections,

@@ -36,13 +36,13 @@ namespace closingtime {
 
 namespace {
 
-/* Largest buffer art is rasterised into, in pixels. Past this it is left undrawn. */
+/* Largest buffer art is rasterized into, in pixels. Past this it is left undrawn. */
 constexpr qint64 kMaxArtPixels = 64 * 1024 * 1024;
 
 /*
  * Draws `ink` at `at`, grown by `grow` pixels every way.
  *
- * There is no path left to stroke once art has been rasterised, so the silhouette is spread
+ * There is no path left to stroke once art has been rasterized, so the silhouette is spread
  * into a ring of offset copies instead. The copies are dense enough to overlap within half a
  * pixel of each other, which at the few pixels an outline is ever set to is indistinguishable
  * from a stroke around the art.
@@ -105,7 +105,7 @@ void paintArtShadow(QPainter *painter, const QImage &art, const QPoint &at, cons
 }
 
 /*
- * The silhouette recoloured with `brush`. The buffer is offset back to where it will be drawn,
+ * The silhouette recolored with `brush`. The buffer is offset back to where it will be drawn,
  * so a gradient lands where the row's text puts it rather than at the image's own origin.
  */
 QImage inkedArt(const QImage &art, const QBrush &brush, const QPoint &at)

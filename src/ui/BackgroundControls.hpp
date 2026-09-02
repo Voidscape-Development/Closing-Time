@@ -104,7 +104,7 @@ private:
 	QPushButton *deletePresetButton = nullptr;
 
 	QComboBox *fillBox = nullptr;
-	ColourButton *colourButton = nullptr;
+	ColorButton *colorButton = nullptr;
 	GradientEditor *gradientEditor = nullptr;
 
 	QWidget *imageRow = nullptr;
@@ -129,7 +129,7 @@ private:
 
 	QGroupBox *borderGroup = nullptr;
 	QDoubleSpinBox *borderWidth = nullptr;
-	ColourButton *borderColour = nullptr;
+	ColorButton *borderColor = nullptr;
 
 	QVector<BackgroundPreset> presets;
 	QString selectedPreset;

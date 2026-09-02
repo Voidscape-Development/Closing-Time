@@ -39,7 +39,7 @@ class LogoCache;
  * and drift tomorrow -- and is what lets the designer paint a swatch of either from the same call.
  *
  * A linear gradient runs along `spec.angle`, clockwise from straight down, spanning exactly the
- * box's own extent along that axis. A radial one runs from the centre out to half the diagonal, so
+ * box's own extent along that axis. A radial one runs from the center out to half the diagonal, so
  * the last stop lands on the corners rather than inside them.
  */
 QBrush gradientBrush(const GradientSpec &spec, bool radial, const QRectF &box);

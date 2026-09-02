@@ -34,7 +34,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFileSystemWatcher>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
@@ -381,7 +383,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	designerRegistry().insert(source, this);
 	sink->dialog = this;
 
-	setWindowTitle(QStringLiteral("%1 — %2").arg(moduleText("Designer.Title"),
+	setWindowTitle(QStringLiteral("%1 - %2").arg(moduleText("Designer.Title"),
 						     QString::fromUtf8(obs_source_get_name(source))));
 	setAttribute(Qt::WA_DeleteOnClose);
 	resize(1280, 800);
@@ -432,7 +434,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	addListButton(makeArrowButton(listButtonRow, Qt::DownArrow, moduleText("Designer.MoveDown")),
 		      [this] { moveSection(1); });
 	/* No glyph says "duplicate" without a theme icon behind it, so this one keeps its word. */
-	addListButton(makeLabelledButton(listButtonRow, moduleText("Designer.Duplicate")),
+	addListButton(makeLabeledButton(listButtonRow, moduleText("Designer.Duplicate")),
 		      &DesignerDialog::duplicateSection);
 	listButtons->addStretch();
 	listLayout->addWidget(listButtonRow);
@@ -442,6 +444,16 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 		QAction *action = addMenu->addAction(QString::fromUtf8(sectionTypeName(type)));
 		connect(action, &QAction::triggered, this, [this, type] {
 			commitCurrentSection();
+
+			/*
+			 * Asked before the undo step is opened, so backing out of the naming dialog
+			 * leaves the undo stack exactly as the menu found it.
+			 */
+			QString name;
+			if (!promptForSectionName(moduleText("Designer.NameSection.Add.Title"),
+						  QString::fromUtf8(sectionTypeName(type)), &name))
+				return;
+
 			beginUndoStep();
 
 			/*
@@ -453,7 +465,10 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 						       ? SectionPath{currentPath.parent, currentPath.index + 1}
 						       : SectionPath{-1, static_cast<int>(document.sections.size())};
 
-			const SectionPath added = insertSection(at, Section::makeDefault(type));
+			Section section = Section::makeDefault(type);
+			section.label = name;
+
+			const SectionPath added = insertSection(at, section);
 			refreshSectionList(-1);
 			refreshSectionList(rowOf(added));
 			schedulePreviewRefresh();
@@ -867,6 +882,19 @@ DesignerDialog::SectionPath DesignerDialog::insertSection(const SectionPath &pat
 	return SectionPath{path.parent, at};
 }
 
+bool DesignerDialog::promptForSectionName(const QString &title, const QString &initial, QString *name)
+{
+	bool accepted = false;
+	const QString answer = QInputDialog::getText(this, title, moduleText("Designer.NameSection.Prompt"),
+						     QLineEdit::Normal, initial, &accepted)
+				       .trimmed();
+	if (!accepted)
+		return false;
+
+	*name = answer;
+	return true;
+}
+
 void DesignerDialog::removeSectionAt(const SectionPath &path)
 {
 	if (!sectionAt(path))
@@ -1211,9 +1239,20 @@ void DesignerDialog::duplicateSection()
 	if (!section)
 		return;
 
+	/*
+	 * Offered from the name the list already shows rather than from the stored label, so a
+	 * section that never had one still suggests something the reader recognizes. Clearing the
+	 * field puts the copy back to naming itself, exactly as its original does.
+	 */
+	QString name;
+	if (!promptForSectionName(moduleText("Designer.NameSection.Duplicate.Title"),
+				  moduleText("Designer.NameSection.CopySuffix").arg(section->displayLabel()), &name))
+		return;
+
 	beginUndoStep();
 	/* Copied first: inserting into the container can move the section the pointer names. */
-	const Section copy = *sectionAt(currentPath);
+	Section copy = *sectionAt(currentPath);
+	copy.label = name;
 	const SectionPath added = insertSection(SectionPath{currentPath.parent, currentPath.index + 1}, copy);
 	refreshSectionList(-1);
 	refreshSectionList(rowOf(added));
@@ -1555,14 +1594,14 @@ void DesignerDialog::refreshPreview()
 
 	/*
 	 * The whole document goes to the render thread by value, so the user can keep editing
-	 * while a long roll rasterises.
+	 * while a long roll rasterizes.
 	 */
 	postRenderJob([rendered = document, cache = logos, animationCache = animations, target = sink] {
 		const StripRenderer renderer(cache.get(), animationCache.get());
 		/*
 		 * Collected on every preview render rather than only while the overlay is showing,
 		 * so switching it on draws what is already on screen instead of waiting on a
-		 * rebuild. It is a few rectangles per section against a full rasterisation.
+		 * rebuild. It is a few rectangles per section against a full rasterization.
 		 */
 		LayoutBoxes boxes;
 		Strip strip = renderer.render(rendered, &boxes);

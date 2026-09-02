@@ -43,7 +43,7 @@ Section divider()
 	section.marginX = 0;
 	section.dividerCap.clear();
 	section.dividerEndCap.clear();
-	section.dividerCentre.clear();
+	section.dividerCenter.clear();
 	section.dividerArm = DividerShape::Rule;
 	section.dividerThickness = 6.0;
 	return section;
@@ -56,7 +56,7 @@ CT_SUITE(divider_shape_parity, "Every piece shape offered wherever a piece can g
 	/*
 	 * An end and a middle hold the same kind of piece, so they draw on the same list. The point
 	 * of the check is the crossover: a shape the library used to offer only as an end has to
-	 * turn up in the middle, and one it used to offer only as a centrepiece has to turn up at
+	 * turn up in the middle, and one it used to offer only as a centerpiece has to turn up at
 	 * an end.
 	 */
 	const QVector<DividerShape> &pieces = dividerShapesForRole(DividerRolePiece);
@@ -110,7 +110,7 @@ CT_SUITE(divider_end_mirrored, "The right-hand end as the left one flipped")
 {
 	/*
 	 * A deliberately lopsided end: a big diamond outside a small dot. Mirrored, the whole figure
-	 * has to come out symmetric about the section's own centre -- which catches both halves of
+	 * has to come out symmetric about the section's own center -- which catches both halves of
 	 * the rule at once, since the order has to reverse *and* each piece's artwork has to flip.
 	 */
 	Section section = divider();
@@ -225,7 +225,7 @@ CT_SUITE(divider_connected_rule, "A divider whose parts are joined into one figu
 	 */
 	Section apart = divider();
 	apart.dividerCap = {ornament(DividerShape::Arrow)};
-	apart.dividerCentre = {ornament(DividerShape::Diamond)};
+	apart.dividerCenter = {ornament(DividerShape::Diamond)};
 	apart.dividerGap = 30.0;
 
 	const Document apartDocument = documentWith(apart);
@@ -266,12 +266,12 @@ CT_SUITE(divider_negative_join, "Parts pushed into each other rather than held a
 {
 	/*
 	 * The other half of making a divider read as one piece, and the half that reaches artwork
-	 * the connect switch cannot: a stack whose pieces overlap. Measured on the centre alone,
+	 * the connect switch cannot: a stack whose pieces overlap. Measured on the center alone,
 	 * with no arm drawn, so the ink is exactly the stack's own width.
 	 */
 	Section section = divider();
 	section.dividerArm = DividerShape::None;
-	section.dividerCentre = {ornament(DividerShape::Diamond), ornament(DividerShape::Diamond),
+	section.dividerCenter = {ornament(DividerShape::Diamond), ornament(DividerShape::Diamond),
 				 ornament(DividerShape::Diamond)};
 
 	section.dividerPieceGap = 0.0;
@@ -313,7 +313,7 @@ CT_SUITE(divider_join_stays_inside, "An overlap deep enough to push the rule out
 	Section section = divider();
 	section.marginX = 60;
 	section.dividerCap = {ornament(DividerShape::Arrow)};
-	section.dividerCentre = {ornament(DividerShape::Diamond)};
+	section.dividerCenter = {ornament(DividerShape::Diamond)};
 	section.dividerGap = -kMaxDividerJoin;
 
 	const Document document = documentWith(section);
@@ -351,7 +351,7 @@ CT_SUITE(divider_plain_shapes, "The plain shapes, filled and outlined")
 		      QStringLiteral("%1 is a piece rather than a rule").arg(name));
 
 		Section section = divider();
-		section.dividerCentre = {ornament(shape)};
+		section.dividerCenter = {ornament(shape)};
 
 		const Document document = documentWith(section);
 		const QRectF box = boxOf(document, LayoutBox::Kind::Divider);
@@ -359,30 +359,30 @@ CT_SUITE(divider_plain_shapes, "The plain shapes, filled and outlined")
 
 		check(!ink.isEmpty(), QStringLiteral("%1 draws something").arg(name));
 		/*
-		 * A centrepiece is drawn taller than the rule it breaks, so a shape that came out as
+		 * A centerpiece is drawn taller than the rule it breaks, so a shape that came out as
 		 * nothing but the arms either side of it would leave the divider exactly one rule
 		 * high -- which is what this height is asking about.
 		 */
 		check(box.height() > section.dividerThickness + 1.0,
-		      QStringLiteral("%1 is drawn at a centrepiece's height").arg(name));
+		      QStringLiteral("%1 is drawn at a centerpiece's height").arg(name));
 		check(ink.left >= qRound(box.left()) - 2 && ink.right <= qRound(box.right()) + 2,
 		      QStringLiteral("%1 stays inside the section's box").arg(name));
 	}
 }
 
-CT_SUITE(divider_piece_rotation, "A part turned about its own centre")
+CT_SUITE(divider_piece_rotation, "A part turned about its own center")
 {
 	/*
 	 * Turned where it stands: along the rule the piece takes the room its untilted shape took,
-	 * so the arms either side of it do not move while an angle is dialled in. The divider's
+	 * so the arms either side of it do not move while an angle is dialed in. The divider's
 	 * height is the one thing that follows the angle, because a section is only as tall as it
 	 * says it is and the corners would otherwise be cut off.
 	 */
 	Section square = divider();
-	square.dividerCentre = {ornament(DividerShape::Square)};
+	square.dividerCenter = {ornament(DividerShape::Square)};
 
 	Section turned = square;
-	turned.dividerCentre[0].rotation = 45.0;
+	turned.dividerCenter[0].rotation = 45.0;
 
 	const Document squareDocument = documentWith(square);
 	const Document turnedDocument = documentWith(turned);
@@ -403,7 +403,7 @@ CT_SUITE(divider_piece_rotation, "A part turned about its own centre")
 
 	/* A quarter turn on a square is the square again, near enough to be worth checking. */
 	Section quarter = square;
-	quarter.dividerCentre[0].rotation = 90.0;
+	quarter.dividerCenter[0].rotation = 90.0;
 	const Ink upright = inkOf(renderImage(documentWith(quarter)));
 	checkNear(upright.height(), standing.height(), 2.0, "a quarter turn of a square is the square");
 }
@@ -419,7 +419,7 @@ CT_SUITE(divider_rotation_mirrors, "A turned end and its reflection at the other
 	section.marginX = 40;
 	section.dividerCap = {ornament(DividerShape::Arrow)};
 	section.dividerMirrorEnds = true;
-	section.dividerCentre = {ornament(DividerShape::Diamond)};
+	section.dividerCenter = {ornament(DividerShape::Diamond)};
 	section.dividerCap[0].rotation = 30.0;
 
 	const Document document = documentWith(section);

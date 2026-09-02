@@ -143,8 +143,8 @@ CT_SUITE(section_type_switches, "Taking a type apart into switches, and putting 
 	check(composeSectionType(list) == SectionType::TitleSubtitleList, "and one column is the plain one");
 
 	/* A type with no switches at all is handed straight back. */
-	for (SectionType type : {SectionType::Bridged, SectionType::SectionDivider, SectionType::Spacer,
-				 SectionType::StickyBlock}) {
+	for (SectionType type :
+	     {SectionType::Bridged, SectionType::SectionDivider, SectionType::Spacer, SectionType::StickyBlock}) {
 		SectionTypeSwitches bare;
 		bare.base = type;
 		/* Set deliberately: a type that reads a switch it has no use for would fail here. */
@@ -177,7 +177,7 @@ CT_SUITE(section_defaults, "What a freshly added section of each type carries")
 		/* The placement and bridge a section added now is handed. */
 		if (sectionUsesLogos(type) && sectionUsesText(type)) {
 			check(section.logoPlacement == LogoPlacement::Hug,
-			      "a logo row added now hugs, which is the placement that honours logoGap");
+			      "a logo row added now hugs, which is the placement that honors logoGap");
 			check(section.bridgeType == BridgeType::Dots, "a logo row added now is handed drawn art");
 		}
 

@@ -37,7 +37,7 @@ struct Suite {
 
 /*
  * Function-local statics rather than file-scope objects, because suites register from other
- * translation units before main runs and the initialisation order between them is not defined.
+ * translation units before main runs and the initialization order between them is not defined.
  */
 QVector<Suite> &suites()
 {

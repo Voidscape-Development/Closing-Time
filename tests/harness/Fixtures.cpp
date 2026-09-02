@@ -122,7 +122,7 @@ namespace {
  *
  * Hand-rolled because Qt reads GIFs and does not write them, and because the alternative -- a
  * binary committed to the tree -- is one more file to keep in step with the checks that read it.
- * Only the properties the checks depend on are here: two frames, a known delay, and two colours
+ * Only the properties the checks depend on are here: two frames, a known delay, and two colors
  * different enough that a decoder handing back the wrong frame is obvious.
  *
  * The LZW stream is deliberately the dullest one that is still valid: a clear code before every
@@ -140,7 +140,7 @@ public:
 		out.append("GIF89a", 6);
 		appendShort(out, size);
 		appendShort(out, size);
-		/* Global colour table, 8-bit colour resolution, two entries. */
+		/* Global color table, 8-bit color resolution, two entries. */
 		out.append(char(0xF0));
 		out.append(char(0));
 		out.append(char(0));
@@ -180,7 +180,7 @@ private:
 		out.append(char(0x00));
 		out.append(char(0x00));
 
-		/* Image descriptor: the whole canvas, no local colour table. */
+		/* Image descriptor: the whole canvas, no local color table. */
 		out.append(char(0x2C));
 		appendShort(out, 0);
 		appendShort(out, 0);
@@ -364,7 +364,7 @@ const QVector<Scene> &scenes()
 		{
 			/*
 			 * The two ways a section is moved sideways without touching its margins: the
-			 * whole of it nudged off its own centre, and single entries tabbed in from the
+			 * whole of it nudged off its own center, and single entries tabbed in from the
 			 * rest of the list they belong to.
 			 */
 			Section heading = Section::makeDefault(SectionType::Header);
@@ -402,10 +402,10 @@ const QVector<Scene> &scenes()
 			 * three shapes a panel is actually reached for. All three keep the layout they
 			 * would have had with no panel at all.
 			 */
-			const auto card = [](const QColor &colour, double radius) {
+			const auto card = [](const QColor &color, double radius) {
 				BackgroundPanel panel;
 				panel.fill = BackgroundFill::Color;
-				panel.color = colour;
+				panel.color = color;
 				panel.setRadius(radius);
 				return panel;
 			};
@@ -452,17 +452,17 @@ const QVector<Scene> &scenes()
 			stacked.dividerRules = 3;
 			stacked.dividerRuleInset = 40.0;
 
-			Section labelled = Section::makeDefault(SectionType::SectionDivider);
-			labelled.dividerCentre = {DividerPiece{DividerPiece::Kind::Text,
-							       DividerShape::Diamond,
-							       {},
-							       1.0,
-							       QStringLiteral("PART II"),
-							       {}}};
+			Section labeled = Section::makeDefault(SectionType::SectionDivider);
+			labeled.dividerCenter = {DividerPiece{DividerPiece::Kind::Text,
+							      DividerShape::Diamond,
+							      {},
+							      1.0,
+							      QStringLiteral("PART II"),
+							      {}}};
 
 			add(QStringLiteral("dividers"),
-			    QStringLiteral("A plain rule, a tapered stack and a labelled break"),
-			    documentWith({plain, stacked, labelled}));
+			    QStringLiteral("A plain rule, a tapered stack and a labeled break"),
+			    documentWith({plain, stacked, labeled}));
 		}
 
 		/* --- plain shapes and turned pieces -------------------------------------------- */
@@ -478,10 +478,10 @@ const QVector<Scene> &scenes()
 				return DividerPiece{DividerPiece::Kind::Ornament, shape, {}, 1.0, {}, {}, rotation};
 			};
 
-			const auto row = [&](const QVector<DividerPiece> &centre) {
+			const auto row = [&](const QVector<DividerPiece> &center) {
 				Section section = Section::makeDefault(SectionType::SectionDivider);
 				section.dividerPieceGap = 14.0;
-				section.dividerCentre = centre;
+				section.dividerCenter = center;
 				return section;
 			};
 
@@ -523,7 +523,7 @@ const QVector<Scene> &scenes()
 								   1.0,
 								   {},
 								   {}}};
-				section.dividerCentre = {DividerPiece{DividerPiece::Kind::Ornament,
+				section.dividerCenter = {DividerPiece{DividerPiece::Kind::Ornament,
 								      DividerShape::Diamond,
 								      {},
 								      1.0,

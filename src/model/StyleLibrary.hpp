@@ -156,7 +156,7 @@ public:
 	void setAlwaysEditLinked(bool always);
 
 	/*
-	 * Serialises to a standalone JSON string, and back, for the manager's export and import.
+	 * Serializes to a standalone JSON string, and back, for the manager's export and import.
 	 *
 	 * `parseJson` fills in whichever of the two collections the caller asks for, and succeeds when
 	 * the file held *either* -- a library of nothing but panels is as importable as one of nothing

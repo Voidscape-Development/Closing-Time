@@ -84,7 +84,7 @@ qreal svgArtAspect(QSvgRenderer *renderer, qreal fallback);
  * `drawSilhouette` is called with a painter set up to receive the art in the same coordinates
  * the caller is working in; everything it draws is treated as one shape. Handing the whole of a
  * divider or a whole run of bridge tiles over in one call rather than piece by piece is what
- * keeps an outline from being painted over the neighbouring piece's fill, and what keeps one
+ * keeps an outline from being painted over the neighboring piece's fill, and what keeps one
  * gradient running across the figure instead of restarting at every part of it.
  *
  * `bounds` is the region the art can reach, in the same coordinates; anything drawn outside it

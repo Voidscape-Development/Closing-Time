@@ -34,11 +34,11 @@ using namespace closingtime::test;
 namespace {
 
 /* An opaque flat panel, which is the one every geometric check here is written against. */
-BackgroundPanel flatPanel(const QColor &colour = QColor(255, 0, 0, 255))
+BackgroundPanel flatPanel(const QColor &color = QColor(255, 0, 0, 255))
 {
 	BackgroundPanel panel;
 	panel.fill = BackgroundFill::Color;
-	panel.color = colour;
+	panel.color = color;
 	return panel;
 }
 
@@ -54,7 +54,7 @@ Section withPanel(Section section, BackgroundSlot slot, const BackgroundPanel &p
  *
  * The harness's own test logo is a ring -- a circle with a hole in it, so a tint that fills the
  * silhouette is visible at a glance -- which makes it the wrong thing to measure a *fit* against:
- * its ink reaches only the middle of each edge and its centre is transparent. What these checks
+ * its ink reaches only the middle of each edge and its center is transparent. What these checks
  * need is an image whose ink is exactly its rectangle, so "cover fills the panel" is a measurement
  * rather than an approximation.
  */
@@ -124,12 +124,12 @@ CT_SUITE(background_never_reflows, "A panel is painted, never laid out")
 	/* And the sections either side of it stay exactly where they were. */
 	const Section second = heading(QStringLiteral("Second"));
 	const QVector<QRectF> bareBoxes = boxesOf(documentWith({plain, second}), LayoutBox::Kind::Section);
-	const QVector<QRectF> panelledBoxes = boxesOf(
+	const QVector<QRectF> paneledBoxes = boxesOf(
 		documentWith({withPanel(plain, BackgroundSlot::Section, huge), second}), LayoutBox::Kind::Section);
 
-	checkEq(panelledBoxes.size(), bareBoxes.size(), "the same sections are placed");
-	for (int i = 0; i < std::min(bareBoxes.size(), panelledBoxes.size()); ++i)
-		check(bareBoxes.at(i) == panelledBoxes.at(i), "and every one of them in the same place");
+	checkEq(paneledBoxes.size(), bareBoxes.size(), "the same sections are placed");
+	for (int i = 0; i < std::min(bareBoxes.size(), paneledBoxes.size()); ++i)
+		check(bareBoxes.at(i) == paneledBoxes.at(i), "and every one of them in the same place");
 }
 
 CT_SUITE(background_section_extent, "What a section's panel covers")
@@ -141,8 +141,8 @@ CT_SUITE(background_section_extent, "What a section's panel covers")
 	const Document plain = documentWith(section);
 	const QRectF box = boxOf(plain, LayoutBox::Kind::Section);
 
-	const Document panelled = documentWith(withPanel(section, BackgroundSlot::Section, flatPanel()));
-	const Ink ink = inkOf(renderImage(panelled));
+	const Document paneled = documentWith(withPanel(section, BackgroundSlot::Section, flatPanel()));
+	const Ink ink = inkOf(renderImage(paneled));
 
 	/*
 	 * The panel is the section's box -- its share of the canvas width, over the whole height it
@@ -155,7 +155,7 @@ CT_SUITE(background_section_extent, "What a section's panel covers")
 	checkEq(ink.left, qRound(box.left()), "across the box's own left edge");
 	checkEq(ink.width(), qRound(box.width()), "and its whole width");
 
-	saveArtifact(QStringLiteral("background-section"), panelled);
+	saveArtifact(QStringLiteral("background-section"), paneled);
 }
 
 CT_SUITE(background_outset, "The outset, which reaches past the box without moving it")
@@ -362,7 +362,7 @@ CT_SUITE(background_entry_stripes, "One panel per row, and every other row")
 
 	/*
 	 * Measured over the panel's own rows rather than the text's, since a bare row still inks its
-	 * words. The panel spans the section's full width, so the columns clear of the centred text
+	 * words. The panel spans the section's full width, so the columns clear of the centered text
 	 * are what say whether a panel is there.
 	 */
 	const auto rowHasPanel = [&stripedImage](const QRectF &row) {
@@ -391,7 +391,7 @@ CT_SUITE(background_slots_for_type, "Which panels a type has anything to sit beh
 	checkEq(backgroundSlotsFor(SectionType::StickyBlock).size(), 1, "a sticky block offers that one alone");
 
 	/*
-	 * A plain list's line and its entry are one rectangle, so it is panelled by its entry slot
+	 * A plain list's line and its entry are one rectangle, so it is paneled by its entry slot
 	 * and is not offered a second name for the same place.
 	 */
 	check(!backgroundSlotsFor(SectionType::TextList).contains(BackgroundSlot::Title),
@@ -486,7 +486,7 @@ CT_SUITE(background_opacity, "Opacity over the whole panel")
 	const QImage image = renderImage(documentWith(withPanel(section, BackgroundSlot::Section, half)));
 	const QRectF box = boxOf(documentWith(section), LayoutBox::Kind::Section);
 
-	/* Sampled at the box's left edge, which the panel covers and the centred heading does not. */
+	/* Sampled at the box's left edge, which the panel covers and the centered heading does not. */
 	const QColor sampled = image.pixelColor(qRound(box.left()) + 2, qRound(box.center().y()));
 	check(sampled.alpha() > 100 && sampled.alpha() < 155, "a panel at half opacity is drawn at about half alpha");
 

@@ -25,7 +25,7 @@ namespace closingtime {
 
 /*
  * Raster helpers shared by everything that casts a shadow. Text builds its shadow from a glyph
- * path and bridge art from a rasterised tile, but both soften it the same way, so the passes
+ * path and bridge art from a rasterized tile, but both soften it the same way, so the passes
  * live here rather than once per caller.
  */
 
@@ -33,7 +33,7 @@ namespace closingtime {
  * Softens `image` in place with one box pass along a single axis, which is a handful of adds
  * per pixel; three passes each way is close enough to a Gaussian for a shadow edge. The image
  * must be premultiplied: that is what makes blurring the four channels together correct rather
- * than bleeding colour out of the edges.
+ * than bleeding color out of the edges.
  */
 void boxBlur(QImage &image, int radius, bool vertical);
 
@@ -41,9 +41,9 @@ void boxBlur(QImage &image, int radius, bool vertical);
 void blurImage(QImage &image, int radius);
 
 /*
- * `image` recoloured to `colour`, keeping its alpha. Used to turn a rasterised silhouette into
+ * `image` recolored to `color`, keeping its alpha. Used to turn a rasterized silhouette into
  * shadow or outline ink without re-rendering the art that produced it.
  */
-QImage tintedImage(const QImage &image, const QColor &colour);
+QImage tintedImage(const QImage &image, const QColor &color);
 
 } // namespace closingtime

@@ -38,7 +38,7 @@ namespace {
  * authoring tools write when they mean "default", and every browser has read it as a tenth of a
  * second for thirty years. Anything under this is treated the same way.
  */
-constexpr int kMinHonouredDelayMs = 20;
+constexpr int kMinHonoredDelayMs = 20;
 constexpr int kDefaultDelayMs = 100;
 
 /* Scales `image` down to `maxHeight`, converts it to the format the whole path works in. */
@@ -117,7 +117,7 @@ LogoAnimationPtr decodeWithQt(const QString &path, int maxHeight)
 		if (!animation->size.isValid())
 			animation->size = frame.size();
 
-		const int durationMs = delay >= kMinHonouredDelayMs ? delay : kDefaultDelayMs;
+		const int durationMs = delay >= kMinHonoredDelayMs ? delay : kDefaultDelayMs;
 		animation->frames.append(LogoFrame{frame, durationMs});
 		animation->totalMs += durationMs;
 		bytes += frameBytes(frame);
