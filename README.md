@@ -1,10 +1,17 @@
 # Closing Time
 
-An OBS Studio plugin that adds a **Credits Marquee** source: a rolling credits sequence you
-design section by section, with logos, multi-column lists, and a configurable action that
-fires once the roll clears the screen.
+An OBS Studio plugin for the graphics a broadcast puts either side of the thing it is showing.
+It adds two sources:
 
-> Status: early. The source renders, scrolls and triggers; the designer window is usable.
+- **Credits Marquee** — a rolling credits sequence you design section by section, with logos,
+  multi-column lists, and a configurable action that fires once the roll clears the screen.
+- **Calendar Display** — a schedule board: what is on, where, and when. A grid of blocks against a
+  time axis, a wave-by-wave poster, or a short list of what is coming up next.
+
+The two share everything below the layout — typefaces, panels, gradients, logos, the font bundle
+and the machine-wide style library — so one house style dresses both.
+
+> Status: early. Both sources render and both designer windows are usable.
 > See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the list of known limitations.
 
 ## What it does
@@ -185,6 +192,98 @@ heading that holds while the section under it scrolls by.
 
 The source properties cover canvas size, background color, scroll speed, lead-in and
 lead-out padding, start behavior, looping, and the ending action.
+
+A Calendar Display's properties are just its canvas: everything else about a board is edited in the
+Calendar Designer, where there is a preview to judge it against.
+
+## Calendar Display
+
+Add a **Calendar Display** source, open **Calendar Designer**, and start from a preset:
+
+| Preset | What it is |
+|---|---|
+| Up Next Panel | A short list of what is coming, each row a time and what happens at it, with a clock. The holding screen between matches |
+| Day Column Board | Hours down the side, a column per day, blocks spanning the hours they run |
+| Channel Timeline | A row per channel, stage or game with time running across, colored by category |
+| Wave Grid | Named waves down the side against a column per game, with the real time printed beside each wave |
+| Stacked Blocks | Columns of blocks in the order they happen, each printing its own start time, with no axis to hold the gaps open |
+
+The five are settings rather than five layouts: one engine crossed with **which shape** (a list, a
+grid, or stacked columns), **what the time axis measures** (real clock time, or named slots of equal
+size), and **which way round** it runs (time down the side, or across the top). Anything the presets
+do, a board of your own can do by answering those three questions differently.
+
+### The schedule
+
+An event carries a title, a subtitle, a day, a lane, a category, a start and an end, and — where you
+want them — a logo, channel tags, a location, a status, a note to whoever edits it next, and a time
+zone of its own. Days and lanes are objects rather than strings, so retiming a whole day or renaming
+a channel is one edit.
+
+- **No end time?** Say so, and the lane decides what that means: run until the next event begins
+  (what a schedule printing only start times actually means), a fixed length, or as small as the
+  block's own words need.
+- **Two events at once in one lane?** The lane decides that too — side by side, or stacked so the
+  collision is visible — and the designer names the pair either way, because the one outcome nobody
+  wants is a board that quietly drew one over the other.
+- **Something that is not in a lane at all** — DOORS OPEN, MAIN HALL CLOSE — is a **band**: it runs
+  across every lane, takes none of their room, and the lanes go on being drawn behind it.
+- **The same event carried across a break or a page** is a **continuation**: the board hatches it so
+  a reader sees it is not a new thing starting, and a list of what is next counts the pair once.
+- **Times in another zone.** The board reads its times in this machine's zone or in one you name
+  (`ALL TIMES EST`), and any single event can state a zone of its own and be converted onto the axis.
+
+Schedules arrive as spreadsheets, so **Import Schedule** takes a CSV or TSV, previews it, and maps
+each column onto a field — guessing the mapping from the headers. Days, lanes and categories are
+matched by name and created when the file mentions one the board does not have, so a single paste
+produces a board rather than a pile of events with nowhere to sit.
+
+### Styling
+
+A block's appearance is a **cascade**: the board's own style, then the lane's, then the category's,
+then the status's, then the event's own. Each layer contributes only the parts it sets, so a
+category that owns a color does not have to restate the typeface, and a status that fades a block
+does not have to restate the color it is fading. Text that does not fit shrinks to fit, wraps, or is
+cut with an ellipsis — per style, so a dense lane can shrink while a banner keeps its size.
+
+Everything that is not the grid itself — a clock, a ticker, a row of chips, a legend, a sponsor
+strip, a QR code you exported as a PNG — is an **element** placed anywhere on the canvas, anchored to
+the corner or edge it belongs to so it stays put when the canvas is resized. A legend builds itself
+from the categories or lanes actually in use, and takes per-entry renames and hides for the two or
+three places you want it to differ.
+
+### Animated logos
+
+A block's logo, a lane header's mark or an image element can be an animated GIF, APNG or WebP, and it
+plays: the board leaves a hole where the artwork goes and draws it over the top, so the layout is
+exactly what a still of the same artwork would have given. Playback runs on the wall clock — a bug in
+the corner of a schedule keeps moving whatever the schedule is doing — and survives the board
+redrawing itself on the clock refresh, so an animation does not jump back to frame one every thirty
+seconds. Retiming the event under it does start it again, since that is a different placement of it.
+
+The designer's preview shows first frames rather than playing them, so a board being typed into
+holds still.
+
+### The clock
+
+Five separate switches, because boards want different subsets of them:
+
+- a line across the board at the current time,
+- fading the events that have finished,
+- highlighting whatever is running now,
+- removing the finished ones entirely, optionally after a grace period,
+- and how often the board is redrawn while any of that is on.
+
+A board with all of them off is drawn once and never drawn again — it costs nothing per frame for
+the rest of its life. The designer can show the board **as it would look at another moment**, so a
+now-line or a self-clearing list is something you design rather than discover on air.
+
+### When it does not fit
+
+One setting, three answers: **scale to fit** (everything on one screen), **page through** (cut into
+screens, cycled on a dwell timer, optionally cut at day boundaries so a page never straddles two
+days), or **scroll** (the whole board moves past the canvas and back). Per-source hotkeys step the
+pages by hand and redraw the board on demand.
 
 ## Playback
 

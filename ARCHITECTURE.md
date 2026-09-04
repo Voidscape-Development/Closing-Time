@@ -5,10 +5,20 @@ left for later. Read this before changing the render path or the persistence for
 
 ## What it is
 
-A single OBS source type, **Credits Marquee** (`closing_time_credits`), that scrolls a
-designed credit roll up the canvas and fires a configurable action when the roll clears the
-frame. Content is authored in a dedicated designer window; canvas, playback and the ending
-action live in the normal OBS properties dialog.
+Two OBS source types.
+
+**Credits Marquee** (`closing_time_credits`) scrolls a designed credit roll up the canvas and fires
+a configurable action when the roll clears the frame. **Calendar Display**
+(`closing_time_calendar`) draws a schedule board: what is on, where, and when. Each is authored in a
+designer window of its own; the canvas lives in the normal OBS properties dialog, along with
+playback and the ending action for the roll.
+
+The two are separate sources rather than two modes of one, because what they edit is a different
+shape: a roll is an ordered list of sections that scrolls, and a board is a schedule crossed with a
+layout that holds. What they share is everything below the layout — `TextStyle`, `BackgroundPanel`,
+`GradientSpec`, `LogoRef` and its cache, the font bundle, the machine-wide style library — which
+they share by being written against the same pieces rather than by one of them growing a second
+personality. One house style therefore dresses both.
 
 ## Decisions taken up front
 
@@ -39,6 +49,9 @@ src/
   plugin-main.cpp          module entry; registers the source and the global signal
   model/
     CreditsModel.{hpp,cpp} TextStyle, StylePreset, LogoRef, Entry, Section, Document + obs_data (de)serialization
+    CalendarModel.{hpp,cpp} the board: events, days, lanes, slots, categories, elements, the style cascade
+    CalendarPresets.{hpp,cpp} the five boards a new calendar can start from
+    TagGlyph.{hpp,cpp}     the table of platform marks a channel tag or a chip can carry
     Background.{hpp,cpp}   BackgroundPanel, the slots a section holds them in, and BackgroundPreset
     Gradient.{hpp,cpp}     GradientSpec and its stops, shared by a text fill and a panel alike
     BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
@@ -50,6 +63,7 @@ src/
     RenderThread.{hpp,cpp} the shared rasterization thread and its job queue
     AnimatedLogo.{hpp,cpp} decoding animated artwork with Qt, and frame timing
     StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterization
+    CalendarRenderer.{hpp,cpp} the board's plan-then-paint layout, its pages, hit boxes and animations
     BackgroundPainter.{hpp,cpp} a panel's path, its fills and its border; the one gradient mapping
     SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
@@ -58,8 +72,11 @@ src/
     FontResolution.{hpp,cpp} registering a document's fonts, standing in for the rest, reporting what is left
   source/
     CreditsSource.{hpp,cpp} obs_source_info: playback, GPU upload, draw, hotkeys, properties
+    CalendarSource.{hpp,cpp} obs_source_info: paging, scrolling, the clock refresh, GPU upload, draw
   ui/
     DesignerDialog.{hpp,cpp} three-pane designer window
+    CalendarDesignerDialog.{hpp,cpp} the board's designer, and its click-to-select preview
+    CalendarImportDialog.{hpp,cpp} a schedule out of a delimited file, mapped column by column
     SectionEditor.{hpp,cpp}  per-section editor + StyleEditor
     BackgroundControls.{hpp,cpp} BackgroundEditor: one panel's fill, shape, edge and preset
     StyleControls.{hpp,cpp}  color button, gradient stop editor and its swatch
@@ -1618,6 +1635,265 @@ deliberately not `bridgeStyle`, since a bridge keeps its row's font and takes on
 style, so the family recorded there is never drawn with. `usedFontFamilies()` leaves it out for the
 same reason: reporting it would send the user after a font nothing uses.
 
+## The calendar
+
+A schedule board is the plugin's second source. Everything in this chapter is about the ways it is
+*not* a credit roll; where it is the same — a `TextStyle`, a `BackgroundPanel`, the font bundle, the
+style library, a logo cache — it is the same code, and the earlier chapters describe it.
+
+### Three questions, not five layouts
+
+The designer offers five presets. There are three layouts behind them, crossed with two other
+answers:
+
+| | |
+|---|---|
+| `CalendarLayout` | `UpNext` (a list of rows), `Grid` (blocks against a time axis), `Stacked` (columns of blocks in order, no axis) |
+| `TimeAxisMode` | `Clock` (real time, proportional) or `Slots` (named bands of equal size) |
+| `GridOrientation` | `TimeDown` (time down the side, lanes across) or `TimeAcross` (lanes down, time across) |
+
+So a "Wave Grid" is a `Grid` on a `Slots` axis, and a "Channel Timeline" is the same `Grid` turned on
+its side. Making each preset a layout of its own would mean a fix to how a lane header is measured
+landing in one of five places and staying broken in the other four; making them settings means there
+is one lane header.
+
+The two orientations are one code path written against a **major** axis (time) and a **minor** one
+(lanes), with a single `place()` deciding which of those is x and which is y. Every feature —
+overlap, bands, continuation, the now-line — therefore works both ways round by construction rather
+than by being implemented twice and kept in step.
+
+Days are arranged as columns only when the board asks for it *and* time runs down the side. With
+time across the top, every day needs its own axis along the same edge, so days can only stack; a
+side-by-side day would mean two time axes on one row, which is not a board anyone draws.
+
+### The time axis
+
+`TimeAxis` is the one mapping from a time to a distance along the board, and both modes come through
+it. A clock axis is a start, an end and pixels per minute; a slotted axis is a list of offsets, one
+per slot, weighted. Nothing downstream asks which kind of board it is on: a block, a grid rule, a
+gutter label and the now-line all place themselves by asking the axis where something is.
+
+A **slot may carry a real time**, and that is what keeps the two modes from being two different
+products. Without it a slot is a name and an order, and every clock feature is dead on a wave board.
+With it the gutter prints `WAVE C` and `1:00 PM` together, an event typed in with a clock time drops
+into the slot holding it, and the now-line, the status colors and the Up Next list all work on a
+board whose axis is not a clock.
+
+`EventSpan` is where an event's two placements — `startMinutes`/`endMinutes` and `slotId`/`endSlotId`
+— are resolved into whichever the axis is asking for. An event usually carries only the pair its own
+board reads; carrying both is what lets one schedule be shown either way.
+
+### An end that was never stated
+
+A published schedule prints start times and leaves the ends to be inferred, so `OpenEndedRule` is a
+property of the **lane**: run until the next event in it, a fixed length, or the smallest span worth
+calling a duration. It is on the lane rather than the document because a lane that is one screen in
+one room and a lane that stands for a whole platform want different answers in the same board.
+
+`UntilNext` is the only part of placing an event that has to look at the other events, so it lives in
+`resolvedOpenEndedLength` rather than inside `eventSpan` — a whole-schedule scan hidden inside what
+every caller treats as a field read is exactly the kind of cost that gets called in a loop.
+
+### Collisions, and why they are never hidden
+
+Two events wanting one lane at one time are resolved by counting how many are live at each block's
+own start and dividing the lane between them (`Split`), or by offsetting each one a few pixels over
+the last (`Stack`). Which of the two is again the lane's, for the same reason the open-ended rule is.
+
+Either way `CalendarDocument::overlaps()` reports the pair and the designer names them. A board that
+silently drew one event on top of another is the one outcome nobody wants: a lane that genuinely
+runs two things at once wants them side by side, and a lane where a collision means somebody mistyped
+a time wants to be told.
+
+### Bands and continuations
+
+A **band** is an event with `band` set: it is drawn across every lane, takes none of their room, and
+the lanes go on being drawn behind it. First-class rather than a lane called "everything", because a
+band is not a lane's content — it has no lane, and a schedule with three of them would otherwise need
+a fourth column nobody wants to see.
+
+A **continuation** names the event it continues. That does two things at once, which is why it is a
+link rather than a checkbox: the layout knows the pair are one event, so an Up Next list counts them
+once and the second block need not repeat the title; and the style cascade marks it, through whatever
+hatch the continuation layer carries. A link naming an event that has since been deleted degrades to
+an ordinary block rather than failing.
+
+### The style cascade
+
+A block's appearance is five layers merged in a fixed order — the document's, the lane's, the
+category's, the status's, then the event's own — each contributing only the parts it has switched on:
+
+```
+document.blockStyle → lane.style → category.style → status layer → [continuation] → event.style
+                                                          ↓
+                                              ResolvedBlockStyle (every part answered)
+```
+
+Optional-per-part rather than all-or-nothing is what makes the cascade worth having. A category that
+owns a color should not have to restate the typeface; a status that fades a block should not have to
+restate the color it is fading. Either would mean a change to the typeface being made once per
+category, which is the maintenance a cascade exists to remove.
+
+Opacity is the one part that **multiplies** rather than replaces, because it is the only one that
+says "less of whatever is underneath" rather than "this instead": a finished event in a lane that is
+already half-present is a quarter present, which is what both settings meant.
+
+`ResolvedBlockStyle` starts from a built-in default rather than from nothing, so a board that has
+never been styled still draws something a user can then edit — and so nothing on the paint path can
+be handed a half-specified style and have to decide for itself what an unset part means. Deciding
+that is the cascade's job, and it happens exactly once per block, in `resolveBlockStyle`.
+
+Dimming the finished events is applied *after* the cascade rather than as a layer inside it: it is a
+setting about the board rather than a style anyone chose for those events, so a schedule that has
+been given a finished style of its own is dimmed *by* it rather than *instead of* it.
+
+### Plan, then paint
+
+The strip renderer guarantees that measurement and painting agree by running the identical code with
+a null painter. The calendar renderer guarantees it a different way: the layout pass turns the
+document into a list of placed items in board coordinates, and the paint pass draws whatever falls
+inside the piece of the board it is drawing. The two cannot disagree because there is only one
+description of where anything is.
+
+That difference is not a preference. A board is drawn at three different scales and offsets — scaled
+to fit, one page at a time, or scrolling — and a plan can be painted at each of them from one set of
+measurements, where a measure-and-draw walk would have to run once per page.
+
+`PlanItem` is one tagged struct rather than a list per kind, because **the order things are drawn in
+is the plan**: a block's panel goes over the grid rules and under its own text, and keeping the items
+in one list in the order they were planned is what says so. Separate lists would need a z-order
+invented alongside them and kept in step with every new kind of item.
+
+Text is re-fitted at paint time from the size the layout settled on rather than the lines being
+carried in the plan. The size is what the fit decided and *is* carried; re-breaking the same string
+at the same size with the same metrics gives the same lines, and carrying a string list per block
+would make the plan several times its size for a board of any length.
+
+### The free layer
+
+Structural furniture — day headings, lane headers, the time gutter — belongs to the layout, because
+all three are generated from the schedule and have to move when it moves. Everything else a board
+carries is a `CalendarElement` placed by hand: a clock, a ticker, a row of chips, a legend, a panel,
+a piece of text, an image.
+
+The split is deliberate. Every board carries a different set of decoration and no amount of
+anticipating covers the next one, so a slot per kind would mean the plugin's next feature request is
+always "one more slot". A free element is anchored to one of nine points on the canvas rather than
+given absolute coordinates, so "24 px in from the bottom right" survives the canvas being resized
+under a board designed at another size.
+
+Elements are planned in **canvas** coordinates and painted over every page. A clock pinned to a
+corner belongs to the canvas rather than to the board: it neither scales with a fitted board nor
+travels with a scrolling one.
+
+A legend is generated from the categories or lanes actually in use, with a hidden list and per-entry
+label overrides beside it. Generated-and-editable rather than either alone: a legend built purely
+from what is on the board goes out of date never, and one maintained by hand goes out of date the
+first time a category is recolored — the overrides are for the two or three places you want it to
+differ, recorded rather than re-entered.
+
+### The clock
+
+Five independent switches — a now-line, fading the finished, highlighting the current, dropping the
+finished, and how often to redraw — rather than one "live mode". They are five separate wants and
+boards ask for different subsets: a poster on a wall wants none, a holding screen wants the finished
+ones gone, a control-room board wants the line and the highlight and nothing removed.
+
+`CalendarDocument::needsClock()` is what the source asks to decide whether a board needs redrawing on
+a timer at all, and it counts a clock element and a rotating ticker as well as the five switches. A
+board that answers no is rasterized when it is edited and never again — it costs nothing per frame
+for the rest of its life, which is what makes a still board actually still.
+
+`now` is passed into the renderer rather than read from the system clock, so a board is a pure
+function of its document and an instant. That is what lets the designer show the board as it will
+look at ten past seven, and what lets the test harness assert what a now-line does without waiting
+for a minute to pass.
+
+### Animated artwork
+
+A board is rasterized once and then held, scaled, paged or scrolled — and an animation is by
+definition not that. So it strikes the same bargain the roll does: the artwork is not painted into
+the page at all, the space it would have occupied is left empty, and it is drawn over the top from a
+texture of its own.
+
+Three things are simpler here than in the roll. There are no shadow frames, because a calendar logo
+casts no drop shadow — the whole blur-per-frame path is absent. There is no epoch, because a board
+has no restart. And the placements reach the compositor in **canvas** coordinates, already carried
+through the fit scale and the page offset by the same mapping the hit boxes use, so nothing on the
+graphics thread has to know that board space exists.
+
+Two things are harder, and both come from the board being a thing that redraws itself.
+
+**Decoding happens after the scale is known.** A logo is decoded once, at the size it will be drawn,
+and on a board scaled to fit that is not the size the layout asked for. So the pass that finds the
+animated artwork and marks its holes runs *inside* the page loop, after the fit scale is settled —
+not during the layout. Decoding at the layout's size would mean either a blurred bug or a pile of
+frames being scaled down on every frame.
+
+**Playback has to survive a rebuild.** A roll re-rasterizes when it is edited. A board with any
+clock feature on re-rasterizes every thirty seconds by default, and a naive implementation would
+hand the compositor a fresh set of placements each time and restart every animation on the board
+twice a minute. So each placement carries a **key** — the artwork, the page and the rectangle — and
+the source keeps elapsed times against it: a rebuild that did not move anything finds the same keys
+and carries playback across. A logo that really has moved gets a new key and starts again, which is
+the right answer for what is a different placement of it.
+
+**Animations advance on the wall clock**, and this is the one place the two sources deliberately
+disagree. A roll ties its animations to the roll, so a paused roll is a still frame and a scrubbed
+one shows the frame it was parked on. A board has no roll to tie them to, and a channel bug in the
+corner of a schedule should keep moving whatever the schedule is doing.
+
+A renderer built without an animation cache paints every logo as a still, exactly as the strip
+renderer's does. That is what the test harness gets, and what the designer's preview gets: a board
+being typed into should hold still, and the preview showing a frozen first frame is the same bargain
+the roll's preview strikes with its playback switched off.
+
+### Overflow
+
+One setting with three answers, because they are three answers to one question and a board that was
+scaling *and* paging would be answering it twice:
+
+- **Fit** scales the whole board down until it lands, with a floor below which it is allowed to
+  overflow instead — and the designer says so rather than letting an edge be cut off unnoticed.
+- **Page** cuts the board into canvas-sized pages, and cuts them at the day boundaries the layout
+  left behind when asked to. A three-day board paged by pixels puts the end of Friday and the start
+  of Saturday on one page, which is not a page anybody meant to make.
+- **Scroll** lays the board out at full size in one very tall page and lets the source move it past
+  the canvas — the strip renderer's tiling, reused for the same GPU reason.
+
+A board smaller than its canvas is centered in it rather than stretched. Stretching would mean an
+hour being a different height depending on how many events happen to be on that day, which is a
+board that lies about its own axis.
+
+### The source
+
+`CalendarSource` is the credit source's arrangement with the playback phase taken out. A board has no
+beginning and no end: it is showing whatever it is showing, and the only things that move are the
+page and the scroll. What is left is the same shape — a render key that decides whether an edit is
+worth rasterizing for, a rebuild on the shared render thread, a handoff under a mutex, one texture
+per tile uploaded on the graphics thread.
+
+A scrolling board travels to its end and back rather than wrapping. A schedule is a single picture
+with a top and a bottom, and wrapping it would put the end of Sunday immediately above the start of
+Friday, which reads as damage rather than as a loop.
+
+### The designer
+
+One direction of data flow: the panes never write into the document as they are typed into, they
+raise an edit and `commit()` reads the lot. A board has settings that depend on each other — an axis
+mode that decides whether slots mean anything, a layout that decides whether lanes do — and a hundred
+small write-backs is how those get out of step.
+
+The preview is **click-to-select**: clicking a block selects the row it came from. That is the cheap
+half of an interactive preview and very nearly all of its value, since finding the row for the block
+you are looking at is the genuinely hard thing to do by eye on a board of eighty events. Dragging a
+block to move it is not implemented; the table is where a schedule is edited.
+
+Hit boxes come out of the render in canvas coordinates, having been carried through the scale and
+the page offset, so the rectangle the preview outlines is the one that was drawn. `hitBoxes()`
+reports the same rectangles in **board** coordinates for anything asking where the layout put
+something rather than what is under the mouse.
+
 ## Known limitations
 
 1. **A bundled font is a whole font.** Nothing is subset to the glyphs the roll actually uses, so
@@ -1658,13 +1934,37 @@ same reason: reporting it would send the user after a font nothing uses.
 9. **A panel's image is a still.** An animated file in a panel contributes its first frame. The
    strip is rasterized once and scrolled, and unlike a logo a panel has no quad of its own to be
    drawn over the top of it — the hole-and-overlay trick has nothing to hang a background on.
-10. **A library rename is followed but never forced.** A document that already has a preset of
+10. **A board's animations restart when their block moves.** Playback survives a rebuild that left a
+   logo where it was, which is what every clock refresh is; it does not survive one that moved it.
+   Retiming an event mid-show therefore starts its bug again from frame one. Matching a placement
+   through a move means deciding what counts as the same placement, and every answer to that is
+   wrong for some board.
+11. **A calendar has no ending action and no signals.** A board does not finish, so there is nothing
+   for an ending action to fire on. "Switch scene when the next event begins" is a real feature and
+   a different one — a schedule driving OBS rather than reporting to it — and it is not here.
+12. **A board is redrawn whole or not at all.** The clock refresh rasterizes the entire board, not
+   the parts of it that changed. At a minute's interval on a board of a few hundred blocks this is
+   cheap and the code stays simple; a board redrawing every second would want something cleverer.
+13. **The schedule is typed or imported, never fetched.** There is no iCalendar feed, no bracket-site
+   API and no polling of anything: a board is edited in the designer or imported from a delimited
+   file. Networking, auth and rate limits are a project of their own on top of the display.
+14. **A day's own date is what the clock compares against.** A board of named waves that never
+   mentions a date borrows today's for every day it has, so every event on it reads as being today.
+   That is right for the board it is — a wave schedule is *for* today — and wrong for one left
+   running across midnight without dates typed in.
+15. **A library rename is followed but never forced.** A document that already has a preset of
    its own under the new name keeps its link under the old one — merging two presets is not a
    rename — and migrates by itself if the clash is ever resolved. The manager says so when it
    happens.
 
 ### Addressed since the first cut
 
+- Animated artwork on a board: the same hole-and-overlay bargain the roll strikes, with playback on
+  the wall clock and carried across the rebuilds a clock feature causes. See *Animated artwork*.
+- A second source: **Calendar Display**, a schedule board with three layouts, two kinds of time
+  axis, both orientations, a five-layer style cascade, a free layer of decoration, five independent
+  clock features, three answers to not fitting, five presets and a column-mapped schedule import.
+  See *The calendar*.
 - Backgrounds: a panel — a color, a gradient or an image, with rounded corners and a border —
   behind a section and behind each of the things it draws, bindable to named presets that publish
   into the machine-wide library alongside the text styles. It never takes part in layout, so a roll
@@ -1779,6 +2079,16 @@ which is only true when the text block is taller than the logo beside it — wit
 block is centered and the leader rises with it. The invariant that actually holds everywhere is
 that the leader hangs a fixed distance below the top line of the block, and that is what is
 asserted now, with the two regimes checked separately underneath it.
+
+The calendar's fourteen suites are written the same way. What they assert is mostly *relations*,
+for the reason above: that a two-hour block is twice a one-hour block, that the same schedule laid
+out both ways round produces the transpose of itself, that a split lane halves its blocks, that an
+event with no end runs to whichever length its lane's rule names. The two that are not relations are
+the clock and the round trip: a fixed instant is passed into the renderer, so what a now-line or a
+self-clearing list does says the same thing on every machine and every day, and the persistence
+suite pushes a document off its defaults — including a note with a quote and a newline in it, a
+ticker with a line break in a message, a tag with a glyph, a continuation link — and checks each of
+them back out again through both `obs_data` and JSON.
 
 Renderer and parser changes before the harness existed were validated with the same approach in
 an ad-hoc form, covering the `obs_data` round trip for all twenty section types, measure/render

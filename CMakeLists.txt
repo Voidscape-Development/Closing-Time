@@ -47,6 +47,10 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/Background.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/BridgeArt.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/BridgeArt.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CalendarModel.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CalendarModel.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CalendarPresets.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CalendarPresets.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CreditsModel.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CreditsModel.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerArt.cpp"
@@ -59,12 +63,16 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/Gradient.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/StyleLibrary.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/TagGlyph.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/TagGlyph.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/AnimatedLogo.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/AnimatedLogo.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/CalendarRenderer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/CalendarRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FontResolution.cpp"
@@ -88,10 +96,16 @@ target_sources(
   PRIVATE
     ${CLOSING_TIME_CORE_SOURCES}
     src/plugin-main.cpp
+    src/source/CalendarSource.cpp
+    src/source/CalendarSource.hpp
     src/source/CreditsSource.cpp
     src/source/CreditsSource.hpp
     src/ui/BackgroundControls.cpp
     src/ui/BackgroundControls.hpp
+    src/ui/CalendarDesignerDialog.cpp
+    src/ui/CalendarDesignerDialog.hpp
+    src/ui/CalendarImportDialog.cpp
+    src/ui/CalendarImportDialog.hpp
     src/ui/CollapsibleGroup.cpp
     src/ui/CollapsibleGroup.hpp
     src/ui/CsvImportDialog.cpp

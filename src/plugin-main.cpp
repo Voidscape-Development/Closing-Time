@@ -24,7 +24,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "model/StyleLibrary.hpp"
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
+#include "source/CalendarSource.hpp"
 #include "source/CreditsSource.hpp"
+#include "ui/CalendarDesignerDialog.hpp"
 #include "ui/DesignerDialog.hpp"
 
 OBS_DECLARE_MODULE()
@@ -73,10 +75,17 @@ bool obs_module_load(void)
 
 	closingtime::registerCreditsSource();
 	/*
+	 * The second source. The two share the model, the renderer's foundations and the style
+	 * library, and nothing else: a roll scrolls and a board holds, which is a different layout and
+	 * a different window rather than a mode of the first one.
+	 */
+	closingtime::registerCalendarSource();
+	/*
 	 * The menu lists sources by type and the designer opens them, so neither half of that
 	 * belongs to the other: the module entry point is where the two are introduced.
 	 */
 	closingtime::registerDesignerToolsMenu(closingtime::kCreditsSourceId);
+	closingtime::registerCalendarDesignerToolsMenu(closingtime::kCalendarSourceId);
 	/* The library is the machine's rather than any roll's, so it gets an entry of its own. */
 	closingtime::registerStyleLibraryToolsMenu();
 
