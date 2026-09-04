@@ -23,11 +23,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPainter>
 #include <QDateTime>
 
+#include "harness/Fixtures.hpp"
 #include "harness/Harness.hpp"
 #include "harness/Probe.hpp"
 
 #include "model/CalendarModel.hpp"
 #include "model/CalendarPresets.hpp"
+#include "render/AnimatedLogo.hpp"
 #include "render/CalendarRenderer.hpp"
 
 using namespace closingtime;
@@ -577,4 +579,134 @@ CT_SUITE(calendar_days, "Days, and what happens to an event without one")
 	document.days.append(spare);
 	check(!document.syncDays(), "an empty day is left alone");
 	checkEq(document.days.size(), 2, "and still there");
+}
+
+CT_SUITE(calendar_animated_logos, "Animated artwork, and the hole a page leaves for it")
+{
+	const QString animated = testAnimatedLogoPath();
+	check(!animated.isEmpty(), "the animated fixture was written");
+
+	CalendarDocument document = basicBoard();
+	document.grid.blockLogoHeight = 48.0;
+	document.events[0].logo.path = animated;
+	document.events[0].logo.maxHeight = 48;
+
+	/*
+	 * Without an animation cache the renderer paints the first frame into the page, which is the
+	 * behavior the designer's preview and this harness both want.
+	 */
+	const CalendarRenderer still(&logoCache());
+	const CalendarBoard stillBoard = still.render(document, fixedNow());
+	check(stillBoard.animations.isEmpty(), "a renderer with no animation cache reports no animations");
+
+	AnimatedLogoCache animations;
+	const CalendarRenderer moving(&logoCache(), &animations);
+	const CalendarBoard board = moving.render(document, fixedNow());
+
+	checkEq(board.animations.size(), 1, "the animated logo is reported exactly once");
+	if (board.animations.isEmpty())
+		return;
+
+	const CalendarAnimation &placed = board.animations.first();
+	check(placed.animation != nullptr, "the placement carries a decoded animation");
+	checkEq(placed.animation->frames.size(), kTestAnimationFrames, "with every frame of it");
+	check(placed.scrolls, "a logo on a block travels with the board");
+	checkEq(placed.page, 0, "and belongs to the page it was drawn on");
+	check(!placed.key.isEmpty(), "and carries a key a rebuild can be matched by");
+
+	/*
+	 * The layout does not move for any of it. An animated logo occupies exactly the box its first
+	 * frame would have as a still, so swapping a PNG for a GIF of the same artwork changes nothing
+	 * around it -- which is what the two boards' hit boxes agreeing says.
+	 */
+	checkEq(board.hits.size(), stillBoard.hits.size(), "both boards place the same blocks");
+	for (int i = 0; i < board.hits.size() && i < stillBoard.hits.size(); ++i) {
+		checkNear(board.hits[i].rect.top(), stillBoard.hits[i].rect.top(), 0.5,
+			  "and each of them in the same place");
+		checkNear(board.hits[i].rect.height(), stillBoard.hits[i].rect.height(), 0.5, "at the same size");
+	}
+
+	/* The hole really is a hole: the page has no ink where the artwork goes. */
+	QImage page(board.width, board.height, QImage::Format_ARGB32);
+	page.fill(Qt::transparent);
+	{
+		QPainter painter(&page);
+		for (const StripTile &tile : board.pages.first().tiles)
+			painter.drawImage(QPointF(0.0, tile.top), tile.image);
+	}
+
+	QImage stillPage(stillBoard.width, stillBoard.height, QImage::Format_ARGB32);
+	stillPage.fill(Qt::transparent);
+	{
+		QPainter painter(&stillPage);
+		for (const StripTile &tile : stillBoard.pages.first().tiles)
+			painter.drawImage(QPointF(0.0, tile.top), tile.image);
+	}
+
+	/*
+	 * Measured against the still render rather than against emptiness: the block's panel is drawn
+	 * behind the logo either way, so the box has ink in both and an ink check would say nothing.
+	 * What says the artwork was left out is that the two renders differ over its rectangle and
+	 * agree everywhere else -- which is also what says the hole is only as big as the logo.
+	 */
+	const QRect box = placed.rect.toAlignedRect();
+	check(page.copy(box) != stillPage.copy(box), "the page differs where the artwork goes");
+
+	/* The rest of the block -- its title, its panel -- is untouched by any of it. */
+	const QRect block = hitFor(document, QStringLiteral("e1")).toAlignedRect();
+	const QRect beyond(box.right() + 4, block.top(), std::max(1, block.right() - box.right() - 8), block.height());
+	check(page.copy(beyond) == stillPage.copy(beyond), "and agrees everywhere else in the block");
+
+	/* A logo on the free layer belongs to no page and does not travel with the board. */
+	CalendarElement badge = CalendarElement::makeDefault(ElementType::Image);
+	badge.id = QStringLiteral("badge");
+	badge.image.path = animated;
+	badge.image.maxHeight = 64;
+	badge.width = 64.0;
+	badge.height = 64.0;
+	document.elements.append(badge);
+
+	const CalendarBoard withBadge = moving.render(document, fixedNow());
+	checkEq(withBadge.animations.size(), 2, "the free layer's animation is reported too");
+
+	bool foundOverlay = false;
+	for (const CalendarAnimation &entry : withBadge.animations) {
+		if (entry.page >= 0)
+			continue;
+		foundOverlay = true;
+		check(!entry.scrolls, "an element's animation holds still while the board moves");
+	}
+	check(foundOverlay, "and is marked as belonging to every page");
+
+	/* A still picture is not an animation, however it is asked for. */
+	document.elements.last().image.path = testLogoPath();
+	checkEq(moving.render(document, fixedNow()).animations.size(), 1, "a still element reports nothing");
+}
+
+CT_SUITE(calendar_animation_keys, "Playback surviving a rebuild it should survive")
+{
+	const QString animated = testAnimatedLogoPath();
+
+	CalendarDocument document = basicBoard();
+	document.grid.blockLogoHeight = 48.0;
+	document.events[0].logo.path = animated;
+
+	AnimatedLogoCache animations;
+	const CalendarRenderer renderer(&logoCache(), &animations);
+
+	const QString first = renderer.render(document, fixedNow()).animations.first().key;
+
+	/*
+	 * A rebuild that changed nothing about where the logo is -- which is every clock refresh on a
+	 * board whose events have not moved -- has to hand back the same key, or the source restarts
+	 * every animation on the board twice a minute.
+	 */
+	const QString again = renderer.render(document, fixedNow().addSecs(30)).animations.first().key;
+	checkEq(again, first, "an unmoved logo keeps its key across a rebuild");
+
+	/* And one that really has moved gets a new key, so it starts again where it now is. */
+	document.events[0].startMinutes += 60;
+	document.events[0].endMinutes += 60;
+	const QString moved = renderer.render(document, fixedNow()).animations.first().key;
+	check(moved != first, "a logo that moved gets a key of its own");
 }

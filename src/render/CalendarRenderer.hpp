@@ -25,9 +25,53 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QVector>
 
 #include "model/CalendarModel.hpp"
+#include "render/AnimatedLogo.hpp"
 #include "render/StripRenderer.hpp"
 
 namespace closingtime {
+
+/*
+ * An animated logo the board placed, and everything needed to draw it.
+ *
+ * The same bargain the credit roll strikes, for the same reason: a board is rasterized once and
+ * then held, scaled, paged or scrolled, and an animation is by definition not that. So the artwork
+ * is not painted into the page at all -- the space it would have occupied is left empty and it is
+ * drawn over the top from a texture of its own.
+ *
+ * Everything here is in **canvas** coordinates, already carried through the fit scale and the page
+ * offset, because the compositor has no way to work those out and no business knowing they exist.
+ */
+struct CalendarAnimation {
+	/* Where it goes on the canvas, at the size it is actually drawn. */
+	QRectF rect;
+	LogoAnimationPtr animation;
+	LogoPlayback playback;
+
+	/*
+	 * Which page it belongs to, or -1 for one on the free layer -- an animated bug in a corner
+	 * belongs to every page, because the free layer is drawn over all of them.
+	 */
+	int page = 0;
+
+	/*
+	 * True when it travels with the board rather than with the canvas. A scrolling board moves its
+	 * blocks under a clock that holds still, and the two kinds of animation have to move with the
+	 * thing they were placed against.
+	 */
+	bool scrolls = true;
+
+	/*
+	 * What this placement *is*, as a string two rebuilds can be compared by: the artwork, the page
+	 * and the rectangle.
+	 *
+	 * A board with any clock feature on is re-rasterized every refresh, which without this would
+	 * hand the compositor a brand-new set of placements every thirty seconds and restart every
+	 * animation on the board. Matching on the key lets playback carry across a rebuild that did not
+	 * actually move anything. A logo that *has* moved gets a new key and starts again, which is the
+	 * right answer for what is a different placement of it.
+	 */
+	QString key;
+};
 
 /*
  * Where the layout put one event, in canvas coordinates.
@@ -89,6 +133,12 @@ struct CalendarBoard {
 	bool overflowed = false;
 	bool clipped = false;
 
+	/*
+	 * The animated artwork on this board, in canvas coordinates. Empty for a renderer built without
+	 * an animation cache, which paints every logo as a still -- see the constructor.
+	 */
+	QVector<CalendarAnimation> animations;
+
 	QVector<CalendarHit> hits;
 	/* How many events were actually placed, which is not the same as how many the schedule holds. */
 	int placedEvents = 0;
@@ -111,12 +161,22 @@ struct CalendarBoard {
  * the same measurements, where a measure-and-draw walk would have to be run once per page.
  *
  * Painting is into a QImage, so this runs on the shared render thread exactly as the strip renderer
- * does. Animated artwork is drawn as its first frame: a board holds still, and a schedule is the one
- * place in this plugin where a moving logo would be competing with the thing it is labeling.
+ * does.
  */
 class CalendarRenderer {
 public:
-	explicit CalendarRenderer(LogoCache *logos) : logos(logos) {}
+	/*
+	 * `animations` may be null, and a renderer without one draws every logo as a still: an animated
+	 * file contributes its first frame, painted into the page exactly as artwork always was. That is
+	 * what the test harness wants, and what the designer's preview wants -- a board being typed into
+	 * should hold still -- so animation is something a consumer opts into by being able to honor it
+	 * rather than something the renderer assumes of everybody.
+	 */
+	explicit CalendarRenderer(LogoCache *logos, AnimatedLogoCache *animations = nullptr)
+		: logos(logos),
+		  animations(animations)
+	{
+	}
 
 	/* Maximum tile height in pixels, matching the strip renderer's for the same GPU reason. */
 	static constexpr int kTileHeight = 2048;
@@ -151,6 +211,7 @@ public:
 
 private:
 	LogoCache *logos;
+	AnimatedLogoCache *animations;
 };
 
 } // namespace closingtime

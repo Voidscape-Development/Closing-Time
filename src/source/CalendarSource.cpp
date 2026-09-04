@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include <QDateTime>
+#include <QHash>
 #include <QSet>
 #include <QString>
 
@@ -32,6 +33,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 #include "model/CalendarModel.hpp"
+#include "render/AnimatedLogo.hpp"
 #include "render/CalendarRenderer.hpp"
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
@@ -40,6 +42,25 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace closingtime {
 
 namespace {
+
+/*
+ * One animated logo on the board, mid-playback.
+ *
+ * The page left a hole where this goes and this is what fills it: a single texture, re-uploaded when
+ * the frame changes, drawn as its own quad after the page and the free layer. One texture rather
+ * than one per frame for the reason the roll gives -- a thirty-second animation is thousands of
+ * frames and no GPU wants thousands of small textures for one bug.
+ *
+ * Graphics-thread state, like the page textures beside it.
+ */
+struct CalendarAnimationRuntime {
+	CalendarAnimation placement;
+	gs_texture_t *texture = nullptr;
+	/* Which frame the texture currently holds, or -1 when it holds nothing yet. */
+	int uploadedFrame = -1;
+	/* How far into the animation playback has run, in milliseconds of its own time. */
+	double elapsedMs = 0.0;
+};
 
 /*
  * Threading, and it is the credit source's arrangement with one thing taken out:
@@ -64,6 +85,7 @@ struct CalendarSourceData {
 
 	/* Owned by the render thread: only the rebuild job touches it, and jobs run one at a time. */
 	LogoCache logos;
+	AnimatedLogoCache animationCache;
 	QSet<QString> warnedFonts;
 
 	std::mutex handoffMutex;
@@ -84,6 +106,17 @@ struct CalendarSourceData {
 	std::vector<PageTextures> pages;
 	/* The free layer, drawn over whichever page is showing and never scrolled with it. */
 	gs_texture_t *overlay = nullptr;
+	std::vector<CalendarAnimationRuntime> animations;
+
+	/*
+	 * How far each animation had run, kept across a rebuild and keyed by what the placement is.
+	 *
+	 * A board with any clock feature on is re-rasterized every refresh, and without this every
+	 * animated logo on it would jump back to its first frame every thirty seconds. A placement that
+	 * really has moved gets a new key and starts again, which is the right answer for what is a
+	 * different placement of it.
+	 */
+	QHash<QString, double> animationElapsed;
 
 	std::mutex stateMutex;
 	int page = 0;
@@ -190,7 +223,7 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 				substitute.toUtf8().constData());
 	}
 
-	CalendarRenderer renderer(&data->logos);
+	CalendarRenderer renderer(&data->logos, &data->animationCache);
 	CalendarBoard board = renderer.render(task->document, task->now);
 
 	bool again = false;
@@ -232,6 +265,12 @@ void releaseTextures(CalendarSourceData *data)
 		gs_texture_destroy(data->overlay);
 		data->overlay = nullptr;
 	}
+
+	for (CalendarAnimationRuntime &runtime : data->animations) {
+		if (runtime.texture)
+			gs_texture_destroy(runtime.texture);
+	}
+	data->animations.clear();
 }
 
 /* Graphics thread only. */
@@ -265,6 +304,25 @@ void uploadPendingBoard(CalendarSourceData *data)
 	}
 
 	data->overlay = createTexture(board.overlay);
+
+	/*
+	 * Playback is carried across the rebuild by key, so a board that redraws itself every thirty
+	 * seconds does not restart every animation on it that often. The textures are not carried: one
+	 * per animated logo, recreated on a rebuild that happens at most twice a minute, is nothing
+	 * beside the page it arrived with.
+	 */
+	for (const CalendarAnimation &placement : board.animations) {
+		CalendarAnimationRuntime runtime;
+		runtime.placement = placement;
+		runtime.elapsedMs = data->animationElapsed.value(placement.key, 0.0);
+		data->animations.push_back(std::move(runtime));
+	}
+
+	/* Anything the new board did not place has nothing left to remember. */
+	QHash<QString, double> kept;
+	for (const CalendarAnimationRuntime &runtime : data->animations)
+		kept.insert(runtime.placement.key, runtime.elapsedMs);
+	data->animationElapsed = kept;
 
 	std::lock_guard<std::mutex> lock(data->stateMutex);
 	/*
@@ -342,6 +400,61 @@ void advancePresentation(CalendarSourceData *data, double seconds)
 	default:
 		break;
 	}
+}
+
+/*
+ * Advances every animation by one tick.
+ *
+ * On the wall clock, which is where the roll and the board part company. A roll ties its animations
+ * to the roll itself, so a paused roll is a still frame; a board has no roll to tie them to, and a
+ * channel bug in the corner of a schedule should keep moving whatever the schedule is doing.
+ *
+ * Graphics-thread state, advanced from video_tick, which is the same thread.
+ */
+void advanceAnimations(CalendarSourceData *data, double seconds)
+{
+	if (data->animations.empty())
+		return;
+
+	for (CalendarAnimationRuntime &runtime : data->animations) {
+		if (!runtime.placement.animation)
+			continue;
+
+		runtime.elapsedMs += seconds * 1000.0 * runtime.placement.playback.speed;
+		data->animationElapsed.insert(runtime.placement.key, runtime.elapsedMs);
+	}
+}
+
+/* Puts the current frame on the GPU, allocating the texture the first time. Graphics thread only. */
+void uploadFrame(CalendarAnimationRuntime &runtime)
+{
+	const LogoAnimation *animation = runtime.placement.animation.get();
+	if (!animation || animation->frames.isEmpty())
+		return;
+
+	const int frame = std::clamp(logoFrameAt(*animation, runtime.elapsedMs, runtime.placement.playback.loop), 0,
+				     static_cast<int>(animation->frames.size()) - 1);
+	if (runtime.uploadedFrame == frame)
+		return;
+
+	/* Every frame of one animation is the same size, so the texture is written over rather than remade. */
+	const QImage &image = animation->frames.at(frame).image;
+
+	if (!runtime.texture) {
+		runtime.texture = createTexture(image);
+		if (!runtime.texture) {
+			obs_log(LOG_ERROR, "failed to allocate a %dx%d animated logo texture", image.width(),
+				image.height());
+			/* Marked as uploaded so the failure is not retried once a frame for the whole board. */
+			runtime.uploadedFrame = frame;
+			return;
+		}
+	} else {
+		gs_texture_set_image(runtime.texture, image.constBits(), static_cast<uint32_t>(image.bytesPerLine()),
+				     false);
+	}
+
+	runtime.uploadedFrame = frame;
 }
 
 void stepPage(CalendarSourceData *data, int by)
@@ -496,6 +609,12 @@ void videoTick(void *raw, float seconds)
 	advancePresentation(data, seconds);
 
 	/*
+	 * Before the early return below: an animation moves whether or not anything on the board
+	 * depends on the clock, and it costs a texture upload rather than a rebuild.
+	 */
+	advanceAnimations(data, seconds);
+
+	/*
 	 * The clock refresh. A board with none of the live features on never gets here, which is what
 	 * makes a still board free: it is rasterized when it is edited and never again.
 	 */
@@ -536,8 +655,11 @@ void drawBackground(const QColor &color, int width, int height)
  * The same quad the roll builds, and for the same reason: a scrolling board advances by a fraction
  * of a pixel per frame, and gs_draw_sprite_subregion takes whole texels only -- so the fraction goes
  * into the geometry and the texture coordinates instead of being dropped.
+ *
+ * Clipped vertically only. A page is the width of the canvas and an animated logo is inside one, so
+ * nothing here has an edge to lose sideways.
  */
-void drawClipped(double top, double width, double height, int canvasHeight)
+void drawClipped(double left, double top, double width, double height, int canvasHeight)
 {
 	if (width <= 0.0 || height <= 0.0)
 		return;
@@ -547,8 +669,8 @@ void drawClipped(double top, double width, double height, int canvasHeight)
 	if (visibleBottom <= visibleTop)
 		return;
 
-	const auto x0 = 0.0f;
-	const auto x1 = static_cast<float>(width);
+	const auto x0 = static_cast<float>(left);
+	const auto x1 = static_cast<float>(left + width);
 	const auto y0 = static_cast<float>(visibleTop);
 	const auto y1 = static_cast<float>(visibleBottom);
 	const auto v0 = static_cast<float>((visibleTop - top) / height);
@@ -565,6 +687,35 @@ void drawClipped(double top, double width, double height, int canvasHeight)
 	gs_texcoord(1.0f, v1, 0);
 	gs_vertex2f(x1, y1);
 	gs_render_stop(GS_TRISTRIP);
+}
+
+/*
+ * Draws the animated logos into the holes the page left for them.
+ *
+ * After the page and after the free layer, because a hole in either is a hole all the way down. One
+ * that belongs to the board moves with the scroll; one on the free layer does not, which is the
+ * whole of the difference between a bug on a block and a bug in the corner of the canvas.
+ */
+void drawAnimations(CalendarSourceData *data, gs_eparam_t *imageParam, int page, double offset, int canvasHeight)
+{
+	for (CalendarAnimationRuntime &runtime : data->animations) {
+		const CalendarAnimation &placement = runtime.placement;
+
+		/* Page -1 is the free layer, which is drawn over every page. */
+		if (placement.page >= 0 && placement.page != page)
+			continue;
+
+		const double top = placement.rect.top() - (placement.scrolls ? offset : 0.0);
+		if (top >= canvasHeight || top + placement.rect.height() <= 0.0)
+			continue;
+
+		uploadFrame(runtime);
+		if (!runtime.texture)
+			continue;
+
+		gs_effect_set_texture(imageParam, runtime.texture);
+		drawClipped(placement.rect.left(), top, placement.rect.width(), placement.rect.height(), canvasHeight);
+	}
 }
 
 void videoRender(void *raw, gs_effect_t *)
@@ -601,7 +752,7 @@ void videoRender(void *raw, gs_effect_t *)
 		for (size_t i = 0; i < textures.tiles.size(); ++i) {
 			gs_texture_t *texture = textures.tiles[i];
 			gs_effect_set_texture(imageParam, texture);
-			drawClipped(textures.tops[i] - offset, static_cast<double>(gs_texture_get_width(texture)),
+			drawClipped(0.0, textures.tops[i] - offset, static_cast<double>(gs_texture_get_width(texture)),
 				    static_cast<double>(gs_texture_get_height(texture)), canvasHeight);
 		}
 
@@ -611,9 +762,11 @@ void videoRender(void *raw, gs_effect_t *)
 		 */
 		if (data->overlay) {
 			gs_effect_set_texture(imageParam, data->overlay);
-			drawClipped(0.0, static_cast<double>(gs_texture_get_width(data->overlay)),
+			drawClipped(0.0, 0.0, static_cast<double>(gs_texture_get_width(data->overlay)),
 				    static_cast<double>(gs_texture_get_height(data->overlay)), canvasHeight);
 		}
+
+		drawAnimations(data, imageParam, page, offset, canvasHeight);
 	}
 
 	gs_blend_state_pop();

@@ -63,7 +63,7 @@ src/
     RenderThread.{hpp,cpp} the shared rasterization thread and its job queue
     AnimatedLogo.{hpp,cpp} decoding animated artwork with Qt, and frame timing
     StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterization
-    CalendarRenderer.{hpp,cpp} the board's plan-then-paint layout, its pages and its hit boxes
+    CalendarRenderer.{hpp,cpp} the board's plan-then-paint layout, its pages, hit boxes and animations
     BackgroundPainter.{hpp,cpp} a panel's path, its fills and its border; the one gradient mapping
     SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
@@ -1809,6 +1809,45 @@ function of its document and an instant. That is what lets the designer show the
 look at ten past seven, and what lets the test harness assert what a now-line does without waiting
 for a minute to pass.
 
+### Animated artwork
+
+A board is rasterized once and then held, scaled, paged or scrolled — and an animation is by
+definition not that. So it strikes the same bargain the roll does: the artwork is not painted into
+the page at all, the space it would have occupied is left empty, and it is drawn over the top from a
+texture of its own.
+
+Three things are simpler here than in the roll. There are no shadow frames, because a calendar logo
+casts no drop shadow — the whole blur-per-frame path is absent. There is no epoch, because a board
+has no restart. And the placements reach the compositor in **canvas** coordinates, already carried
+through the fit scale and the page offset by the same mapping the hit boxes use, so nothing on the
+graphics thread has to know that board space exists.
+
+Two things are harder, and both come from the board being a thing that redraws itself.
+
+**Decoding happens after the scale is known.** A logo is decoded once, at the size it will be drawn,
+and on a board scaled to fit that is not the size the layout asked for. So the pass that finds the
+animated artwork and marks its holes runs *inside* the page loop, after the fit scale is settled —
+not during the layout. Decoding at the layout's size would mean either a blurred bug or a pile of
+frames being scaled down on every frame.
+
+**Playback has to survive a rebuild.** A roll re-rasterizes when it is edited. A board with any
+clock feature on re-rasterizes every thirty seconds by default, and a naive implementation would
+hand the compositor a fresh set of placements each time and restart every animation on the board
+twice a minute. So each placement carries a **key** — the artwork, the page and the rectangle — and
+the source keeps elapsed times against it: a rebuild that did not move anything finds the same keys
+and carries playback across. A logo that really has moved gets a new key and starts again, which is
+the right answer for what is a different placement of it.
+
+**Animations advance on the wall clock**, and this is the one place the two sources deliberately
+disagree. A roll ties its animations to the roll, so a paused roll is a still frame and a scrubbed
+one shows the frame it was parked on. A board has no roll to tie them to, and a channel bug in the
+corner of a schedule should keep moving whatever the schedule is doing.
+
+A renderer built without an animation cache paints every logo as a still, exactly as the strip
+renderer's does. That is what the test harness gets, and what the designer's preview gets: a board
+being typed into should hold still, and the preview showing a frozen first frame is the same bargain
+the roll's preview strikes with its playback switched off.
+
 ### Overflow
 
 One setting with three answers, because they are three answers to one question and a board that was
@@ -1895,10 +1934,11 @@ something rather than what is under the mouse.
 9. **A panel's image is a still.** An animated file in a panel contributes its first frame. The
    strip is rasterized once and scrolled, and unlike a logo a panel has no quad of its own to be
    drawn over the top of it — the hole-and-overlay trick has nothing to hang a background on.
-10. **A calendar's logos are stills.** A board holds, and a schedule is the one place in this plugin
-   where a moving logo would be competing with the thing it is labeling — so animated artwork in a
-   lane header, a block or an element contributes its first frame. The strip's hole-and-overlay
-   trick is available if that ever stops being true; nothing in the board's layout is in its way.
+10. **A board's animations restart when their block moves.** Playback survives a rebuild that left a
+   logo where it was, which is what every clock refresh is; it does not survive one that moved it.
+   Retiming an event mid-show therefore starts its bug again from frame one. Matching a placement
+   through a move means deciding what counts as the same placement, and every answer to that is
+   wrong for some board.
 11. **A calendar has no ending action and no signals.** A board does not finish, so there is nothing
    for an ending action to fire on. "Switch scene when the next event begins" is a real feature and
    a different one — a schedule driving OBS rather than reporting to it — and it is not here.
@@ -1919,6 +1959,8 @@ something rather than what is under the mouse.
 
 ### Addressed since the first cut
 
+- Animated artwork on a board: the same hole-and-overlay bargain the roll strikes, with playback on
+  the wall clock and carried across the rebuilds a clock feature causes. See *Animated artwork*.
 - A second source: **Calendar Display**, a schedule board with three layouts, two kinds of time
   axis, both orientations, a five-layer style cascade, a free layer of decoration, five independent
   clock features, three answers to not fitting, five presets and a column-mapped schedule import.

@@ -252,6 +252,18 @@ the corner or edge it belongs to so it stays put when the canvas is resized. A l
 from the categories or lanes actually in use, and takes per-entry renames and hides for the two or
 three places you want it to differ.
 
+### Animated logos
+
+A block's logo, a lane header's mark or an image element can be an animated GIF, APNG or WebP, and it
+plays: the board leaves a hole where the artwork goes and draws it over the top, so the layout is
+exactly what a still of the same artwork would have given. Playback runs on the wall clock — a bug in
+the corner of a schedule keeps moving whatever the schedule is doing — and survives the board
+redrawing itself on the clock refresh, so an animation does not jump back to frame one every thirty
+seconds. Retiming the event under it does start it again, since that is a different placement of it.
+
+The designer's preview shows first frames rather than playing them, so a board being typed into
+holds still.
+
 ### The clock
 
 Five separate switches, because boards want different subsets of them:

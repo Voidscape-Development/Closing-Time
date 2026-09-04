@@ -241,6 +241,13 @@ struct PlanItem {
 	/* Image, and the file behind a custom glyph. */
 	QString imagePath;
 	int imageMaxHeight = 0;
+	/* Image only: how the artwork is timed, if it turns out to be animated. */
+	LogoPlayback playback;
+	/*
+	 * Image only: set by the animation pass when the file turns out to animate. The paint pass then
+	 * leaves the space empty and the compositor draws the artwork over it -- see CalendarAnimation.
+	 */
+	bool hole = false;
 
 	/* Glyph: a built-in mark, inked through `style`. */
 	TagGlyph glyph = TagGlyph::None;
@@ -454,6 +461,7 @@ void planBlockContent(Plan *plan, const CalendarDocument &document, const Calend
 		item.rect = QRectF(inner.left(), inner.top(), size, size);
 		item.imagePath = event.logo.path;
 		item.imageMaxHeight = static_cast<int>(std::ceil(size));
+		item.playback = event.logo.playback;
 		item.opacity = style.opacity;
 		plan->items.append(item);
 
@@ -640,6 +648,7 @@ void planHeader(Plan *plan, const QRectF &rect, const BackgroundPanel &panel, co
 		item.rect = QRectF(inner.left(), inner.top() + (inner.height() - size) / 2.0, size, size);
 		item.imagePath = logo.path;
 		item.imageMaxHeight = static_cast<int>(std::ceil(size));
+		item.playback = logo.playback;
 		plan->items.append(item);
 
 		inner.setLeft(inner.left() + size + 8.0);
@@ -1298,6 +1307,7 @@ void planElements(Plan *plan, const CalendarDocument &document, const QDateTime 
 			item.rect = inner;
 			item.imagePath = element.image.path;
 			item.imageMaxHeight = std::max(1, static_cast<int>(std::ceil(inner.height())));
+			item.playback = element.image.playback;
 			plan->items.append(item);
 			break;
 		}
@@ -1567,7 +1577,8 @@ void paintItem(QPainter *painter, const PlanItem &item, LogoCache *logos, SvgArt
 	}
 
 	case PlanItem::Kind::Image: {
-		if (!logos || item.imagePath.isEmpty())
+		/* An animated logo is drawn over the page rather than into it, so its space is left empty. */
+		if (item.hole || !logos || item.imagePath.isEmpty())
 			break;
 
 		const QImage image = logos->get(item.imagePath, std::max(1, item.imageMaxHeight));
@@ -1647,6 +1658,56 @@ Plan buildPlan(const CalendarDocument &document, const QDateTime &now)
 }
 
 /*
+ * Finds the animated artwork in a plan, marks it as a hole, and reports it.
+ *
+ * Run once per plan, after the fit scale is known: a logo is decoded at the size it is really drawn
+ * at, and on a board scaled to fit that is not the size the layout asked for. Decoding at the wrong
+ * one costs either a blurred bug or a pile of frames being scaled down every time they are drawn.
+ *
+ * `place` maps a rectangle from the plan's own coordinates onto the canvas -- board space through
+ * the scale and the page offset, or the identity for the free layer, which is already there.
+ */
+void collectAnimations(Plan *plan, AnimatedLogoCache *cache, QVector<CalendarAnimation> *into, int page, bool scrolls,
+		       const std::function<QRectF(const QRectF &)> &place, const QRectF *within)
+{
+	if (!cache)
+		return;
+
+	for (PlanItem &item : plan->items) {
+		if (item.kind != PlanItem::Kind::Image || item.imagePath.isEmpty())
+			continue;
+
+		/* A page draws only what is on it, so nothing is decoded or uploaded for what is not. */
+		if (within && !item.rect.intersects(*within))
+			continue;
+
+		const QRectF placed = place(item.rect);
+		const int height = std::max(1, static_cast<int>(std::ceil(placed.height())));
+
+		const LogoAnimationPtr animation = cache->get(item.imagePath, height);
+		if (!animation)
+			continue;
+
+		item.hole = true;
+
+		CalendarAnimation entry;
+		entry.rect = placed;
+		entry.animation = animation;
+		entry.playback = item.playback;
+		entry.page = page;
+		entry.scrolls = scrolls;
+		entry.key = QStringLiteral("%1|%2|%3|%4|%5|%6")
+				    .arg(item.imagePath)
+				    .arg(page)
+				    .arg(std::lround(placed.x()))
+				    .arg(std::lround(placed.y()))
+				    .arg(std::lround(placed.width()))
+				    .arg(std::lround(placed.height()));
+		into->append(entry);
+	}
+}
+
+/*
  * The document as it will really be drawn on this machine: its own font files registered, and its
  * recorded stand-ins applied to whatever families are still missing.
  *
@@ -1701,7 +1762,7 @@ CalendarBoard CalendarRenderer::render(const CalendarDocument &document, const Q
 	board.width = std::max(1, resolved.width);
 	board.height = std::max(1, resolved.height);
 
-	const Plan plan = buildPlan(resolved, now);
+	Plan plan = buildPlan(resolved, now);
 	board.boardWidth = plan.width;
 	board.boardHeight = plan.height;
 	board.placedEvents = plan.placedEvents;
@@ -1721,6 +1782,13 @@ CalendarBoard CalendarRenderer::render(const CalendarDocument &document, const Q
 	 */
 	Plan overlay;
 	planElements(&overlay, resolved, now, QSizeF(board.width, board.height));
+
+	/*
+	 * The free layer is already in canvas coordinates and belongs to every page, so its animations
+	 * are collected once, unmapped, and marked as belonging to no page in particular.
+	 */
+	collectAnimations(
+		&overlay, animations, &board.animations, -1, false, [](const QRectF &rect) { return rect; }, nullptr);
 
 	double scale = 1.0;
 	QVector<QRectF> windows;
@@ -1790,6 +1858,20 @@ CalendarBoard CalendarRenderer::render(const CalendarDocument &document, const Q
 	for (int p = 0; p < windows.size(); ++p) {
 		const QRectF &window = windows[p];
 
+		/* Board coordinates onto the canvas: through the fit scale, then the page's own offset. */
+		const auto toCanvas = [&](const QRectF &rect) {
+			return QRectF(resolved.marginX + offsetX + (rect.left() - window.left()) * scale,
+				      resolved.marginY + offsetY + (rect.top() - window.top()) * scale,
+				      rect.width() * scale, rect.height() * scale);
+		};
+
+		/*
+		 * Before the page is rasterized, because this is what decides which artwork the page leaves
+		 * a hole for -- and it is after the scale is settled, so each animation is decoded at the
+		 * size it is really drawn at rather than the size the layout asked for.
+		 */
+		collectAnimations(&plan, animations, &board.animations, p, true, toCanvas, &window);
+
 		const int pageHeight = resolved.overflow.mode == OverflowMode::Scroll
 					       ? static_cast<int>(std::ceil(window.height() + resolved.marginY * 2.0))
 					       : board.height;
@@ -1832,12 +1914,12 @@ CalendarBoard CalendarRenderer::render(const CalendarDocument &document, const Q
 
 		/* Hit boxes are reported in canvas space, page by page, which is where a click arrives. */
 		for (const CalendarHit &hit : plan.hits) {
-			const QRectF placed(resolved.marginX + offsetX + (hit.rect.left() - window.left()) * scale,
-					    resolved.marginY + offsetY + (hit.rect.top() - window.top()) * scale,
-					    hit.rect.width() * scale, hit.rect.height() * scale);
+			/* A block on another page is not under the pointer while this one is showing. */
+			if (!hit.rect.intersects(window))
+				continue;
 
 			CalendarHit mapped;
-			mapped.rect = placed;
+			mapped.rect = toCanvas(hit.rect);
 			mapped.event = hit.event;
 			mapped.page = p;
 			board.hits.append(mapped);
