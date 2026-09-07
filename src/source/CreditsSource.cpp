@@ -23,10 +23,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.hpp>
 #include <plugin-support.h>
 
+#include <QByteArray>
 #include <QSet>
 #include <QString>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -43,6 +45,15 @@ namespace closingtime {
 
 namespace {
 
+/*
+ * How often the style library is asked to look at its file, in seconds.
+ *
+ * The look is a `stat` and it happens on the render thread; this is only how often it is asked
+ * for. A second is what makes a preset edited in another OBS window land in the roll while the
+ * person editing it is still looking at it, which is the whole reason the poll exists.
+ */
+constexpr double kLibraryPollSeconds = 1.0;
+
 /* Where the roll is in its lifecycle. */
 enum class Phase {
 	/* Parked at the start position, waiting to be armed. */
@@ -53,6 +64,38 @@ enum class Phase {
 	Rolling,
 	/* Content has cleared the canvas; the ending action may still be pending. */
 	Finished,
+};
+
+/*
+ * One strip tile: where it sits in the roll, the picture it was rasterized as, and the texture
+ * that picture has been uploaded into.
+ *
+ * The picture is kept rather than uploaded and dropped the moment the strip arrives, because a
+ * roll is tiled into as many 2048 px slices as it is long and only ever a screenful of them is on
+ * display. Creating every one of those textures in the frame a rebuild lands in means tens or
+ * hundreds of megabytes of upload inside one `video_render` -- a frame that takes long enough to
+ * be seen, which is exactly the hitch this splitting up exists to avoid. A tile is instead put on
+ * the GPU when it is about to be drawn, and one further tile is uploaded per frame ahead of that,
+ * so the cost is spread over the frames after a rebuild rather than landing in one of them.
+ *
+ * Nothing about what reaches the screen changes: a tile that is drawn is uploaded first, in the
+ * same frame, before the pass that draws it is started. Nor does the memory this costs -- the
+ * pictures were all in RAM at once anyway while the old code uploaded them, and here each one is
+ * let go of as it is uploaded, so the two together never hold more than that same peak.
+ *
+ * Graphics-thread state, like the textures it holds.
+ */
+struct TileRuntime {
+	/* Y offset of this tile's top edge within the strip, in pixels. */
+	int top = 0;
+	int height = 0;
+	gs_texture_t *texture = nullptr;
+	/*
+	 * The rasterized tile, until it has been uploaded. Null afterwards -- and null with no
+	 * texture beside it means the upload was tried and failed, which is what keeps a roll too
+	 * big for the GPU from logging once a frame for as long as it is on screen.
+	 */
+	QImage image;
 };
 
 /*
@@ -132,7 +175,7 @@ struct CreditsSourceData {
 
 	Document document;
 	/* What the last rebuild was rasterized from; see renderKey(). Graphics thread only. */
-	QString renderedFrom;
+	QByteArray renderedFrom;
 	/*
 	 * Owned by the render thread: only the rebuild job reads or writes it, and jobs run
 	 * one at a time, so neither of these needs a lock.
@@ -144,7 +187,12 @@ struct CreditsSourceData {
 
 	std::mutex handoffMutex;
 	Strip pendingStrip;
-	bool hasPendingStrip = false;
+	/*
+	 * Atomic so the graphics thread can find out there is nothing waiting without taking the
+	 * lock: this is asked once per render of the source, and a strip arrives once per rebuild.
+	 * Written under the mutex all the same, beside the strip it describes.
+	 */
+	std::atomic<bool> hasPendingStrip{false};
 	/* Set while a rebuild is in flight so a burst of edits collapses into one re-render. */
 	bool rebuildInFlight = false;
 	bool rebuildAgain = false;
@@ -157,9 +205,33 @@ struct CreditsSourceData {
 	 */
 	bool settingsNeedWriteBack = false;
 
+	/*
+	 * The library as this roll last saw it, and how long it has been since anybody was asked to
+	 * look at the file.
+	 *
+	 * The look itself is a `stat`, and a `stat` is a blocking call on whatever thread makes it.
+	 * Made from `video_tick` it is one on the thread compositing the whole program -- rare
+	 * enough to be invisible on a warm cache and, on a cold one or behind a filter driver, the
+	 * kind of stall that reads as the roll catching. So the poll is handed to the render thread
+	 * and the tick is left comparing two numbers.
+	 *
+	 * A serial per source rather than the poll's own answer, because the poll has exactly one:
+	 * whichever source's turn came up would consume the change and every other roll on the
+	 * machine would go on rendering the style the library no longer holds.
+	 *
+	 * Graphics-thread state.
+	 */
+	quint64 librarySerial = 0;
+	double libraryPollElapsed = 0.0;
+
 	/* Graphics-thread state. */
-	std::vector<gs_texture_t *> tileTextures;
-	std::vector<int> tileTops;
+	std::vector<TileRuntime> tiles;
+	/*
+	 * How many of them still hold a picture that has not been to the GPU. Counted rather than
+	 * looked for, so the frames after the last tile has gone up -- which is every frame of a roll
+	 * that has been running for a few seconds -- have nothing to look through.
+	 */
+	size_t tilesAwaitingUpload = 0;
 	std::vector<AnimatedLogoRuntime> animatedLogos;
 	std::vector<StickyBlockRuntime> stickyBlocks;
 	int stripHeight = 0;
@@ -218,8 +290,12 @@ struct RebuildTask {
  * make it: a field added later counts towards the key by default, which costs an unnecessary
  * rebuild if it turns out to be a playback setting and never a stale one if it is not. Lead-in
  * and lead-out are deliberately not blanked -- they are baked into the strip as blank space.
+ *
+ * Compact JSON, as bytes, rather than the pretty string `toJson` hands out. This is built on every
+ * update -- which is once per frame of a slider drag -- and neither the indentation nor the
+ * conversion of a document-sized string into UTF-16 is any part of telling two documents apart.
  */
-QString renderKey(const Document &document)
+QByteArray renderKey(const Document &document)
 {
 	Document content = document;
 
@@ -241,7 +317,9 @@ QString renderKey(const Document &document)
 	for (BundledFont &font : content.bundledFonts)
 		font.data = QByteArray::number(font.data.size());
 
-	return content.toJson();
+	OBSDataAutoRelease data = obs_data_create();
+	content.save(data);
+	return QByteArray(obs_data_get_json(data));
 }
 
 void runRebuild(const std::shared_ptr<RebuildTask> &task);
@@ -320,7 +398,7 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 	{
 		std::lock_guard<std::mutex> lock(data->handoffMutex);
 		data->pendingStrip = std::move(strip);
-		data->hasPendingStrip = true;
+		data->hasPendingStrip.store(true, std::memory_order_release);
 		data->rebuildInFlight = false;
 		again = data->rebuildAgain;
 		data->rebuildAgain = false;
@@ -333,8 +411,10 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 /* Graphics thread only. */
 void releaseTextures(CreditsSourceData *data)
 {
-	for (gs_texture_t *texture : data->tileTextures)
-		gs_texture_destroy(texture);
+	for (TileRuntime &tile : data->tiles) {
+		if (tile.texture)
+			gs_texture_destroy(tile.texture);
+	}
 
 	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
 		if (runtime.texture)
@@ -348,23 +428,30 @@ void releaseTextures(CreditsSourceData *data)
 			gs_texture_destroy(runtime.texture);
 	}
 
-	data->tileTextures.clear();
-	data->tileTops.clear();
+	data->tiles.clear();
+	data->tilesAwaitingUpload = 0;
 	data->animatedLogos.clear();
 	data->stickyBlocks.clear();
 	data->stripHeight = 0;
 	data->stickyPending = false;
 }
 
-/* Graphics thread only; requires an active graphics context. */
-gs_texture_t *createTexture(const QImage &image)
+/*
+ * Graphics thread only; requires an active graphics context.
+ *
+ * `flags` is GS_DYNAMIC for a texture that will be written again -- an animation's frames go
+ * through one texture rather than one apiece -- and nothing at all for a picture that goes up once
+ * and is only ever drawn, which is what a strip tile and a sticky block are. Asking for a dynamic
+ * texture that is never rewritten buys the driver's upload path for nothing.
+ */
+gs_texture_t *createTexture(const QImage &image, uint32_t flags)
 {
 	if (image.isNull())
 		return nullptr;
 
 	const uint8_t *bits = image.constBits();
 	return gs_texture_create(static_cast<uint32_t>(image.width()), static_cast<uint32_t>(image.height()), GS_BGRA,
-				 1, &bits, GS_DYNAMIC);
+				 1, &bits, flags);
 }
 
 /*
@@ -385,7 +472,7 @@ void uploadFrame(AnimatedLogoRuntime &runtime)
 	const QImage &image = animation.frames.at(runtime.frame).image;
 
 	if (!runtime.texture) {
-		runtime.texture = createTexture(image);
+		runtime.texture = createTexture(image, GS_DYNAMIC);
 		if (!runtime.texture) {
 			obs_log(LOG_ERROR, "failed to allocate a %dx%d animated logo texture", image.width(),
 				image.height());
@@ -402,7 +489,7 @@ void uploadFrame(AnimatedLogoRuntime &runtime)
 	if (!shadows.isEmpty() && runtime.frame < shadows.size()) {
 		const QImage &shadow = shadows.at(runtime.frame);
 		if (!runtime.shadowTexture)
-			runtime.shadowTexture = createTexture(shadow);
+			runtime.shadowTexture = createTexture(shadow, GS_DYNAMIC);
 		else
 			gs_texture_set_image(runtime.shadowTexture, shadow.constBits(),
 					     static_cast<uint32_t>(shadow.bytesPerLine()), false);
@@ -411,9 +498,123 @@ void uploadFrame(AnimatedLogoRuntime &runtime)
 	runtime.uploadedFrame = runtime.frame;
 }
 
-/* Graphics thread only; requires an active graphics context. */
-void uploadPendingStrip(CreditsSourceData *data)
+/*
+ * Puts one tile's picture on the GPU and lets go of the picture.
+ *
+ * Returns false for a tile there is nothing to draw from: one whose texture could not be
+ * allocated, which is remembered by the picture having been dropped along with it, so a roll too
+ * large for the GPU says so once rather than once a frame for as long as it is on screen.
+ *
+ * Graphics thread only; requires an active graphics context, and must not be called from inside a
+ * technique's pass -- see the ordering in videoRender.
+ */
+bool uploadTile(CreditsSourceData *data, size_t index)
 {
+	TileRuntime &tile = data->tiles[index];
+
+	if (tile.texture)
+		return true;
+	if (tile.image.isNull())
+		return false;
+
+	tile.texture = createTexture(tile.image, 0);
+	if (!tile.texture)
+		obs_log(LOG_ERROR, "failed to allocate a %dx%d credit strip texture", tile.image.width(),
+			tile.image.height());
+
+	/*
+	 * Dropped either way. It has served its purpose on a success, and on a failure it is what
+	 * says the failure has already been reported.
+	 */
+	tile.image = QImage();
+	--data->tilesAwaitingUpload;
+	return tile.texture != nullptr;
+}
+
+/*
+ * The run of tiles that falls inside the canvas this frame, as a half-open [first, last).
+ *
+ * Tiles are held in strip order and each is a slice of the same strip, so the visible ones are a
+ * single run and the search for it stops at the first tile past the bottom of the frame. A long
+ * roll is a hundred tiles of which two are ever on display, and walking all hundred of them to set
+ * a texture parameter and work out that there is nothing to draw is a cost that grows with the
+ * length of the roll for no picture.
+ */
+struct TileRange {
+	size_t first = 0;
+	size_t last = 0;
+};
+
+TileRange visibleTiles(const CreditsSourceData *data, double stripTop, int canvasHeight)
+{
+	TileRange range;
+	bool started = false;
+
+	for (size_t i = 0; i < data->tiles.size(); ++i) {
+		const TileRuntime &tile = data->tiles[i];
+		const double top = stripTop + tile.top;
+
+		if (top + tile.height <= 0.0)
+			continue;
+		if (top >= canvasHeight)
+			break;
+
+		if (!started) {
+			range.first = i;
+			started = true;
+		}
+		range.last = i + 1;
+	}
+
+	return range;
+}
+
+/*
+ * Uploads one tile that is not on screen yet.
+ *
+ * A tile is put on the GPU when it is about to be drawn, which on its own is enough to keep the
+ * picture right: at a couple of tiles a screenful and 2048 pixels a tile, a roll meets a new one
+ * every several seconds. This is what keeps the pictures from sitting in RAM in the meantime, and
+ * what puts the upload a frame or more before the tile is needed rather than in the frame that
+ * needs it. One per frame, because a tile is fifteen megabytes and the whole point is not to do
+ * several of them at once.
+ *
+ * Started from the tile after the visible run and wrapping round, so the roll uploads in the
+ * direction it is travelling.
+ *
+ * Graphics thread only; requires an active graphics context.
+ */
+void uploadTileAhead(CreditsSourceData *data, size_t from)
+{
+	if (data->tilesAwaitingUpload == 0)
+		return;
+
+	const size_t count = data->tiles.size();
+
+	for (size_t step = 0; step < count; ++step) {
+		const size_t index = (from + step) % count;
+		if (data->tiles[index].image.isNull())
+			continue;
+
+		uploadTile(data, index);
+		return;
+	}
+}
+
+/*
+ * Takes the finished strip off the render thread.
+ *
+ * Nothing is uploaded here: the tiles are adopted with their pictures still in hand and go to the
+ * GPU as they are reached -- see TileRuntime, which is where the reason for that lives.
+ *
+ * Graphics thread only.
+ */
+void adoptPendingStrip(CreditsSourceData *data)
+{
+	/* Asked once per render, answered without the lock on every frame but the one that matters. */
+	if (!data->hasPendingStrip.load(std::memory_order_acquire))
+		return;
+
 	Strip strip;
 	{
 		std::lock_guard<std::mutex> lock(data->handoffMutex);
@@ -422,7 +623,7 @@ void uploadPendingStrip(CreditsSourceData *data)
 
 		strip = std::move(data->pendingStrip);
 		data->pendingStrip = Strip();
-		data->hasPendingStrip = false;
+		data->hasPendingStrip.store(false, std::memory_order_relaxed);
 	}
 
 	releaseTextures(data);
@@ -433,9 +634,10 @@ void uploadPendingStrip(CreditsSourceData *data)
 		AnimatedLogoRuntime runtime;
 		runtime.placement = std::move(placement);
 		/*
-		 * Textures are left unallocated until the logo is first drawn. A roll may place more
-		 * animated logos than are ever on screen at once, and the ones the viewer scrolls past
-		 * in the last minute of a ten-minute roll have no business holding VRAM from the start.
+		 * Textures are left unallocated until the logo reaches the frame; see
+		 * prepareAnimatedLogos. A roll may place more animated logos than are ever on screen at
+		 * once, and the ones the viewer scrolls past in the last minute of a ten-minute roll
+		 * have no business holding VRAM from the start.
 		 */
 		data->animatedLogos.push_back(std::move(runtime));
 	}
@@ -446,27 +648,24 @@ void uploadPendingStrip(CreditsSourceData *data)
 		runtime.holdRemaining = std::max(0.0, placement.hold);
 		runtime.placement = std::move(placement);
 		/*
-		 * The texture is left unallocated until the block is first drawn, for the reason the
-		 * animated logos' are: a roll may carry a block the viewer does not reach for minutes,
-		 * and a canvas-sized picture is not a small thing to hold VRAM for in the meantime.
+		 * The texture is left unallocated until the block is nearly in frame -- see
+		 * prepareStickyBlocks -- for the reason the animated logos' are: a roll may carry a
+		 * block the viewer does not reach for minutes, and a canvas-sized picture is not a small
+		 * thing to hold VRAM for in the meantime.
 		 */
 		data->stickyBlocks.push_back(std::move(runtime));
 	}
 
-	for (const StripTile &tile : strip.tiles) {
-		const uint8_t *bits = tile.image.constBits();
-		gs_texture_t *texture = gs_texture_create(static_cast<uint32_t>(tile.image.width()),
-							  static_cast<uint32_t>(tile.image.height()), GS_BGRA, 1, &bits,
-							  0);
-		if (!texture) {
-			obs_log(LOG_ERROR, "failed to allocate a %dx%d credit strip texture", tile.image.width(),
-				tile.image.height());
-			continue;
-		}
-
-		data->tileTextures.push_back(texture);
-		data->tileTops.push_back(tile.top);
+	data->tiles.reserve(strip.tiles.size());
+	for (StripTile &tile : strip.tiles) {
+		TileRuntime runtime;
+		runtime.top = tile.top;
+		runtime.height = tile.image.height();
+		runtime.image = std::move(tile.image);
+		data->tiles.push_back(std::move(runtime));
 	}
+
+	data->tilesAwaitingUpload = data->tiles.size();
 }
 
 /* ------------------------------------------------------------------ playback control */
@@ -714,6 +913,12 @@ void finishRoll(CreditsSourceData *data)
  */
 void advanceStickyBlocks(CreditsSourceData *data, double seconds, bool rolling)
 {
+	/* A roll with no blocks in it has nothing here to hold it open, and nothing to advance. */
+	if (data->stickyBlocks.empty()) {
+		data->stickyPending = false;
+		return;
+	}
+
 	const Document &document = data->document;
 	const int canvasHeight = std::max(1, document.height);
 
@@ -858,7 +1063,7 @@ void update(void *raw, obs_data_t *settings)
 	 * drag, and rebuilding for those would keep the render thread busy producing strips
 	 * identical to the one already uploaded.
 	 */
-	const QString key = renderKey(data->document);
+	const QByteArray key = renderKey(data->document);
 	const bool contentChanged = key != data->renderedFrom;
 	if (contentChanged) {
 		data->renderedFrom = key;
@@ -963,6 +1168,13 @@ void *create(obs_data_t *settings, obs_source_t *source)
 		data);
 
 	update(data, settings);
+
+	/*
+	 * Where the library stood when this roll was read out of its settings, which the load inside
+	 * update() has just brought it up to date against. Anything that moves it from here is a
+	 * change this roll has not seen yet -- see the poll in videoTick.
+	 */
+	data->librarySerial = StyleLibrary::instance().serial();
 	return data;
 }
 
@@ -1082,17 +1294,32 @@ void videoTick(void *raw, float seconds)
 	/*
 	 * A style the library changed underneath this roll -- edited in another OBS window, imported,
 	 * or hand-edited -- is pulled in here. Before the manual-scroll branch below, because a roll
-	 * parked for editing is exactly the one somebody is restyling. The poll costs one stat a
-	 * second at most, and a rebuild is only queued when a style bound to this document moved.
+	 * parked for editing is exactly the one somebody is restyling.
+	 *
+	 * Asking the file whether it moved is a `stat`, so it is asked for on the render thread and
+	 * this tick only compares the library's serial against the one this roll last saw. What that
+	 * costs here is an atomic read and an addition; what it saves is a blocking call on the thread
+	 * compositing the program, once a second, for every roll on the machine.
 	 */
-	if (StyleLibrary::instance().pollForChanges() && data->document.refreshLinkedPresets()) {
-		queueRebuild(data);
-		/*
-		 * Saved as well as redrawn. The refreshed copy is this roll's fallback on a machine
-		 * without the library, and a rename it just followed has to survive a restart -- both
-		 * of which mean the settings, not just the strip.
-		 */
-		writeDocumentBack(data);
+	data->libraryPollElapsed += seconds;
+	if (data->libraryPollElapsed >= kLibraryPollSeconds) {
+		data->libraryPollElapsed = 0.0;
+		postRenderJob([] { StyleLibrary::instance().pollForChanges(); });
+	}
+
+	if (const quint64 serial = StyleLibrary::instance().serial(); serial != data->librarySerial) {
+		data->librarySerial = serial;
+
+		/* A rebuild only when a style bound to *this* document actually moved. */
+		if (data->document.refreshLinkedPresets()) {
+			queueRebuild(data);
+			/*
+			 * Saved as well as redrawn. The refreshed copy is this roll's fallback on a
+			 * machine without the library, and a rename it just followed has to survive a
+			 * restart -- both of which mean the settings, not just the strip.
+			 */
+			writeDocumentBack(data);
+		}
 	}
 
 	/*
@@ -1197,6 +1424,31 @@ void drawTile(gs_texture_t *texture, double top, int canvasHeight)
 }
 
 /*
+ * Puts this frame of every animated logo that is on screen on the GPU.
+ *
+ * Nothing is uploaded for a logo that is not: a roll may place more animated logos than are ever
+ * visible at once, and the ones the viewer reaches in the last minute of a ten-minute roll have no
+ * business holding VRAM from the start.
+ *
+ * Graphics thread only; requires an active graphics context, and must not be called from inside a
+ * technique's pass -- see the ordering in videoRender.
+ */
+void prepareAnimatedLogos(CreditsSourceData *data, double stripTop, int canvasHeight)
+{
+	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
+		if (!runtime.placement.animation)
+			continue;
+
+		const QRectF &rect = runtime.placement.rect;
+		const double top = stripTop + rect.top();
+		if (top >= canvasHeight || top + rect.height() <= 0.0)
+			continue;
+
+		uploadFrame(runtime);
+	}
+}
+
+/*
  * Draws the animated logos over the strip.
  *
  * Each one goes where the layout put it, offset by however far the roll has traveled, into the
@@ -1209,18 +1461,13 @@ void drawTile(gs_texture_t *texture, double top, int canvasHeight)
 void drawAnimatedLogos(CreditsSourceData *data, gs_eparam_t *imageParam, double stripTop, int canvasHeight)
 {
 	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
-		if (!runtime.placement.animation)
+		/* Uploaded before the pass this is drawn in; see prepareAnimatedLogos. */
+		if (!runtime.texture)
 			continue;
 
 		const QRectF &rect = runtime.placement.rect;
 		const double top = stripTop + rect.top();
-
-		/* Nothing is uploaded for a logo that is not on screen; see uploadPendingStrip. */
 		if (top >= canvasHeight || top + rect.height() <= 0.0)
-			continue;
-
-		uploadFrame(runtime);
-		if (!runtime.texture)
 			continue;
 
 		if (runtime.shadowTexture) {
@@ -1255,6 +1502,44 @@ double stickyBlockTop(const StickyBlockRuntime &runtime, double stripTop, int ca
 }
 
 /*
+ * Puts a sticky block on the GPU before the frame it is wanted in.
+ *
+ * A block's picture is the canvas over, and allocating it in the frame it first becomes visible
+ * puts several megabytes of upload into exactly the moment a closing card is arriving on screen --
+ * the one place in the roll where a dropped frame is most likely to be noticed. So the upload
+ * happens while the block is still a screenful below the frame, and the frame it arrives in has
+ * nothing to do but draw it.
+ *
+ * A block is still uploaded on the spot if it turns up already on screen, which is what a scrub or
+ * a canvas resize does; the lookahead is an optimization rather than a precondition of drawing.
+ *
+ * Graphics thread only; requires an active graphics context, and must not be called from inside a
+ * technique's pass -- see the ordering in videoRender.
+ */
+void prepareStickyBlocks(CreditsSourceData *data, double stripTop, int canvasHeight)
+{
+	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
+		if (runtime.texture || runtime.placement.image.isNull())
+			continue;
+
+		const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
+		if (top >= canvasHeight * 2.0 || top + runtime.placement.rect.height() <= 0.0)
+			continue;
+
+		runtime.texture = createTexture(runtime.placement.image, 0);
+		if (!runtime.texture)
+			obs_log(LOG_ERROR, "failed to allocate a %dx%d sticky block texture",
+				runtime.placement.image.width(), runtime.placement.image.height());
+
+		/*
+		 * Dropped either way, for the reason a tile's is: it is on the GPU, or it is what says
+		 * the failure has already been reported.
+		 */
+		runtime.placement.image = QImage();
+	}
+}
+
+/*
  * Draws the sticky blocks over the strip.
  *
  * After the tiles and after the animated logos, because a pinned block is the thing the roll is
@@ -1266,13 +1551,12 @@ void drawStickyBlocks(CreditsSourceData *data, gs_eparam_t *imageParam, double s
 	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
 		const StickyBlockPlacement &placement = runtime.placement;
 
-		const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
-		if (top >= canvasHeight || top + placement.rect.height() <= 0.0)
+		/* Uploaded before the pass this is drawn in; see prepareStickyBlocks. */
+		if (!runtime.texture)
 			continue;
 
-		if (!runtime.texture)
-			runtime.texture = createTexture(placement.image);
-		if (!runtime.texture)
+		const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
+		if (top >= canvasHeight || top + placement.rect.height() <= 0.0)
 			continue;
 
 		gs_effect_set_texture(imageParam, runtime.texture);
@@ -1289,14 +1573,14 @@ void videoRender(void *raw, gs_effect_t *)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
 
-	uploadPendingStrip(data);
+	adoptPendingStrip(data);
 
 	const int canvasWidth = std::max(1, data->document.width);
 	const int canvasHeight = std::max(1, data->document.height);
 
 	drawBackground(data->document.background, canvasWidth, canvasHeight);
 
-	if (data->tileTextures.empty())
+	if (data->tiles.empty())
 		return;
 
 	double offset = 0.0;
@@ -1311,6 +1595,29 @@ void videoRender(void *raw, gs_effect_t *)
 	 */
 	const double stripTop = canvasHeight - offset;
 
+	/*
+	 * Everything this frame draws goes on the GPU before the pass that draws it is started,
+	 * rather than being allocated part-way through one: a technique's pass is a poor place to
+	 * create a resource, and gs_effect_loop may run its body more than once.
+	 */
+	const TileRange visible = visibleTiles(data, stripTop, canvasHeight);
+	bool uploaded = false;
+	for (size_t i = visible.first; i < visible.last; ++i) {
+		uploaded = uploaded || !data->tiles[i].image.isNull();
+		uploadTile(data, i);
+	}
+
+	/*
+	 * One tile a frame between the two of them. A tile that had to go up this frame because it is
+	 * being drawn has already had the frame's share of the upload, and putting a second one up
+	 * behind it would be doing exactly what spreading them out is for avoiding.
+	 */
+	if (!uploaded)
+		uploadTileAhead(data, visible.last);
+
+	prepareAnimatedLogos(data, stripTop, canvasHeight);
+	prepareStickyBlocks(data, stripTop, canvasHeight);
+
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
 
@@ -1318,8 +1625,10 @@ void videoRender(void *raw, gs_effect_t *)
 	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
 
 	while (gs_effect_loop(effect, "Draw")) {
-		for (size_t i = 0; i < data->tileTextures.size(); ++i) {
-			gs_texture_t *texture = data->tileTextures[i];
+		for (size_t i = visible.first; i < visible.last; ++i) {
+			gs_texture_t *texture = data->tiles[i].texture;
+			if (!texture)
+				continue;
 
 			/*
 			 * Rather than clipping with a scissor rect, which lives in screen space and
@@ -1327,7 +1636,7 @@ void videoRender(void *raw, gs_effect_t *)
 			 * itself that actually falls inside the canvas.
 			 */
 			gs_effect_set_texture(imageParam, texture);
-			drawTile(texture, stripTop + data->tileTops[i], canvasHeight);
+			drawTile(texture, stripTop + data->tiles[i].top, canvasHeight);
 		}
 
 		drawAnimatedLogos(data, imageParam, stripTop, canvasHeight);

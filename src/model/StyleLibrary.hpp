@@ -21,6 +21,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QString>
 #include <QVector>
 
+#include <atomic>
+
 #include "model/CreditsModel.hpp"
 
 namespace closingtime {
@@ -71,9 +73,13 @@ public:
 	 * did.
 	 *
 	 * A second OBS window, a hand edit or a library imported from elsewhere all change the file
-	 * underneath a running source. A stat per call is cheap for a watcher but not for a
-	 * per-frame tick, so calls are rate-limited inside: asking every frame costs one stat a
-	 * second and nothing else.
+	 * underneath a running source. The stat this costs is a blocking call, so a source asks for
+	 * it from the render thread rather than from the tick that composites the program, and reads
+	 * `serial()` to find out what came of it. Calls are rate-limited inside all the same, so
+	 * several sources asking at once costs one stat between them.
+	 *
+	 * The answer is therefore *this call's*: whoever else was watching the library finds out by
+	 * comparing serials, not by calling this and being told no.
 	 */
 	bool pollForChanges();
 
@@ -185,7 +191,12 @@ private:
 	/* The same, for the backgrounds. Separate because the two names are separate. */
 	QVector<QPair<QString, QString>> backgroundRenameTrail;
 	bool editLinkedInPlace = false;
-	quint64 librarySerial = 0;
+	/*
+	 * The one member a reader may look at without the mutex, which is what lets a source ask
+	 * "has anything moved?" from its per-frame tick for the price of one load. Everything it
+	 * would then go and read is behind the mutex as it always was.
+	 */
+	std::atomic<quint64> librarySerial{0};
 	/* Modification time and size of the file as last read, for pollForChanges(). */
 	qint64 fileModifiedMs = -1;
 	qint64 fileSize = -1;

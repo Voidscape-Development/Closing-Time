@@ -403,8 +403,13 @@ bool StyleLibrary::pollForChanges()
 
 quint64 StyleLibrary::serial() const
 {
-	std::lock_guard<std::mutex> lock(libraryMutex());
-	return librarySerial;
+	/*
+	 * No lock: a source asks this once a tick to find out whether there is anything to do, and
+	 * the answer is one number. Bumped last under the mutex by whoever changed the library, so a
+	 * reader that sees the new serial is a reader for whom the change has already happened -- and
+	 * every one of them goes on to read the contents through the accessors, which do take it.
+	 */
+	return librarySerial.load(std::memory_order_acquire);
 }
 
 QVector<StylePreset> StyleLibrary::presets() const
@@ -767,7 +772,11 @@ bool StyleLibrary::parseJson(const QString &json, QVector<StylePreset> *presets,
 
 void StyleLibrary::bumpLocked()
 {
-	++librarySerial;
+	/*
+	 * Released rather than merely incremented: this is the one thing about the library a reader
+	 * is allowed to look at without the mutex, so it has to be the last thing to become visible.
+	 */
+	librarySerial.fetch_add(1, std::memory_order_release);
 }
 
 } // namespace closingtime

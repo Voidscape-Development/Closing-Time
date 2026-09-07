@@ -809,8 +809,19 @@ it that way rather than resolving through the library at paint time:
 
 Two paths keep it up to date. The designer watches the file (`QFileSystemWatcher`) and reloads
 when it changes, so a preset edited in another OBS window restyles the preview as it is typed.
-The source polls (`StyleLibrary::pollForChanges`, rate-limited to one `stat` a second) from
-`video_tick`, and queues a rebuild only when a style bound to *that* document actually moved.
+The source polls, and queues a rebuild only when a style bound to *that* document actually moved.
+
+The poll is split in two, because looking at the file is a `stat` and a `stat` is a blocking call
+on whatever thread makes it. `video_tick` runs on the thread compositing the whole program, so what
+happens there is an addition and an atomic read: once a second it asks the render thread to call
+`StyleLibrary::pollForChanges` — rate-limited inside, so several sources asking at once costs one
+stat between them — and every tick it compares `StyleLibrary::serial()` against the number this
+roll last saw. Rare enough to be invisible on a warm cache, a `stat` on that thread is exactly the
+kind of stall that reads as the roll catching on a cold one or behind a filter driver.
+
+The serial is per source rather than the poll's own answer for a reason beyond where the stat runs:
+the poll has one answer to give, so whichever source's turn came up would consume the change and
+every other roll on the machine would go on rendering the style the library no longer holds.
 
 Editing a bound style in the designer is where the two levels meet. For a local preset it is
 what it always was — an edit to the preset. For a linked one it would be an edit to every roll
@@ -896,6 +907,31 @@ capped at 200 000 px as a backstop against a runaway import.
 **Alpha.** QPainter needs a premultiplied buffer; OBS composites with straight alpha. Each
 tile is unpremultiplied once at the end of rasterization (`Format_ARGB32`, which is `GS_BGRA`
 in memory on little-endian) rather than corrected per frame on the GPU.
+
+**Upload is spread out; drawing is not.** A finished strip is *adopted* rather than uploaded: the
+graphics thread takes the tiles with their pictures still in hand and puts each one on the GPU as
+it is reached, letting go of the picture as it does. Creating every texture in the frame a rebuild
+lands in is tens or hundreds of megabytes inside one `video_render`, which is a frame long enough
+to be seen — and a hitch there is a hitch in whatever else OBS was compositing, not only in the
+roll. A tile that is about to be drawn is uploaded first, in the same frame, so nothing about what
+reaches the screen depends on the spreading; one further tile goes up per frame ahead of the roll,
+which is what keeps the pictures from sitting in RAM behind it. The peak is no worse than it was:
+every picture was in RAM at once anyway while the old code uploaded them one after another.
+
+An animated logo and a sticky block are on the same footing, and always were — their textures are
+allocated when they reach the frame rather than when the strip arrives. A block gets a screenful of
+warning, because its picture is the canvas over and the frame it becomes visible in is a closing
+card arriving on screen: the worst moment in the roll to spend several megabytes of upload.
+
+All of it happens *before* the technique's pass that draws the frame is started, rather than part
+way through one: `gs_effect_loop` may run its body more than once, and a pass is a poor place to be
+creating resources.
+
+**Only what is on screen is drawn.** The visible tiles are a single run — they are slices of one
+strip, held in strip order — so the draw walks that run rather than the whole roll. A ten-minute
+roll is a hundred tiles of which two are ever on display, and asking the other ninety-eight to set
+a texture parameter and work out that they have nothing to draw is a per-frame cost that grows with
+the length of the roll for no picture at all.
 
 ### Animated logos
 
@@ -1136,6 +1172,12 @@ is still on screen.
 covers every accessor, but the render path never touches it: a library change is folded into the
 document by `refreshLinkedPresets()` on the thread that owns the document, and rasterization goes
 on reading the document's own presets.
+
+The one member read without that mutex is `serial()`, which is an atomic and is what a source's
+tick asks once a frame to find out whether there is anything to do at all. It is bumped last under
+the mutex by whoever changed the library, so a reader that sees the new number is a reader for whom
+the change has already happened — and every one of them goes on to read the contents through the
+accessors, which take the mutex as they always did.
 
 `obs_module_unload` calls `stopRenderThread()`, which discards queued jobs, waits for the
 one running, and joins — nothing is left executing code in a module about to be unmapped.
