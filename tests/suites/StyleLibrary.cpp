@@ -402,6 +402,35 @@ CT_SUITE(style_library_rename_limits, "What a rename deliberately does not touch
 	checkEq(orphan.effectiveStyle(orphan.sections.first()).pixelSize, 48, "and the roll renders from its copy");
 }
 
+CT_SUITE(style_library_watchers, "Every watcher learns about a change, not just the first to ask")
+{
+	ScopedLibrary scoped;
+	if (!scoped.isValid())
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	library.set(QStringLiteral("House"), styleAt(64, Qt::white));
+
+	/*
+	 * Two rolls on the machine, each holding the serial as it stood when it last caught up. This
+	 * is how a source finds out the library moved: the poll that looks at the file has one answer
+	 * to give and gives it to whoever asked, so a roll that reads *that* would be a roll whose
+	 * turn never came. Reading the serial takes nothing away from the next reader.
+	 */
+	const quint64 first = library.serial();
+	const quint64 second = library.serial();
+	checkEq(first, second, "the serial is a reading, not a queue: taking it twice gives the same number");
+
+	library.set(QStringLiteral("House"), styleAt(48, Qt::white));
+
+	check(library.serial() != first, "an edit moves it for the first watcher");
+	check(library.serial() != second, "and for the second, which is the whole point");
+
+	const quint64 settled = library.serial();
+	check(library.contains(QStringLiteral("House")), "and the contents are there to be read once it has moved");
+	checkEq(library.serial(), settled, "reading them does not move it again");
+}
+
 CT_SUITE(style_library_rename_file, "The rename trail is part of the library file")
 {
 	ScopedLibrary scoped;
