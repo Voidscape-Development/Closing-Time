@@ -188,6 +188,129 @@ CT_SUITE(sticky_backdrop, "The panel drawn behind a pinned block")
 		      "and without a panel only the content is drawn");
 }
 
+CT_SUITE(sticky_release_modes, "What each release says about the end of the roll")
+{
+	/*
+	 * The two questions a release answers -- does the block leave, and what does its hold ending
+	 * mean for the roll -- are asked of it through these three predicates, and everything in
+	 * playback is written against them rather than against the enum. So this is where a fourth mode
+	 * added without an answer to one of the three would show up.
+	 */
+	check(!stickyReleaseResumes(StickyRelease::EndAtHold), "a held block stays where it was pinned");
+	check(stickyReleaseResumes(StickyRelease::ResumeThenEnd), "and the other three leave");
+	check(stickyReleaseResumes(StickyRelease::ResumeEndAtHold), "");
+	check(stickyReleaseResumes(StickyRelease::ResumeOnly), "");
+
+	check(stickyReleaseEndsAtHold(StickyRelease::EndAtHold), "the hold ending is the end of the roll");
+	check(stickyReleaseEndsAtHold(StickyRelease::ResumeEndAtHold), "for the two modes that say so");
+	check(!stickyReleaseEndsAtHold(StickyRelease::ResumeThenEnd), "and not for the two that do not");
+	check(!stickyReleaseEndsAtHold(StickyRelease::ResumeOnly), "");
+
+	check(stickyReleaseEndsAtExit(StickyRelease::ResumeThenEnd), "one mode ends the roll by leaving");
+	check(!stickyReleaseEndsAtExit(StickyRelease::EndAtHold), "and no other does");
+	check(!stickyReleaseEndsAtExit(StickyRelease::ResumeEndAtHold), "");
+	check(!stickyReleaseEndsAtExit(StickyRelease::ResumeOnly), "");
+
+	/*
+	 * The block that ends nothing is the one back-to-back cards are built out of: it has to leave,
+	 * and it has to have no say at either moment, or the roll ends under the card that follows it.
+	 */
+	check(stickyReleaseResumes(StickyRelease::ResumeOnly) && !stickyReleaseEndsAtHold(StickyRelease::ResumeOnly) &&
+		      !stickyReleaseEndsAtExit(StickyRelease::ResumeOnly),
+	      "a block that does nothing leaves and ends nothing");
+
+	/* Persisted by id, so a mode added to the enum cannot renumber the ones already in a scene. */
+	for (StickyRelease release : {StickyRelease::EndAtHold, StickyRelease::ResumeThenEnd,
+				      StickyRelease::ResumeEndAtHold, StickyRelease::ResumeOnly}) {
+		check(stickyReleaseFromId(stickyReleaseId(release), StickyRelease::EndAtHold) == release,
+		      QStringLiteral("release '%1' survives its own id").arg(stickyReleaseId(release)));
+	}
+
+	for (StickyEntrance entrance : {StickyEntrance::WithRoll, StickyEntrance::AfterRoll}) {
+		check(stickyEntranceFromId(stickyEntranceId(entrance), StickyEntrance::AfterRoll) == entrance,
+		      QStringLiteral("entrance '%1' survives its own id").arg(stickyEntranceId(entrance)));
+	}
+
+	check(!stickyEntranceWaitsForRoll(StickyEntrance::WithRoll), "one entrance travels with the roll");
+	check(stickyEntranceWaitsForRoll(StickyEntrance::AfterRoll), "and one waits for it to go");
+}
+
+CT_SUITE(sticky_entrance_carried, "The entrance reaching the compositor")
+{
+	/*
+	 * The block is laid out identically whichever entrance it has -- turning the entrance around is
+	 * a playback decision, not a layout one -- and the settings that decide it travel out with the
+	 * picture, since the compositor reads no model.
+	 */
+	Section waiting = stickyBlock();
+	waiting.stickyEntrance = StickyEntrance::AfterRoll;
+	waiting.stickyFadeIn = 1.5;
+	waiting.stickyRelease = StickyRelease::ResumeOnly;
+
+	checkEq(measure(documentWith(waiting)), measure(documentWith(stickyBlock())),
+		"an entrance that waits takes the same slot in the roll");
+
+	const Strip strip = renderStrip(documentWith(waiting));
+	if (strip.stickyBlocks.isEmpty()) {
+		fail("the strip carries no block");
+		return;
+	}
+
+	const StickyBlockPlacement &placement = strip.stickyBlocks.first();
+	check(placement.entrance == StickyEntrance::AfterRoll, "the entrance is carried out with the picture");
+	checkNear(placement.fadeIn, 1.5, 0.001, "and so is the fade it is timed over");
+	check(placement.release == StickyRelease::ResumeOnly, "and the release beside them");
+}
+
+CT_SUITE(sticky_leaving_screen, "When a block has really left the frame")
+{
+	/*
+	 * The slot is where the block belongs; the picture is what is on screen, and it is `margin`
+	 * taller at each end -- the backdrop's outset, and whatever the children paint outside their
+	 * own boxes. A release that waits for the block to leave has to wait for the picture, because
+	 * the picture is what a viewer can see: judged by the slot alone, a block still showing the
+	 * bottom band of its own card counts as gone and the roll ends over the top of it.
+	 */
+	Section paneled = stickyBlock();
+	BackgroundPanel &panel = paneled.backgroundEntry(BackgroundSlot::Section).panel;
+	panel.fill = BackgroundFill::Color;
+	panel.color = QColor(0, 0, 0, 255);
+	panel.outsetTop = 60.0;
+	panel.outsetBottom = 60.0;
+
+	const Strip strip = renderStrip(documentWith(paneled));
+	if (strip.stickyBlocks.isEmpty()) {
+		fail("the strip carries no block");
+		return;
+	}
+
+	const StickyBlockPlacement &placement = strip.stickyBlocks.first();
+	check(placement.margin >= 60, "the picture is grown to hold the outset");
+	if (placement.margin <= 0)
+		return;
+
+	/* The slot's own bottom edge exactly on the top of the frame: gone by the slot, not by the eye. */
+	const double slotJustGone = -placement.rect.height();
+	check(!placement.clearedFrame(slotJustGone), "a block whose slot has just gone has not left the screen");
+	checkNear(placement.pictureBottom(slotJustGone), placement.margin, 0.001,
+		  "it is still showing the band its backdrop reaches into");
+
+	/* And it has, once the whole picture is past. */
+	const double pictureGone = slotJustGone - placement.margin;
+	check(placement.clearedFrame(pictureGone), "once the picture is past, it has");
+
+	/* The same band at the other end decides when it is worth drawing at all. */
+	const int canvasHeight = 1080;
+	check(!placement.offFrame(canvasHeight - 1.0, canvasHeight), "a block reaching in from below is on the frame");
+	check(placement.offFrame(canvasHeight + placement.margin + 1.0, canvasHeight),
+	      "and one whose picture is entirely below it is not");
+
+	checkNear(placement.pictureTop(500.0), 500.0 - placement.margin, 0.001,
+		  "the picture is drawn from its own top edge, not the slot's");
+	checkNear(placement.pictureBottom(500.0) - placement.pictureTop(500.0),
+		  placement.rect.height() + placement.margin * 2, 0.001, "and is as tall as the picture really is");
+}
+
 CT_SUITE(sticky_children, "What a block may hold")
 {
 	/*

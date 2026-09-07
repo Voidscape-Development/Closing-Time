@@ -1868,6 +1868,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 			StickyBlockPlacement placement;
 			placement.rect = QRectF(0, y, document.width, height);
+			placement.entrance = section.stickyEntrance;
+			placement.fadeIn = section.stickyFadeIn;
 			placement.anchor = section.stickyAnchor;
 			placement.canvasPosition = section.stickyCanvasPosition;
 			placement.offset = section.stickyOffset;
