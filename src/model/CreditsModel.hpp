@@ -163,20 +163,44 @@ StickyAnchor stickyAnchorFromId(const char *id, StickyAnchor fallback = StickyAn
 double stickyAnchorFraction(StickyAnchor anchor);
 
 /*
+ * When a sticky block arrives on the frame.
+ *
+ *   WithRoll  - it travels up with the roll and stops when its slot reaches the anchor, which is
+ *               what a pinned block has always done.
+ *   AfterRoll - it is not on screen at all until the rest of the roll has gone off the top, and
+ *               then fades up in place. The card that follows the credits rather than ending them:
+ *               a beat of empty frame, and then "X will return".
+ *
+ * The layout is the same either way. The block still takes its slot in the roll -- see
+ * `Section::children` -- so turning the entrance around moves nothing above or below it; all that
+ * changes is whether the block is drawn while its slot is going past.
+ */
+enum class StickyEntrance { WithRoll, AfterRoll };
+
+const char *stickyEntranceId(StickyEntrance entrance);
+StickyEntrance stickyEntranceFromId(const char *id, StickyEntrance fallback = StickyEntrance::WithRoll);
+
+/* True when the block waits for the roll to clear the frame before it shows itself at all. */
+bool stickyEntranceWaitsForRoll(StickyEntrance entrance);
+
+/*
  * What a sticky block does when its hold runs out.
  *
  *   EndAtHold      - the hold expiring *is* the end of the roll: the ending action fires and the
  *                    block stays where it is. The closing card that stays on screen.
- *   ResumeThenEnd  - the block carries on up and off the top, and the roll ends the way it always
- *                    has, once everything has left the frame.
+ *   ResumeThenEnd  - the block carries on up and off the top, and the roll ends once it has taken
+ *                    the last of itself with it.
  *   ResumeEndAtHold- the block carries on up and off, but the ending action fires at the moment
  *                    the hold ends rather than waiting for it to clear the frame.
+ *   ResumeOnly     - the block carries on up and off and ends nothing. The roll finishes when
+ *                    whatever else is in it says so, which is what lets one block follow another:
+ *                    a thank-you card that leaves, and a second block that fades up behind it.
  *
- * Three rather than one because they answer two independent questions -- does the block leave, and
- * what counts as the end of the roll -- and every combination of the two is something somebody
- * builds a roll around.
+ * Four rather than one because they answer two independent questions -- does the block leave, and
+ * what does its hold ending mean for the roll -- and every combination of the two is something
+ * somebody builds a roll around.
  */
-enum class StickyRelease { EndAtHold, ResumeThenEnd, ResumeEndAtHold };
+enum class StickyRelease { EndAtHold, ResumeThenEnd, ResumeEndAtHold, ResumeOnly };
 
 const char *stickyReleaseId(StickyRelease release);
 StickyRelease stickyReleaseFromId(const char *id, StickyRelease fallback = StickyRelease::EndAtHold);
@@ -186,6 +210,14 @@ bool stickyReleaseResumes(StickyRelease release);
 
 /* True when the hold running out is what finishes the roll, rather than the strip clearing. */
 bool stickyReleaseEndsAtHold(StickyRelease release);
+
+/*
+ * True when the block clearing the frame is what finishes the roll.
+ *
+ * The counterpart to `stickyReleaseEndsAtHold` for the mode that waits: between the two of them a
+ * release either ends the roll at a moment of its own or leaves the ending to the rest of it.
+ */
+bool stickyReleaseEndsAtExit(StickyRelease release);
 
 enum class HAlign { Left, Center, Right };
 
@@ -1018,6 +1050,22 @@ struct Section {
 	 * make no such promise.
 	 */
 	std::vector<Section> children;
+
+	/*
+	 * When the block shows itself: on its way past with the roll, or only once the roll has gone.
+	 *
+	 * Defaulted to the entrance blocks have always had, so a document written before there was a
+	 * choice loads as the roll its author saw.
+	 */
+	StickyEntrance stickyEntrance = StickyEntrance::WithRoll;
+	/*
+	 * How long the block takes to fade up, in seconds, for an entrance that waits: a block that
+	 * arrives with the roll is already visible by the time it pins, and has nothing to fade.
+	 *
+	 * Zero is a cut rather than a fade, which is a use rather than a degenerate case -- a card that
+	 * snaps on after a beat of empty frame reads very differently from one that swells up.
+	 */
+	double stickyFadeIn = 0.75;
 
 	/* Which point of the block is pinned, and where down the canvas that point lands. */
 	StickyAnchor stickyAnchor = StickyAnchor::Center;

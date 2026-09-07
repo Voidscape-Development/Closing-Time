@@ -1072,6 +1072,22 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * canvas -- because "the middle of the block, halfway down the frame" needs both halves and a
 	 * single number can only ever say one of them.
 	 */
+	stickyEntrance = new QComboBox(this);
+	stickyEntrance->addItem(moduleText("Designer.StickyEntrance.WithRoll"),
+				static_cast<int>(StickyEntrance::WithRoll));
+	stickyEntrance->addItem(moduleText("Designer.StickyEntrance.AfterRoll"),
+				static_cast<int>(StickyEntrance::AfterRoll));
+	stickyEntrance->setToolTip(moduleText("Designer.StickyEntrance.Tip"));
+	addRow(moduleText("Designer.StickyEntrance"), stickyEntrance);
+
+	stickyFadeIn = new QDoubleSpinBox(this);
+	stickyFadeIn->setRange(0.0, 60.0);
+	stickyFadeIn->setDecimals(2);
+	stickyFadeIn->setSingleStep(0.25);
+	stickyFadeIn->setSuffix(moduleText("Designer.Seconds"));
+	stickyFadeIn->setToolTip(moduleText("Designer.StickyFadeIn.Tip"));
+	addRow(moduleText("Designer.StickyFadeIn"), stickyFadeIn);
+
 	stickyAnchor = new QComboBox(this);
 	stickyAnchor->addItem(moduleText("Designer.StickyAnchor.Top"), static_cast<int>(StickyAnchor::Top));
 	stickyAnchor->addItem(moduleText("Designer.StickyAnchor.Center"), static_cast<int>(StickyAnchor::Center));
@@ -1110,6 +1126,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 			       static_cast<int>(StickyRelease::ResumeThenEnd));
 	stickyRelease->addItem(moduleText("Designer.StickyRelease.ResumeEndAtHold"),
 			       static_cast<int>(StickyRelease::ResumeEndAtHold));
+	stickyRelease->addItem(moduleText("Designer.StickyRelease.ResumeOnly"),
+			       static_cast<int>(StickyRelease::ResumeOnly));
 	stickyRelease->setToolTip(moduleText("Designer.StickyRelease.Tip"));
 	addRow(moduleText("Designer.StickyRelease"), stickyRelease);
 
@@ -1448,14 +1466,23 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(stickyCanvasPosition, &QSpinBox::valueChanged, this, notify);
 	connect(stickyOffset, &QSpinBox::valueChanged, this, notify);
 	connect(stickyHold, &QDoubleSpinBox::valueChanged, this, notify);
-	connect(stickyRelease, &QComboBox::currentIndexChanged, this, notify);
-	/* This decides what else on the form applies, so it re-runs the visibility pass. */
-	connect(stickyHoldForever, &QCheckBox::toggled, this, [this] {
+	connect(stickyFadeIn, &QDoubleSpinBox::valueChanged, this, notify);
+
+	/*
+	 * These three decide what else on the form applies -- an entrance that waits has a fade to
+	 * time, and a release that ends the roll is what makes holding for ever worth warning about --
+	 * so each re-runs the visibility pass rather than only reporting a change.
+	 */
+	const auto revisitSticky = [this] {
 		if (loading)
 			return;
 		applyTypeVisibility(composedType());
 		emitChanged();
-	});
+	};
+
+	connect(stickyEntrance, &QComboBox::currentIndexChanged, this, revisitSticky);
+	connect(stickyRelease, &QComboBox::currentIndexChanged, this, revisitSticky);
+	connect(stickyHoldForever, &QCheckBox::toggled, this, revisitSticky);
 	connect(bridgeSplit, &QSpinBox::valueChanged, this, notify);
 	connect(bridgeRowAlign, &QComboBox::currentIndexChanged, this, notify);
 	connect(bridgeSpanEmpty, &QCheckBox::toggled, this, notify);
@@ -1648,6 +1675,8 @@ void SectionEditor::setSection(const Section &source)
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
 	spacerHeight->setValue(source.spacerHeight);
+	selectByData(stickyEntrance, static_cast<int>(source.stickyEntrance));
+	stickyFadeIn->setValue(source.stickyFadeIn);
 	selectByData(stickyAnchor, static_cast<int>(source.stickyAnchor));
 	stickyCanvasPosition->setValue(qRound(source.stickyCanvasPosition * 100.0));
 	stickyOffset->setValue(qRound(source.stickyOffset));
@@ -1757,6 +1786,8 @@ Section SectionEditor::section() const
 	result.subtitleGap = subtitleGap->value();
 	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
+	result.stickyEntrance = static_cast<StickyEntrance>(stickyEntrance->currentData().toInt());
+	result.stickyFadeIn = stickyFadeIn->value();
 	result.stickyAnchor = static_cast<StickyAnchor>(stickyAnchor->currentData().toInt());
 	result.stickyCanvasPosition = stickyCanvasPosition->value() / 100.0;
 	result.stickyOffset = stickyOffset->value();
@@ -2218,7 +2249,11 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	const bool sticky = type == SectionType::StickyBlock;
 	const auto release = static_cast<StickyRelease>(stickyRelease->currentData().toInt());
+	const auto entrance = static_cast<StickyEntrance>(stickyEntrance->currentData().toInt());
 
+	setRowVisible(stickyEntrance, sticky);
+	/* A block that arrives with the roll is already on screen by the time it pins: nothing to fade. */
+	setRowVisible(stickyFadeIn, sticky && stickyEntranceWaitsForRoll(entrance));
 	setRowVisible(stickyAnchor, sticky);
 	setRowVisible(stickyCanvasPosition, sticky);
 	setRowVisible(stickyOffset, sticky);

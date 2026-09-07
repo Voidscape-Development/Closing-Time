@@ -99,6 +99,8 @@ Section distinctive(SectionType type)
 	section.sectionWidth = 0.75;
 	section.sectionAlign = HAlign::Right;
 	section.spacerHeight = 313;
+	section.stickyEntrance = StickyEntrance::AfterRoll;
+	section.stickyFadeIn = 1.25;
 	section.stickyAnchor = StickyAnchor::Bottom;
 	section.stickyCanvasPosition = 0.2;
 	section.stickyOffset = -18.0;
@@ -215,6 +217,8 @@ void compare(const Section &loaded, const Section &original)
 	checkNear(loaded.sectionWidth, original.sectionWidth, 0.001, "sectionWidth");
 	check(loaded.sectionAlign == original.sectionAlign, "sectionAlign");
 	checkEq(loaded.spacerHeight, original.spacerHeight, "spacerHeight");
+	check(loaded.stickyEntrance == original.stickyEntrance, "stickyEntrance");
+	checkNear(loaded.stickyFadeIn, original.stickyFadeIn, 0.001, "stickyFadeIn");
 	check(loaded.stickyAnchor == original.stickyAnchor, "stickyAnchor");
 	checkNear(loaded.stickyCanvasPosition, original.stickyCanvasPosition, 0.001, "stickyCanvasPosition");
 	checkNear(loaded.stickyOffset, original.stickyOffset, 0.001, "stickyOffset");
@@ -336,6 +340,9 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	checkNear(legacy.stickyCanvasPosition, 0.5, 0.001, "halfway down the frame");
 	checkNear(legacy.stickyHold, 5.0, 0.001, "and holds for a measured time rather than none");
 	check(legacy.stickyRelease == StickyRelease::EndAtHold, "with the hold being the end of the roll");
+	check(legacy.stickyEntrance == StickyEntrance::WithRoll,
+	      "a block from before there was a choice arrives with the roll, as its author saw it");
+	checkNear(legacy.stickyFadeIn, 0.75, 0.001, "and carries a fade for the entrance it does not use yet");
 	checkEq(legacy.dividerRules, 1, "a divider has at least one rule");
 	checkNear(legacy.sectionWidth, 1.0, 0.001, "sectionWidth falls back to the full canvas");
 

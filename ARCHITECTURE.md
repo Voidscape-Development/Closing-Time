@@ -1017,18 +1017,46 @@ middle, its bottom — and `stickyCanvasPosition` where down the canvas that par
 halves, and a single number could only ever express one of them. The share is of the canvas height
 rather than a pixel offset, so a roll pins where it was meant to after a canvas resize.
 
+**When it arrives is a setting too.** `stickyEntrance` is `WithRoll` — travel up with the credits
+and stop at the pin, which is what a block has always done — or `AfterRoll`: not on screen at all
+until the rest of the roll has gone off the top, and then fade up in place over `stickyFadeIn`
+seconds. A beat of empty frame and then a card, which is the "X will return" ending. The layout is
+identical either way; all that changes is whether the block is drawn while its slot is going past,
+so turning the entrance around moves nothing above or below it.
+
+"The rest of the roll" means the strip's last *drawn* pixel — `stripHeight` less `leadOut`, because
+lead-out is blank and nobody watching counts it as the roll — and it means the other blocks too: a
+block that waits also waits for any block still on the frame, since back-to-back cards are what the
+entrance is for and one fading up through another on its way out is not that.
+
 **What happens at the end of the hold is a setting**, because it answers two independent questions:
-does the block leave, and what counts as the end of the roll. `EndAtHold` stays put and ends the
-roll; `ResumeThenEnd` climbs off the top and lets the roll end as it always did; `ResumeEndAtHold`
-does both. `stickyHoldForever` holds until something else stops the roll, and the designer says as
-much beside the release rather than leaving a roll with no end to be discovered on air.
+does the block leave, and what does its hold ending mean for the roll. `EndAtHold` stays put and
+ends the roll; `ResumeThenEnd` climbs off the top and ends the roll once it has taken the last of
+itself with it; `ResumeEndAtHold` leaves but ends the roll at the hold; `ResumeOnly` leaves and ends
+nothing, which is what lets one card follow another — a thank-you that moves off, and a second block
+that fades up behind it. `stickyHoldForever` holds until something else stops the roll, and the
+designer says as much beside the release rather than leaving a roll with no end to be discovered on
+air.
 
 `advance` keeps its own job. A block that still has something to do sets `stickyPending`, which is
 the whole of what the scroll loop knows about blocks: the strip clearing does not finish a roll
-while it is set, and the block finishes the roll itself through `finishRoll` when its hold is over.
-Where a block is *drawn* is decided separately, by `stickyBlockTop`, as the lower of its natural
-position and its pinned one — one expression rather than two branches, which is what makes a roll
-parked in manual scroll show every block where it belongs with none of the timing running.
+while it is set, and the block finishes the roll itself through `finishRoll` at the moment its own
+release names. Where a block is *drawn* is decided separately, by `stickyBlockTop`, as the lower of
+its natural position and its pinned one — one expression rather than two branches, which is what
+makes a roll parked in manual scroll show every block where it belongs with none of the timing
+running. A block that waited for the roll has no natural position to travel from and simply sits at
+the pin.
+
+**"Off screen" is the picture, not the slot.** The slot is where the block belongs; the picture is
+what is actually on the frame, and it is `margin` taller at each end. A release that waits for the
+block to leave has to wait for the whole picture, or the roll ends over the top of a card still
+showing the last band of its own backdrop — `StickyBlockPlacement::clearedFrame` and `offFrame` are
+where that is decided, so nothing can ask the question of the slot by accident.
+
+**A block on its way out keeps going out**, even once the roll has been called finished. The clock
+`advanceStickyBlocks` runs on (`StickyClock`) tells rolling from coasting from paused from scrubbed:
+coasting starts nothing new but carries a released block the rest of the way off, because a block
+frozen half off the top is the one thing worse than one that never left.
 
 **A block's panel is painted into its own picture** rather than drawn as a quad behind it. libobs
 draws solids and textures from different effects, and starting a second one inside the pass that is

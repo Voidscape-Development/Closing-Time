@@ -181,9 +181,16 @@ the rest of the roll. You pick which part of the block is pinned —
 its top edge, its middle, its bottom — and where down the frame that lands, so "centered in the
 frame" and "top edge a third of the way down" are both one setting rather than a number to work
 out. It can hold for a set time or until something else stops the roll, and when the hold ends it
-either stays put and ends the roll, carries on up and off the top, or does both at once. Give it a
-background and the credits running past underneath will not read through its lettering — the same
-panel every other section carries, so a closing card can have rounded corners and a border on it.
+either stays put and ends the roll, carries on up and off the top, does both at once, or leaves and
+ends nothing at all. Give it a background and the credits running past underneath will not read
+through its lettering — the same panel every other section carries, so a closing card can have
+rounded corners and a border on it.
+
+A block does not have to arrive with the roll. Set it to show **after the roll has left the
+screen** and it stays out of sight while the credits go by, then fades up in place once the last of
+them has gone off the top — a beat of empty frame, and then the card. Pair that with a first block
+set to leave and do nothing and you get one card after another: a thank-you that holds, moves off,
+and a "we'll be back" that fades up behind it.
 
 It holds whole sections, so a closing card is a title, a divider and a logo the way anything else
 is; drag them under the block in the section list and they are inside it. Nothing above or below

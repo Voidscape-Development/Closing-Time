@@ -139,6 +139,13 @@ struct StickyBlockRuntime {
 	gs_texture_t *texture = nullptr;
 
 	enum class State {
+		/*
+		 * Waiting for the roll to go by before showing itself at all -- the entrance that comes
+		 * after the credits rather than with them. Nothing of the block is drawn in this state.
+		 */
+		Hidden,
+		/* Fading up in place, having waited. */
+		Entering,
 		/* Still traveling with the roll, on its way to the anchor. */
 		Waiting,
 		/* Detached and holding at the anchor. */
@@ -148,15 +155,88 @@ struct StickyBlockRuntime {
 	};
 
 	State state = State::Waiting;
+	/* Seconds left of the fade. Meaningless outside Entering. */
+	double fadeRemaining = 0.0;
 	/* Seconds left of the hold. Meaningless until the block has pinned. */
 	double holdRemaining = 0.0;
 	/* How far it has traveled since it was released, in pixels. */
 	double releasedTravel = 0.0;
 	/* Set once its hold has had whatever say it has in ending the roll. */
 	bool spent = false;
+	/* Set once its leaving the frame has had whatever say it has in ending the roll. */
+	bool departed = false;
 	/* The roll pass this belongs to; a new one starts it over. */
 	uint64_t epoch = 0;
+
+	/* What the block is drawn at this frame: 1 everywhere but part-way through a fade. */
+	double alpha() const
+	{
+		if (state != State::Entering)
+			return 1.0;
+		if (placement.fadeIn <= 0.0)
+			return 1.0;
+		return std::clamp(1.0 - fadeRemaining / placement.fadeIn, 0.0, 1.0);
+	}
+
+	/* True while the block is somewhere a viewer could see it, whether or not it is moving. */
+	bool showing() const { return state != State::Hidden; }
 };
+
+/*
+ * How the roll is moving this tick, as far as its blocks are concerned.
+ *
+ *   Rolling  - playing. Blocks pin, fade, hold and leave on their own clock.
+ *   Coasting - the roll has been called finished but has not been taken off the screen. Nothing new
+ *              starts, but a block already on its way out goes the rest of the way out: a block
+ *              frozen half off the top is the one thing worse than one that never left.
+ *   Held     - paused. Everything stands exactly where it is.
+ *   Scrubbed - parked under manual scroll. There is no clock at all, so each block shows the state
+ *              the scroll position alone implies -- pinned where it would be, arrived if the roll
+ *              it waits for has gone by, and never part-way through a fade.
+ */
+enum class StickyClock { Rolling, Coasting, Held, Scrubbed };
+
+/*
+ * Puts a block at the top of its own loop: what a freshly rasterized block starts at, and what a
+ * roll going back to its beginning puts every block it carries back to.
+ */
+void startStickyBlock(StickyBlockRuntime &runtime)
+{
+	const StickyBlockPlacement &placement = runtime.placement;
+
+	runtime.state = stickyEntranceWaitsForRoll(placement.entrance) ? StickyBlockRuntime::State::Hidden
+								       : StickyBlockRuntime::State::Waiting;
+	runtime.fadeRemaining = std::max(0.0, placement.fadeIn);
+	runtime.holdRemaining = std::max(0.0, placement.hold);
+	runtime.releasedTravel = 0.0;
+	runtime.spent = false;
+	runtime.departed = false;
+}
+
+/*
+ * Where a sticky block's slot-top sits in canvas space this frame.
+ *
+ * Waiting and pinned are one expression rather than two branches: a block travels with the roll
+ * until the roll has carried it up to the anchor and stays there afterwards, which is exactly the
+ * lower of the two positions. Written that way so a roll parked in manual scroll -- where none of
+ * the timing in advanceStickyBlocks runs -- still shows every block where it belongs.
+ *
+ * A block that waited for the roll to go by never travels: it belongs at the anchor from the moment
+ * it shows itself, which is the whole difference between the two entrances.
+ */
+double stickyBlockTop(const StickyBlockRuntime &runtime, double stripTop, int canvasHeight)
+{
+	const StickyBlockPlacement &placement = runtime.placement;
+	const double pinnedTop = placement.pinnedTop(canvasHeight);
+
+	if (runtime.state == StickyBlockRuntime::State::Released)
+		return pinnedTop - runtime.releasedTravel;
+
+	if (stickyEntranceWaitsForRoll(placement.entrance))
+		return pinnedTop;
+
+	return std::max(pinnedTop, stripTop + placement.rect.top());
+}
 
 /*
  * Threading:
@@ -234,6 +314,15 @@ struct CreditsSourceData {
 	size_t tilesAwaitingUpload = 0;
 	std::vector<AnimatedLogoRuntime> animatedLogos;
 	std::vector<StickyBlockRuntime> stickyBlocks;
+	/*
+	 * The shader a sticky block fades up through, compiled the first time one is drawn and kept for
+	 * the life of the source. Null when the device would not compile it, which is a fade lost
+	 * rather than a block lost -- see drawStickyBlocks.
+	 *
+	 * Graphics-thread state, like the textures above.
+	 */
+	gs_effect_t *fadeEffect = nullptr;
+	bool fadeEffectTried = false;
 	int stripHeight = 0;
 	/*
 	 * True while a sticky block still has something to do before the roll can be called
@@ -645,8 +734,8 @@ void adoptPendingStrip(CreditsSourceData *data)
 	data->stickyBlocks.reserve(strip.stickyBlocks.size());
 	for (StickyBlockPlacement &placement : strip.stickyBlocks) {
 		StickyBlockRuntime runtime;
-		runtime.holdRemaining = std::max(0.0, placement.hold);
 		runtime.placement = std::move(placement);
+		startStickyBlock(runtime);
 		/*
 		 * The texture is left unallocated until the block is nearly in frame -- see
 		 * prepareStickyBlocks -- for the reason the animated logos' are: a roll may carry a
@@ -900,10 +989,11 @@ void finishRoll(CreditsSourceData *data)
  * Advances every sticky block by one tick, and reports whether any of them is still to have its
  * say about the roll being over.
  *
- * A block travels with the roll until its slot reaches the anchor, then detaches and holds there
- * while the rest of the roll scrolls on behind it. What happens when the hold runs out is the
- * block's own setting: it stays where it is and ends the roll, it carries on up and off the top,
- * or it does both.
+ * A block either travels with the roll until its slot reaches the anchor, or waits off screen for
+ * the roll to go by and then fades up in place. Either way it holds at the anchor while whatever is
+ * left of the roll scrolls on behind it. What happens when the hold runs out is the block's own
+ * setting: it stays where it is and ends the roll, it carries on up and off the top, it does both,
+ * or it leaves and ends nothing so that another block can follow it.
  *
  * Where the block is *drawn* is not decided here -- see stickyBlockTop, which reads the state this
  * leaves behind. That split is what lets a roll parked in manual scroll show its blocks pinned
@@ -911,7 +1001,7 @@ void finishRoll(CreditsSourceData *data)
  *
  * Graphics thread only.
  */
-void advanceStickyBlocks(CreditsSourceData *data, double seconds, bool rolling)
+void advanceStickyBlocks(CreditsSourceData *data, double seconds, StickyClock clock)
 {
 	/* A roll with no blocks in it has nothing here to hold it open, and nothing to advance. */
 	if (data->stickyBlocks.empty()) {
@@ -930,28 +1020,88 @@ void advanceStickyBlocks(CreditsSourceData *data, double seconds, bool rolling)
 		epoch = data->rollEpoch;
 	}
 
+	const bool rolling = clock == StickyClock::Rolling;
+	const bool scrubbed = clock == StickyClock::Scrubbed;
+	/*
+	 * Rolling and coasting both carry a block that is already on its way out the rest of the way
+	 * out; paused and scrubbed stand still. A block frozen half off the top of the frame is what
+	 * the coasting case exists to prevent -- the roll being called finished is not a reason for the
+	 * last thing on screen to stop where it is.
+	 */
+	const bool moving = rolling || clock == StickyClock::Coasting;
+
 	/* The roll has gone as far as it goes; nothing below can still be on its way to an anchor. */
 	const bool traveled = offset >= rollTravel(data) - 0.5;
 	const double stripTop = canvasHeight - offset;
+
+	/*
+	 * Where the last pixel the strip actually draws is this frame. Everything past it is lead-out:
+	 * blank, and no part of what anybody watching would call the roll, so a block waiting for the
+	 * roll to go by has no business waiting through it.
+	 */
+	const double rollBottom = stripTop + std::max(0, data->stripHeight - document.leadOut);
+	const bool rollCleared = rollBottom <= 0.0;
+
+	/* A new pass of the roll is a new pass for its blocks: back to the top of the loop. */
+	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
+		if (runtime.epoch == epoch)
+			continue;
+
+		runtime.epoch = epoch;
+		startStickyBlock(runtime);
+	}
+
+	/*
+	 * Whether anything a viewer can see is on the frame, counted before any of it is advanced.
+	 * A block whose entrance comes after the roll waits for the other blocks as well as for the
+	 * credits: back-to-back cards are the reason that entrance exists, and one fading up through
+	 * another still on its way out is not that.
+	 */
+	bool blockOnFrame = false;
+	for (const StickyBlockRuntime &runtime : data->stickyBlocks) {
+		if (runtime.showing() &&
+		    !runtime.placement.offFrame(stickyBlockTop(runtime, stripTop, canvasHeight), canvasHeight))
+			blockOnFrame = true;
+	}
 
 	bool pending = false;
 	bool endNow = false;
 
 	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
 		const StickyBlockPlacement &placement = runtime.placement;
-
-		/* A new pass of the roll is a new pass for its blocks: back to the top of the loop. */
-		if (runtime.epoch != epoch) {
-			runtime.epoch = epoch;
-			runtime.state = StickyBlockRuntime::State::Waiting;
-			runtime.holdRemaining = std::max(0.0, placement.hold);
-			runtime.releasedTravel = 0.0;
-			runtime.spent = false;
-		}
-
 		const double pinnedTop = placement.pinnedTop(canvasHeight);
 
 		switch (runtime.state) {
+		case StickyBlockRuntime::State::Hidden:
+			/*
+			 * Nothing of the roll left to see, and no other block in the way: the card can
+			 * come up. Scrubbing arrives here too, which is what makes the entrance something
+			 * the designer's scroll position can be dragged into rather than only played into.
+			 */
+			if (!rollCleared || blockOnFrame)
+				break;
+			if (!rolling && !scrubbed)
+				break;
+
+			runtime.state = StickyBlockRuntime::State::Entering;
+			runtime.fadeRemaining = scrubbed ? 0.0 : std::max(0.0, placement.fadeIn);
+			[[fallthrough]];
+
+		case StickyBlockRuntime::State::Entering:
+			/* Parked rather than played: a scrubbed block is shown arrived, never mid-fade. */
+			if (scrubbed)
+				runtime.fadeRemaining = 0.0;
+			else if (moving)
+				runtime.fadeRemaining -= seconds;
+
+			if (runtime.fadeRemaining > 0.0)
+				break;
+
+			/* The hold starts once the card is all the way up, not while it is arriving. */
+			runtime.fadeRemaining = 0.0;
+			runtime.state = StickyBlockRuntime::State::Pinned;
+			break;
+
 		case StickyBlockRuntime::State::Waiting: {
 			/*
 			 * Pinned once the slot has carried it up to the anchor -- or once the roll has
@@ -983,23 +1133,40 @@ void advanceStickyBlocks(CreditsSourceData *data, double seconds, bool rolling)
 			break;
 
 		case StickyBlockRuntime::State::Released:
-			if (rolling)
+			if (moving)
 				runtime.releasedTravel += document.scrollSpeed * seconds;
 			break;
 		}
 
 		/*
-		 * What still has to happen before the roll is over. A block that ends the roll itself
-		 * holds it open until it has; one that only leaves holds it open until it has left.
+		 * "Off screen" is the picture, not the slot: the block's backdrop and whatever its
+		 * children paint outside their own boxes reach past the slot at both ends, and a release
+		 * that waits for the block to leave has to wait for the last of that to go too.
 		 */
-		if (!runtime.spent && stickyReleaseEndsAtHold(placement.release)) {
+		const bool onFrame = runtime.showing() &&
+				     !placement.clearedFrame(stickyBlockTop(runtime, stripTop, canvasHeight));
+
+		/* A block that has left, under a release that says its leaving is the end of the roll. */
+		if (runtime.state == StickyBlockRuntime::State::Released && !onFrame && !runtime.departed) {
+			runtime.departed = true;
+			if (stickyReleaseEndsAtExit(placement.release))
+				endNow = true;
+		}
+
+		/*
+		 * What still has to happen before the roll is over. A block yet to arrive holds it open
+		 * until it has; one that ends the roll itself holds it open until it has; one that only
+		 * leaves holds it open until it has left. A block that ends nothing holds it open while it
+		 * is on screen and then stands aside, so that the rest of the roll decides.
+		 */
+		if (!runtime.showing() || runtime.state == StickyBlockRuntime::State::Entering) {
 			pending = true;
-		} else if (placement.release == StickyRelease::ResumeThenEnd) {
-			const double top = runtime.state == StickyBlockRuntime::State::Released
-						   ? pinnedTop - runtime.releasedTravel
-						   : std::max(pinnedTop, stripTop + placement.rect.top());
-			if (top + placement.rect.height() > 0.0)
-				pending = true;
+		} else if (stickyReleaseEndsAtHold(placement.release)) {
+			pending = pending || !runtime.spent;
+		} else if (stickyReleaseEndsAtExit(placement.release)) {
+			pending = pending || !runtime.departed;
+		} else {
+			pending = pending || onFrame;
 		}
 	}
 
@@ -1191,6 +1358,8 @@ void destroy(void *raw)
 
 	obs_enter_graphics();
 	releaseTextures(data);
+	if (data->fadeEffect)
+		gs_effect_destroy(data->fadeEffect);
 	obs_leave_graphics();
 
 	delete data;
@@ -1329,6 +1498,12 @@ void videoTick(void *raw, float seconds)
 	 */
 	if (data->document.manualScroll) {
 		scrubTo(data, data->document.scrollPosition);
+		/*
+		 * The blocks are still asked where they are, with no time to advance: parked is a state
+		 * they have an answer for, and it is the one that puts a card whose entrance waits for
+		 * the roll on screen when the scroll position is dragged past the end of it.
+		 */
+		advanceStickyBlocks(data, 0.0, StickyClock::Scrubbed);
 		advanceAnimatedLogos(data, 0.0, false);
 		return;
 	}
@@ -1337,16 +1512,22 @@ void videoTick(void *raw, float seconds)
 	advance(data, delta);
 
 	bool rolling = false;
+	StickyClock clock = StickyClock::Held;
 	{
 		std::lock_guard<std::mutex> lock(data->stateMutex);
 		rolling = data->phase == Phase::Rolling && !data->paused;
+
+		if (rolling)
+			clock = StickyClock::Rolling;
+		else if (!data->paused && data->phase != Phase::Idle)
+			clock = StickyClock::Coasting;
 	}
 
 	/*
 	 * Before the animated logos and after the scroll, because a block's own timing is measured
 	 * against the offset this tick just left behind.
 	 */
-	advanceStickyBlocks(data, delta, rolling);
+	advanceStickyBlocks(data, delta, clock);
 	advanceAnimatedLogos(data, delta, rolling);
 }
 
@@ -1484,21 +1665,79 @@ void drawAnimatedLogos(CreditsSourceData *data, gs_eparam_t *imageParam, double 
 }
 
 /*
- * Where a sticky block's top edge sits in canvas space this frame.
+ * The one shader in the plugin: libobs' own textured quad with an opacity on it.
  *
- * Waiting and pinned are one expression rather than two branches: a block travels with the roll
- * until the roll has carried it up to the anchor and stays there afterwards, which is exactly the
- * lower of the two positions. Written that way so a roll parked in manual scroll -- where none of
- * the timing in advanceStickyBlocks runs -- still shows every block where it belongs.
+ * A sticky block whose entrance waits for the roll fades up in place, and the base effect draws a
+ * texture exactly as it is. Multiplying the alpha rather than the whole color is what makes the
+ * fade a fade rather than a fade to black: the pictures are straight alpha, blended the same way
+ * the tiles are, so scaling the channel the blend reads is the whole of the change.
+ *
+ * Written out here rather than shipped as a .effect file because it is thirty lines and because a
+ * data file is one more thing that has to be found at runtime on three platforms.
  */
-double stickyBlockTop(const StickyBlockRuntime &runtime, double stripTop, int canvasHeight)
+const char *const kFadeEffectSource = R"(
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float alpha;
+
+sampler_state textureSampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData vert_in)
 {
-	const double pinnedTop = runtime.placement.pinnedTop(canvasHeight);
+	VertData vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
 
-	if (runtime.state == StickyBlockRuntime::State::Released)
-		return pinnedTop - runtime.releasedTravel;
+float4 PSFade(VertData vert_in) : TARGET
+{
+	float4 rgba = image.Sample(textureSampler, vert_in.uv);
+	rgba.a *= alpha;
+	return rgba;
+}
 
-	return std::max(pinnedTop, stripTop + runtime.placement.rect.top());
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSFade(vert_in);
+	}
+}
+)";
+
+/*
+ * The fade shader, compiled on first use. Returns null when the device would not compile it, and
+ * only tries once: a shader that failed to compile will not compile on the next frame either, and a
+ * compiler error logged sixty times a second is a log nobody can read.
+ *
+ * Graphics thread only; requires an active graphics context.
+ */
+gs_effect_t *stickyFadeEffect(CreditsSourceData *data)
+{
+	if (data->fadeEffectTried)
+		return data->fadeEffect;
+
+	data->fadeEffectTried = true;
+
+	char *errors = nullptr;
+	data->fadeEffect = gs_effect_create(kFadeEffectSource, "closing-time-sticky-fade.effect", &errors);
+	if (!data->fadeEffect)
+		obs_log(LOG_ERROR, "could not compile the sticky block fade shader: %s",
+			errors ? errors : "no error reported");
+
+	bfree(errors);
+	return data->fadeEffect;
 }
 
 /*
@@ -1523,7 +1762,7 @@ void prepareStickyBlocks(CreditsSourceData *data, double stripTop, int canvasHei
 			continue;
 
 		const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
-		if (top >= canvasHeight * 2.0 || top + runtime.placement.rect.height() <= 0.0)
+		if (runtime.placement.pictureTop(top) >= canvasHeight * 2.0 || runtime.placement.clearedFrame(top))
 			continue;
 
 		runtime.texture = createTexture(runtime.placement.image, 0);
@@ -1540,32 +1779,60 @@ void prepareStickyBlocks(CreditsSourceData *data, double stripTop, int canvasHei
 }
 
 /*
+ * Draws one sticky block's picture where the block currently is.
+ *
+ * The picture reaches past the slot by its margin at each end -- the backdrop's padding and whatever
+ * the children paint outside their own boxes -- so it is drawn from there rather than from the slot.
+ */
+void drawStickyBlock(const StickyBlockRuntime &runtime, double top, int canvasHeight)
+{
+	drawClipped(0.0, top - runtime.placement.margin, static_cast<double>(gs_texture_get_width(runtime.texture)),
+		    static_cast<double>(gs_texture_get_height(runtime.texture)), canvasHeight);
+}
+
+/*
  * Draws the sticky blocks over the strip.
  *
  * After the tiles and after the animated logos, because a pinned block is the thing the roll is
  * running behind: it is on top of everything else by construction, which is what makes a closing
  * card readable while the last of the credits goes past underneath it.
+ *
+ * In a pass of its own rather than in the one the tiles are drawn from, because a block can be
+ * part-way through fading up and the base effect has no opacity to set. The fade shader is asked
+ * for once here; if the graphics device would not compile it the base effect is used instead and
+ * every block is drawn solid, which loses the fade and nothing else.
  */
-void drawStickyBlocks(CreditsSourceData *data, gs_eparam_t *imageParam, double stripTop, int canvasHeight)
+void drawStickyBlocks(CreditsSourceData *data, double stripTop, int canvasHeight)
 {
-	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
-		const StickyBlockPlacement &placement = runtime.placement;
+	if (data->stickyBlocks.empty())
+		return;
 
-		/* Uploaded before the pass this is drawn in; see prepareStickyBlocks. */
-		if (!runtime.texture)
-			continue;
+	gs_effect_t *fade = stickyFadeEffect(data);
+	gs_effect_t *effect = fade ? fade : obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
+	gs_eparam_t *alphaParam = fade ? gs_effect_get_param_by_name(effect, "alpha") : nullptr;
 
-		const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
-		if (top >= canvasHeight || top + placement.rect.height() <= 0.0)
-			continue;
+	while (gs_effect_loop(effect, "Draw")) {
+		for (const StickyBlockRuntime &runtime : data->stickyBlocks) {
+			/* Uploaded before the pass this is drawn in; see prepareStickyBlocks. */
+			if (!runtime.texture || !runtime.showing())
+				continue;
 
-		gs_effect_set_texture(imageParam, runtime.texture);
-		/*
-		 * The picture reaches past the slot by its margin at each end -- the backdrop's padding
-		 * and whatever the children paint outside their own boxes.
-		 */
-		drawClipped(0.0, top - placement.margin, static_cast<double>(gs_texture_get_width(runtime.texture)),
-			    static_cast<double>(gs_texture_get_height(runtime.texture)), canvasHeight);
+			const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
+			if (runtime.placement.offFrame(top, canvasHeight))
+				continue;
+
+			const double alpha = runtime.alpha();
+			/* Nothing to draw and nothing to blend: the first frame of a fade from nothing. */
+			if (alpha <= 0.0)
+				continue;
+
+			gs_effect_set_texture(imageParam, runtime.texture);
+			if (alphaParam)
+				gs_effect_set_float(alphaParam, static_cast<float>(alpha));
+
+			drawStickyBlock(runtime, top, canvasHeight);
+		}
 	}
 }
 
@@ -1640,8 +1907,10 @@ void videoRender(void *raw, gs_effect_t *)
 		}
 
 		drawAnimatedLogos(data, imageParam, stripTop, canvasHeight);
-		drawStickyBlocks(data, imageParam, stripTop, canvasHeight);
 	}
+
+	/* After the loop above rather than inside it: the blocks are drawn through a pass of their own. */
+	drawStickyBlocks(data, stripTop, canvasHeight);
 
 	gs_blend_state_pop();
 }

@@ -482,6 +482,8 @@ private:
 	QSpinBox *spacerHeight = nullptr;
 
 	/* Sticky Ending Block sections only. */
+	QComboBox *stickyEntrance = nullptr;
+	QDoubleSpinBox *stickyFadeIn = nullptr;
 	QComboBox *stickyAnchor = nullptr;
 	QSpinBox *stickyCanvasPosition = nullptr;
 	QSpinBox *stickyOffset = nullptr;

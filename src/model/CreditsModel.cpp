@@ -454,6 +454,33 @@ double stickyAnchorFraction(StickyAnchor anchor)
 	}
 }
 
+const char *stickyEntranceId(StickyEntrance entrance)
+{
+	switch (entrance) {
+	case StickyEntrance::AfterRoll:
+		return "after_roll";
+	case StickyEntrance::WithRoll:
+	default:
+		return "with_roll";
+	}
+}
+
+StickyEntrance stickyEntranceFromId(const char *id, StickyEntrance fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "after_roll") == 0)
+		return StickyEntrance::AfterRoll;
+	if (strcmp(id, "with_roll") == 0)
+		return StickyEntrance::WithRoll;
+	return fallback;
+}
+
+bool stickyEntranceWaitsForRoll(StickyEntrance entrance)
+{
+	return entrance == StickyEntrance::AfterRoll;
+}
+
 const char *stickyReleaseId(StickyRelease release)
 {
 	switch (release) {
@@ -461,6 +488,8 @@ const char *stickyReleaseId(StickyRelease release)
 		return "resume_then_end";
 	case StickyRelease::ResumeEndAtHold:
 		return "resume_end_at_hold";
+	case StickyRelease::ResumeOnly:
+		return "resume_only";
 	case StickyRelease::EndAtHold:
 	default:
 		return "end_at_hold";
@@ -475,6 +504,8 @@ StickyRelease stickyReleaseFromId(const char *id, StickyRelease fallback)
 		return StickyRelease::ResumeThenEnd;
 	if (strcmp(id, "resume_end_at_hold") == 0)
 		return StickyRelease::ResumeEndAtHold;
+	if (strcmp(id, "resume_only") == 0)
+		return StickyRelease::ResumeOnly;
 	if (strcmp(id, "end_at_hold") == 0)
 		return StickyRelease::EndAtHold;
 	return fallback;
@@ -487,7 +518,12 @@ bool stickyReleaseResumes(StickyRelease release)
 
 bool stickyReleaseEndsAtHold(StickyRelease release)
 {
-	return release != StickyRelease::ResumeThenEnd;
+	return release == StickyRelease::EndAtHold || release == StickyRelease::ResumeEndAtHold;
+}
+
+bool stickyReleaseEndsAtExit(StickyRelease release)
+{
+	return release == StickyRelease::ResumeThenEnd;
 }
 
 const char *hAlignId(HAlign align)
@@ -992,6 +1028,8 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "section_width", sectionWidth);
 	obs_data_set_string(data, "section_align", hAlignId(sectionAlign));
 	obs_data_set_int(data, "spacer_height", spacerHeight);
+	obs_data_set_string(data, "sticky_entrance", stickyEntranceId(stickyEntrance));
+	obs_data_set_double(data, "sticky_fade_in", stickyFadeIn);
 	obs_data_set_string(data, "sticky_anchor", stickyAnchorId(stickyAnchor));
 	obs_data_set_double(data, "sticky_canvas_position", stickyCanvasPosition);
 	obs_data_set_double(data, "sticky_offset", stickyOffset);
@@ -1219,6 +1257,11 @@ void Section::load(obs_data_t *data)
 	sectionWidth = std::clamp(sectionWidth, 0.0, 1.0);
 	sectionAlign = hAlignFromId(obs_data_get_string(data, "section_align"), HAlign::Center);
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
+	stickyEntrance = stickyEntranceFromId(obs_data_get_string(data, "sticky_entrance"), StickyEntrance::WithRoll);
+	/* Zero is a cut rather than no answer, so a stored one has to be told apart from a missing key. */
+	stickyFadeIn = obs_data_has_user_value(data, "sticky_fade_in") ? obs_data_get_double(data, "sticky_fade_in")
+								       : 0.75;
+	stickyFadeIn = std::max(0.0, stickyFadeIn);
 	stickyAnchor = stickyAnchorFromId(obs_data_get_string(data, "sticky_anchor"), StickyAnchor::Center);
 	/*
 	 * 0.0 is the top of the canvas and a perfectly ordinary place to pin something, so a missing

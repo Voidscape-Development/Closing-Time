@@ -135,6 +135,8 @@ struct StickyBlockPlacement {
 	QImage image;
 
 	/* Everything about how it pins, copied off the section so the compositor reads no model. */
+	StickyEntrance entrance = StickyEntrance::WithRoll;
+	double fadeIn = 0.75;
 	StickyAnchor anchor = StickyAnchor::Center;
 	double canvasPosition = 0.5;
 	double offset = 0.0;
@@ -167,6 +169,28 @@ struct StickyBlockPlacement {
 	{
 		return canvasPosition * canvasHeight + offset - stickyAnchorFraction(anchor) * rect.height();
 	}
+
+	/*
+	 * How far the picture reaches above and below the slot's own top edge, for a block whose slot
+	 * sits at `top`.
+	 *
+	 * The slot is where the block *belongs*; the picture is what is actually on screen, and it is
+	 * `margin` taller at each end -- the backdrop's outset, and whatever the children paint outside
+	 * their own boxes. Anything asking "is this block on the frame" has to ask about the picture,
+	 * because the picture is what a viewer can see: a block judged gone by its slot alone leaves its
+	 * last band of ink sitting at the top of the frame, and a roll that ends there ends over it.
+	 */
+	double pictureTop(double top) const { return top - margin; }
+	double pictureBottom(double top) const { return top + rect.height() + margin; }
+
+	/* True when none of the picture is left on a canvas this tall. */
+	bool offFrame(double top, int canvasHeight) const
+	{
+		return pictureBottom(top) <= 0.0 || pictureTop(top) >= canvasHeight;
+	}
+
+	/* True when the whole picture has gone off the top, which is what "left the screen" means. */
+	bool clearedFrame(double top) const { return pictureBottom(top) <= 0.0; }
 };
 
 struct Strip {
