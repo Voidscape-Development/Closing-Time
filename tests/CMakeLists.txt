@@ -17,7 +17,6 @@ target_sources(
     suites/AnimatedLogos.cpp
     suites/Backgrounds.cpp
     suites/BridgedRows.cpp
-    suites/Calendar.cpp
     suites/Dividers.cpp
     suites/Fonts.cpp
     suites/Layout.cpp
