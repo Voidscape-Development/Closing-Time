@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "harness/Fixtures.hpp"
 #include "harness/Harness.hpp"
 #include "harness/Probe.hpp"
+#include "render/RollCompositor.hpp"
 
 using namespace closingtime;
 using namespace closingtime::test;
@@ -374,4 +375,136 @@ CT_SUITE(layers_blocks, "A sticky block is a layer of its own")
 		checkNear(inputs.blocks.first().hold, 3.0, 1e-9, "and the hold it was given");
 	}
 	checkEq(inputs.stripHeight, layout->height, "and the strip it rides on");
+}
+
+CT_SUITE(compositor_in_slots, "The roll end to end, composited from its layers")
+{
+	/*
+	 * The designer's view: every section where the roll puts it and every block back in its slot.
+	 * Composited from the draw list, it is the eager render's tiles with each block's picture laid
+	 * into its slot -- the same pixels, arrived at the way the preview arrives at them.
+	 */
+	Section block = Section::makeDefault(SectionType::StickyBlock);
+	block.children.clear();
+	block.children.push_back(namedTitle(QStringLiteral("The End")));
+	const Document document =
+		documentWith({namedTitle(QStringLiteral("Cast")), block, namedTitle(QStringLiteral("Crew"))});
+
+	const RollRenderer renderer(&stills());
+	renderer.paintReference(document);
+	const RollLayoutPtr layout = renderer.layout(document);
+
+	ComposeView view;
+	view.stripTop = 0.0;
+	view.clipTop = 0.0;
+	view.clipBottom = layout->height;
+	view.blocks = ComposeView::Blocks::InSlots;
+
+	const DrawList list = composeFrame(*layout, RollFrame(), view);
+	check(!list.isEmpty(), "there is something to draw");
+
+	QImage composed(layout->width, layout->height, QImage::Format_ARGB32_Premultiplied);
+	composed.fill(Qt::transparent);
+	{
+		QPainter painter(&composed);
+		paintDrawList(painter, list, [&](const DrawSource &source) {
+			return renderer.rasterize(*layout, source.layer, source.chunk);
+		});
+	}
+
+	const Strip strip = renderer.render(document);
+	QImage expected = flatten(strip);
+	{
+		QPainter painter(&expected);
+		for (const StickyBlockPlacement &placement : strip.stickyBlocks)
+			painter.drawImage(QPointF(0, placement.rect.top() - placement.margin), placement.image);
+	}
+
+	checkEq(compare(composed, expected).largest, 0,
+		"the composited roll is the eager render, blocks in their slots");
+}
+
+CT_SUITE(compositor_canvas, "One moment of the roll on the canvas")
+{
+	Section block = Section::makeDefault(SectionType::StickyBlock);
+	block.children.clear();
+	block.children.push_back(namedTitle(QStringLiteral("The End")));
+	block.stickyEntrance = StickyEntrance::AfterRoll;
+	block.stickyFadeIn = 2.0;
+
+	Document document = documentWith({namedTitle(QStringLiteral("Cast")), block});
+	document.height = 720;
+	const RollLayoutPtr layout = layoutOf(document);
+	const RollTimeline timeline(layout->timelineInputs());
+
+	/* At the start the strip is still wholly below the canvas: nothing is drawn. */
+	const RollFrame start = timeline.evaluate(0.0);
+	checkEq(composeFrame(*layout, start, ComposeView::canvas(start, document.height)).size(), 0,
+		"nothing is on the canvas before the roll has entered it");
+
+	/* Partway in, only what is inside the canvas is drawn, and none of it outside. */
+	const RollFrame partway = timeline.evaluate(timeline.travelTime() * 0.25);
+	const DrawList rolling = composeFrame(*layout, partway, ComposeView::canvas(partway, document.height));
+	check(!rolling.isEmpty(), "the roll is on the canvas once it has entered");
+	bool inside = true;
+	for (const DrawItem &item : rolling)
+		inside = inside && item.target.top() >= 0.0 && item.target.bottom() <= document.height;
+	check(inside, "and every draw is cut to the canvas");
+
+	/* Half way through its fade, the card is drawn at half strength, where the pin puts it. */
+	const RollTimeline::BlockSchedule &times = timeline.schedules().at(0);
+	const RollFrame fading = timeline.evaluate(times.enter + 1.0);
+	const DrawList cardList = composeFrame(*layout, fading, ComposeView::canvas(fading, document.height));
+	const StickyBlockPlacement &placement = layout->blocks.first();
+	bool found = false;
+	for (const DrawItem &item : cardList) {
+		if (item.source.layer != placement.layer)
+			continue;
+		found = true;
+		checkNear(item.alpha, 0.5, 1e-9, "the card is drawn at its fade's opacity");
+		checkNear(item.target.top(), std::max(0.0, placement.pinnedTop(document.height) - placement.margin),
+			  1e-6, "at the pin");
+	}
+	check(found, "the card is drawn while it fades up");
+}
+
+CT_SUITE(raster_cache, "Rasterized chunks are kept, aged out, and dropped when their files change")
+{
+	QImage image(4, 4, QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::white);
+	const qint64 each = image.sizeInBytes();
+
+	RasterCache cache(each * 2);
+	cache.insert(1, image, {});
+	cache.insert(2, image, {});
+	check(!cache.find(1).isNull(), "a chunk put in comes back out");
+
+	/* 1 was just used, so 2 is the oldest when a third arrives. */
+	cache.insert(3, image, {});
+	check(cache.find(2).isNull(), "the least recently used goes first once the budget is full");
+	check(!cache.find(1).isNull() && !cache.find(3).isNull(), "and the others stay");
+	checkEq(cache.bytes(), each * 2, "the cache holds what its budget allows");
+
+	QTemporaryDir directory;
+	const QString path = directory.filePath(QStringLiteral("art.svg"));
+	{
+		QFile file(path);
+		check(file.open(QIODevice::WriteOnly), "an artwork file is written");
+		file.write("<svg/>");
+	}
+
+	FileStamps files;
+	{
+		const FileDependencyScope scope(&files);
+		noteFileRead(path);
+	}
+	cache.insert(4, image, files);
+	check(!cache.find(4).isNull(), "a chunk drawn from a file is held while the file is unchanged");
+
+	{
+		QFile file(path);
+		check(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "the file is rewritten");
+		file.write("<svg width='10'/>");
+	}
+	check(cache.find(4).isNull(), "and dropped once it changes");
 }

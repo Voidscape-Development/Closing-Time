@@ -77,6 +77,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollTimeline.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollTimeline.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollCompositor.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollCompositor.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.cpp"
