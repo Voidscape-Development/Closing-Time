@@ -466,6 +466,8 @@ struct StylePreset {
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
+
+	bool operator==(const StylePreset &other) const = default;
 };
 
 /*
@@ -511,6 +513,8 @@ struct LogoPlayback {
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
+
+	bool operator==(const LogoPlayback &other) const = default;
 };
 
 /*
@@ -532,6 +536,8 @@ struct LogoRef {
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
+
+	bool operator==(const LogoRef &other) const = default;
 };
 
 /*
@@ -580,6 +586,8 @@ struct Entry {
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
+
+	bool operator==(const Entry &other) const = default;
 };
 
 /*
@@ -642,6 +650,8 @@ struct DividerPiece {
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
+
+	bool operator==(const DividerPiece &other) const = default;
 };
 
 const char *dividerPieceKindId(DividerPiece::Kind kind);
@@ -1112,6 +1122,13 @@ struct Section {
 	 * missed.
 	 */
 	bool childrenCollapsed = false;
+
+	/*
+	 * Every field, view state included -- which only ever differs inside the designer, since
+	 * `childrenCollapsed` is not saved. Defaulted so that a field added later is compared without
+	 * anyone having to remember to add it here.
+	 */
+	bool operator==(const Section &other) const = default;
 };
 
 struct Document {
@@ -1376,6 +1393,30 @@ struct Document {
 	/* Serializes to a standalone JSON string for the designer's export button. */
 	QString toJson() const;
 	bool fromJson(const QString &json, QString *error = nullptr);
+
+	/*
+	 * The version of the format `save` writes and `load` understands. 1 is everything written
+	 * before versions were recorded; 2 carries bundled fonts compressed and named by their hash.
+	 * A document from a newer plugin still loads -- every reader here ignores what it does not
+	 * know -- and says so in the log.
+	 */
+	static constexpr int kSchemaVersion = 2;
+
+	/*
+	 * This document with everything that only moves the finished roll taken out: scroll speed,
+	 * looping, starting, the scrub position, the ending action. What is left is everything the roll
+	 * is laid out and drawn from -- lead-in and lead-out included, since they are part of the strip.
+	 *
+	 * Built by blanking the playback fields rather than by copying the content ones, so a field
+	 * added later counts as content by default: wrong in that direction it costs a redundant layout,
+	 * wrong in the other it would leave a stale roll on screen.
+	 */
+	Document contentOnly() const;
+
+	/* True when the two would lay out and draw the same roll. Cheap: a comparison, not a serialization. */
+	bool sameContent(const Document &other) const;
+
+	bool operator==(const Document &other) const = default;
 };
 
 } // namespace closingtime

@@ -19,6 +19,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.h>
 #include <obs.hpp>
 
+#include <cstring>
+
 #include "harness/Fixtures.hpp"
 #include "harness/Harness.hpp"
 
@@ -423,4 +425,104 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	 */
 	check(clamped.dividerGap >= -kMaxDividerJoin, "a join off a file cannot overlap without bound");
 	check(clamped.dividerPieceGap >= -kMaxDividerJoin, "and neither can a piece join");
+}
+
+CT_SUITE(fonts_store, "Bundled fonts are written compressed and decoded once")
+{
+	/* Outline data compresses; random bytes do not. A font is the former, so the fixture is too. */
+	QByteArray bytes;
+	for (int i = 0; i < 200000; ++i)
+		bytes.append(static_cast<char>("glyf loca hmtx"[i % 14] + (i / 1000) % 3));
+
+	Document document;
+	BundledFont font;
+	font.family = QStringLiteral("Closing Time Store Test");
+	font.fileName = QStringLiteral("store.ttf");
+	font.data = bytes;
+	document.bundledFonts = {font};
+
+	OBSDataAutoRelease saved = obs_data_create();
+	document.save(saved);
+	checkEq(static_cast<long long>(obs_data_get_int(saved, "schema_version")), Document::kSchemaVersion,
+		"the document says which format it is in");
+
+	OBSDataArrayAutoRelease array = obs_data_get_array(saved, "bundled_fonts");
+	OBSDataAutoRelease entry = obs_data_array_item(array, 0);
+	checkEq(QString::fromLatin1(obs_data_get_string(entry, "encoding")), QStringLiteral("zlib"),
+		"written compressed");
+	check(std::strlen(obs_data_get_string(entry, "data")) < static_cast<size_t>(bytes.toBase64().size()) / 2,
+	      "and much smaller than the plain base64 it replaces");
+	checkEq(QString::fromLatin1(obs_data_get_string(entry, "sha256")), font.hash(), "named by its hash");
+
+	/* The first load may decode; every one after that, as on every frame of a slider drag, must not. */
+	Document first;
+	first.load(saved);
+	const int decodes = fontStoreDecodes();
+	for (int i = 0; i < 5; ++i) {
+		Document again;
+		again.load(saved);
+		check(again.bundledFonts.size() == 1 && again.bundledFonts.first().data == bytes,
+		      "the same bytes come back");
+	}
+	checkEq(fontStoreDecodes(), decodes, "and loading the same document again decodes nothing");
+	check(!first.bundledFonts.isEmpty() && first.bundledFonts.first().data == bytes, "the round trip is exact");
+
+	/* A version 1 document: plain base64, no hash, no encoding. It loads, and asks to be written back. */
+	OBSDataAutoRelease old = obs_data_create();
+	OBSDataArrayAutoRelease oldFonts = obs_data_array_create();
+	OBSDataAutoRelease oldFont = obs_data_create();
+	obs_data_set_string(oldFont, "family", "Closing Time Store Test");
+	obs_data_set_string(oldFont, "file", "store.ttf");
+	obs_data_set_string(oldFont, "data", bytes.toBase64().constData());
+	obs_data_array_push_back(oldFonts, oldFont);
+	obs_data_set_array(old, "bundled_fonts", oldFonts);
+
+	Document older;
+	bool migrated = false;
+	older.load(old, &migrated);
+	check(older.bundledFonts.size() == 1 && older.bundledFonts.first().data == bytes,
+	      "a version 1 bundle still loads");
+	check(migrated, "and says the settings are worth writing again in the current shape");
+
+	Document current;
+	bool rewritten = true;
+	current.load(saved, &rewritten);
+	check(!rewritten, "a current document asks for nothing");
+}
+
+CT_SUITE(document_content, "Telling a content edit from a playback one, without serializing anything")
+{
+	Document document;
+	Section title = Section::makeDefault(SectionType::Title);
+	title.text = QStringLiteral("Directed by");
+	document.sections = {title};
+
+	Document playback = document;
+	playback.scrollSpeed *= 3.0;
+	playback.loop = !playback.loop;
+	playback.startDelay = 4.0;
+	playback.manualScroll = true;
+	playback.scrollPosition = 40.0;
+	playback.endingAction.delay = 2.0;
+	check(document.sameContent(playback), "playback settings are not content");
+	check(!(document == playback), "though they are part of the document");
+
+	Document leads = document;
+	leads.leadIn = 300;
+	check(!document.sameContent(leads), "lead-in is content: it is part of the strip");
+
+	Document text = document;
+	text.sections[0].text = QStringLiteral("Directed by someone");
+	check(!document.sameContent(text), "a section's text is content");
+
+	Document styled = document;
+	styled.sections[0].style.shadow.enabled = true;
+	check(!document.sameContent(styled), "and so is its style");
+
+	Document child = document;
+	Section block = Section::makeDefault(SectionType::StickyBlock);
+	child.sections.append(block);
+	Document childEdited = child;
+	childEdited.sections[1].children.front().text = QStringLiteral("Changed");
+	check(!child.sameContent(childEdited), "and so is anything inside a block");
 }

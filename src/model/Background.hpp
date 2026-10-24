@@ -267,6 +267,8 @@ struct BackgroundPreset {
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
+
+	bool operator==(const BackgroundPreset &other) const = default;
 };
 
 } // namespace closingtime

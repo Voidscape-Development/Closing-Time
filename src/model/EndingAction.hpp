@@ -105,6 +105,8 @@ struct EndingActionConfig {
 	 * elapsed, so that a delayed action still cancels cleanly if the roll is reset first.
 	 */
 	void execute(obs_source_t *self) const;
+
+	bool operator==(const EndingActionConfig &other) const = default;
 };
 
 /* Emits the "credits_finished" signal on `self` and the matching frontend event. */

@@ -147,8 +147,13 @@ struct CreditsSourceData {
 	OBSWeakSource weakSelf;
 
 	Document document;
-	/* What the last rebuild was laid out from; see renderKey(). Graphics thread only. */
-	QByteArray renderedFrom;
+	/*
+	 * The content of the document the last rebuild was laid out from -- see Document::contentOnly.
+	 * Compared against on every update, which a slider drag sends once a frame: a comparison of two
+	 * documents that share almost all of their data, rather than a serialization of both.
+	 * Graphics thread only.
+	 */
+	Document renderedFrom;
 
 	/*
 	 * Used only on the render thread: only jobs read or write them, and jobs run one at a time, so
@@ -294,44 +299,6 @@ RollFrame currentFrame(CreditsSourceData *data, const RollTimeline &timeline)
 }
 
 /* ------------------------------------------------------------------ strip rebuilding */
-
-/*
- * Everything the roll is laid out from, as a string two documents can be compared by.
- *
- * Playback settings reach the source through the same update() every content edit does, and
- * scrubbing moves a slider that fires one per frame of the drag. Laying out a long roll on each of
- * those would keep the render thread busy for the whole gesture, so a rebuild is queued only when
- * this changes.
- *
- * Built by blanking the fields that move the finished roll rather than by listing the ones that
- * make it: a field added later counts towards the key by default, which costs an unnecessary
- * rebuild if it turns out to be a playback setting and never a stale one if it is not. Lead-in and
- * lead-out are deliberately not blanked -- they are part of the strip the roll scrolls.
- */
-QByteArray renderKey(const Document &document)
-{
-	Document content = document;
-
-	content.scrollSpeed = 0.0;
-	content.loop = false;
-	content.startOnShow = false;
-	content.startDelay = 0.0;
-	content.manualScroll = false;
-	content.scrollPosition = 0.0;
-	content.endingAction = EndingActionConfig();
-
-	/*
-	 * The bundled font files are reduced to their sizes rather than carried: a font runs to
-	 * megabytes, and serializing them here would cost more than the rebuild this exists to avoid.
-	 * What is left still names every family and every file.
-	 */
-	for (BundledFont &font : content.bundledFonts)
-		font.data = QByteArray::number(font.data.size());
-
-	OBSDataAutoRelease data = obs_data_create();
-	content.save(data);
-	return QByteArray(obs_data_get_json(data));
-}
 
 void runRebuild(CreditsSourceData *data, const Document &document, const QString &sourceName, uint64_t generation);
 
@@ -978,7 +945,7 @@ void writeDocumentBack(CreditsSourceData *data)
 
 	data->document.save(settings);
 	/* Kept in step first: the update() this schedules must not read as a content change. */
-	data->renderedFrom = renderKey(data->document);
+	data->renderedFrom = data->document.contentOnly();
 	obs_source_update(data->source, settings);
 }
 
@@ -1001,13 +968,13 @@ void update(void *raw, obs_data_t *settings)
 		data->settingsNeedWriteBack = true;
 
 	/*
-	 * Only a change to what the roll is made of is worth laying out again -- see renderKey().
-	 * Everything else here arrives through the same call: a scrub sends one per frame of the drag.
+	 * Only a change to what the roll is made of is worth laying out again. Everything else arrives
+	 * through the same call: a scrub sends one per frame of the drag.
 	 */
-	const QByteArray key = renderKey(data->document);
-	const bool contentChanged = key != data->renderedFrom;
+	Document content = data->document.contentOnly();
+	const bool contentChanged = !(content == data->renderedFrom);
 	if (contentChanged) {
-		data->renderedFrom = key;
+		data->renderedFrom = std::move(content);
 		queueRebuild(data);
 	}
 
