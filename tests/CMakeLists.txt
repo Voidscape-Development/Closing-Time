@@ -46,7 +46,7 @@ endif()
 
 set_target_properties(
   closing-time-tests
-  PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+  PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
 )
 
 # One CTest entry for the whole run: the suites share a process and a font database, and the

@@ -35,7 +35,7 @@ target_compile_options(
 )
 set_target_properties(
   ${CMAKE_PROJECT_NAME}
-  PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+  PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
 )
 
 # The document, the renderer and the parser. None of them carry Q_OBJECT or touch Qt Widgets,
