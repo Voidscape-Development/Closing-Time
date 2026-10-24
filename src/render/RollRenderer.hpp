@@ -332,6 +332,13 @@ struct RollLayer {
 	 */
 	quint64 key = 0;
 
+	/*
+	 * The height of every row of the section's list, as the layout measured them, so that painting
+	 * one chunk of a long list skips the rows it cannot see without laying each of them out again.
+	 * Null for a section with no list.
+	 */
+	std::shared_ptr<const QVector<int>> rowHeights;
+
 	int chunkCount() const;
 	/* A chunk's rows, relative to the picture's top edge. */
 	int chunkTop(int chunk) const;

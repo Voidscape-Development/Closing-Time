@@ -508,3 +508,66 @@ CT_SUITE(raster_cache, "Rasterized chunks are kept, aged out, and dropped when t
 	}
 	check(cache.find(4).isNull(), "and dropped once it changes");
 }
+
+CT_SUITE(layers_long_lists, "A list many chunks tall paints only the rows each chunk shows, and the same pixels")
+{
+	/*
+	 * Every chunk of a long list measures nothing and paints only the rows that reach it, skipping
+	 * the rest by the heights the layout recorded. That has to come out identical to painting every
+	 * row into one picture, for every shape of list, with a shadow reaching across the chunk seams.
+	 */
+	for (SectionType type :
+	     {SectionType::TextList, SectionType::TitleSubtitleList, SectionType::LogoList, SectionType::MultiTextList,
+	      SectionType::MultiTitleSubtitleList, SectionType::Bridged}) {
+		const Context context(QString::fromLatin1(sectionTypeId(type)));
+
+		Section list = Section::makeDefault(type);
+		list.entries.clear();
+		/* Enough rows for two chunks: twice as many for a list in two columns. */
+		const int count = sectionUsesColumns(type) ? 80 : 40;
+		for (int i = 0; i < count; ++i) {
+			Entry entry{QStringLiteral("Name %1 with descenders gjpqy").arg(i),
+				    QStringLiteral("Role %1").arg(i),
+				    {},
+				    {},
+				    {}};
+			list.entries.append(entry);
+		}
+		if (type == SectionType::LogoList)
+			withLogo(list, 60);
+		/*
+		 * One shape carries a shadow, which is what reaches across a chunk seam from a row painted
+		 * into the chunk on the other side; a blur per row is slow enough that all six would make
+		 * this the longest suite in the run for no more coverage.
+		 */
+		if (type == SectionType::TextList) {
+			list.style.shadow.enabled = true;
+			list.style.shadow.blur = 6.0;
+			list.style.shadow.offsetY = 10.0;
+		}
+
+		Document document = documentWith({namedTitle(QStringLiteral("Above")), list});
+		document.leadOut = 100;
+
+		const RollRenderer renderer(&stills());
+		renderer.paintReference(document);
+
+		const RollLayoutPtr layout = renderer.layout(document);
+		const RollLayer *tall = nullptr;
+		for (const RollLayer &layer : layout->layers) {
+			if (layer.section == 1)
+				tall = &layer;
+		}
+		check(tall && tall->chunkCount() >= 2, "the list is more than one chunk tall");
+		check(type == SectionType::LogoList || (tall && tall->rowHeights && !tall->rowHeights->isEmpty()),
+		      "and its row heights were recorded by the layout");
+
+		const Difference difference =
+			compare(flatten(renderer.render(document)), renderer.paintReference(document));
+		check(difference.largest >= 0 && difference.largest <= 2,
+		      QStringLiteral(
+			      "and painting it a chunk at a time changes no pixel (largest difference %1 over %2)")
+			      .arg(difference.largest)
+			      .arg(difference.pixels));
+	}
+}

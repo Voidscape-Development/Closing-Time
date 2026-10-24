@@ -1721,6 +1721,63 @@ double sectionBleed(const Document &document, const Section &section)
 	return std::max(bleed, document.effectiveBridgeStyle(section).effectBleed());
 }
 
+int pictureMargin(const Document &document, const Section &section);
+
+/*
+ * The height of every row of one section's list, as the layout pass measured them.
+ *
+ * Recorded once, when the roll is laid out, and handed back to every chunk of the section that is
+ * painted afterwards -- so a chunk skips the rows it cannot see by their heights rather than by
+ * laying each of them out again. Without it, a list of four hundred names measured all four hundred
+ * once per chunk, which is the cost of the list's length squared moved from painting into measuring.
+ * Indexed by entry, or by grid row for a list in columns; the passes walk the rows in the same order
+ * because they are the same code.
+ */
+struct RowLedger {
+	QVector<int> *record = nullptr;
+	const QVector<int> *replay = nullptr;
+
+	void note(int height) const
+	{
+		if (record)
+			record->append(height);
+	}
+
+	/* The recorded height of a row, or -1 when there is none to hand. */
+	int height(int row) const { return replay && row >= 0 && row < replay->size() ? replay->at(row) : -1; }
+};
+
+/*
+ * The rows of a list a painter can actually see.
+ *
+ * A section is painted a chunk at a time, and a list of four hundred names is a section many chunks
+ * tall. Painting every row into every chunk -- and leaving the clip to throw nearly all of it away --
+ * made a long list cost its length squared. Laying a row out is cheap and painting it is not, so a
+ * row is measured first and painted only when it reaches the band the painter can see; every row is
+ * still measured, which is what keeps every row below it exactly where it was.
+ *
+ * The band is the painter's clip grown by everything the section can paint outside a row's own box,
+ * so a shadow or an outset reaching in from a row outside it is still drawn. Inactive -- every row
+ * reaches -- for a painter with no clip, and for no painter at all.
+ */
+struct RowCull {
+	bool active = false;
+	qreal top = 0.0;
+	qreal bottom = 0.0;
+
+	bool reaches(qreal y, qreal height) const { return !active || (y + height >= top && y <= bottom); }
+};
+
+RowCull rowCull(QPainter *painter, const Document &document, const Section &section)
+{
+	if (!painter || !painter->hasClipping())
+		return RowCull();
+
+	const QRectF clip = painter->clipBoundingRect();
+	const qreal pad = pictureMargin(document, section);
+	return RowCull{true, clip.top() - pad, clip.bottom() + pad};
+}
+
 /*
  * Both passes of the layout run through this one function. With `painter` set it draws
  * into the current tile; with `painter` null it only reports the height. `top` is the
@@ -1732,7 +1789,8 @@ double sectionBleed(const Document &document, const Section &section)
  */
 int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
 		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes = nullptr,
-		  AnimatedCollector *animated = nullptr, StickyCollector *sticky = nullptr);
+		  AnimatedCollector *animated = nullptr, StickyCollector *sticky = nullptr,
+		  const RowLedger &ledger = RowLedger());
 
 /*
  * Lays a sticky block's children out, one under the next, and returns the height they come to.
@@ -1759,7 +1817,7 @@ int layoutStickyChildren(QPainter *painter, const Section &block, const Document
 
 int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
 		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes,
-		  AnimatedCollector *animated, StickyCollector *sticky)
+		  AnimatedCollector *animated, StickyCollector *sticky, const RowLedger &ledger)
 {
 	/* Reads as one call at every site whether or not anyone is collecting. */
 	const auto record = [boxes](LayoutBox::Kind kind, const QRectF &rect) {
@@ -1812,6 +1870,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	const TextStyle &style = document.effectiveStyle(section);
 
 	const SectionPanels panels(painter, document, section, logos.stills);
+	const RowCull cull = rowCull(painter, document, section);
 
 	/*
 	 * The section's own panel, which sits behind everything below and therefore has to go down
@@ -2164,6 +2223,27 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 				return rowHeight;
 			};
 
+			if (cull.active) {
+				const int known = ledger.height(index);
+				const int measured =
+					known >= 0
+						? known
+						: rowExtent(layoutTitleSubtitle(nullptr, section, *left.style,
+										*left.subtitleStyle, *left.text,
+										*left.subtitle, row.leftX, leftTop,
+										row.leftWidth, kIgnoreBoxes),
+							    layoutTitleSubtitle(nullptr, section, *right.style,
+										*right.subtitleStyle, *right.text,
+										*right.subtitle, row.rightX, rightTop,
+										row.rightWidth, kIgnoreBoxes),
+							    paintBridge(nullptr, bridge, section, bridgeStyle, bridges,
+									row.bridgeX, bridgeTop, row.bridgeWidth));
+				if (!cull.reaches(y, measured)) {
+					y += measured + section.entryGap;
+					continue;
+				}
+			}
+
 			/*
 			 * The row's panel spans the section's full width rather than hugging the two
 			 * texts: what a striped list is striping is the row, and a band that stopped at
@@ -2233,7 +2313,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 			record(LayoutBox::Kind::Bridge, QRectF(row.bridgeX, bridgeTop, row.bridgeWidth, bridgeHeight));
 
-			y += rowExtent(leftHeight, rightHeight, bridgeHeight) + section.entryGap;
+			const int rowHeight = rowExtent(leftHeight, rightHeight, bridgeHeight);
+			ledger.note(rowHeight);
+			y += rowHeight + section.entryGap;
 		}
 
 		if (!section.entries.isEmpty())
@@ -2246,6 +2328,16 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const Entry &entry = section.entries.at(index);
 			const qreal x = indentedX(section, entry, contentX);
 
+			if (cull.active) {
+				const int known = ledger.height(index);
+				const int measured =
+					known >= 0 ? known : layoutText(nullptr, entry.text, style, x, y, contentWidth);
+				if (!cull.reaches(y, measured)) {
+					y += measured + section.entryGap;
+					continue;
+				}
+			}
+
 			const BackgroundSlot entrySlot = panels.entrySlot(index);
 			if (panels.wants(entrySlot)) {
 				const int measured = layoutText(nullptr, entry.text, style, x, y, contentWidth);
@@ -2255,6 +2347,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 			const int height = layoutText(painter, entry.text, style, x, y, contentWidth);
 			record(LayoutBox::Kind::Text, QRectF(x, y, contentWidth, height));
+			ledger.note(height);
 			y += height;
 			y += section.entryGap;
 		}
@@ -2270,6 +2363,19 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const Entry &entry = section.entries.at(index);
 			const qreal x = indentedX(section, entry, contentX);
 
+			if (cull.active) {
+				const int known = ledger.height(index);
+				const int measured = known >= 0 ? known
+								: layoutTitleSubtitle(nullptr, section, style,
+										      subtitleStyle, entry.text,
+										      entry.secondaryText, x, y,
+										      contentWidth, kIgnoreBoxes);
+				if (!cull.reaches(y, measured)) {
+					y += measured + section.entryGap;
+					continue;
+				}
+			}
+
 			/*
 			 * The entry's panel goes behind the whole pair; the Title and Subtitle panels go
 			 * behind its two lines, which the pair helper puts down as it places each of them.
@@ -2283,8 +2389,11 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					panels.paint(entrySlot, QRectF(x, y, contentWidth, measured));
 			}
 
-			y += layoutTitleSubtitle(painter, section, style, subtitleStyle, entry.text,
-						 entry.secondaryText, x, y, contentWidth, record, &panels);
+			const int height = layoutTitleSubtitle(painter, section, style, subtitleStyle, entry.text,
+							       entry.secondaryText, x, y, contentWidth, record,
+							       &panels);
+			ledger.note(height);
+			y += height;
 			y += section.entryGap;
 		}
 		if (!section.entries.isEmpty())
@@ -2300,6 +2409,11 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			const int x = qRound(indentedX(section, entry, contentX) +
 					     alignOffset(style.align, contentWidth, size.width()));
 			const QRect box(QPoint(x, y), size);
+
+			if (!cull.reaches(y, size.height())) {
+				y += size.height() + section.entryGap;
+				continue;
+			}
 
 			/*
 			 * Two panels that mean two different things: the entry's runs the width of the
@@ -2360,6 +2474,25 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 		for (int row = 0; row < rows; ++row) {
 			int rowHeight = 0;
+
+			if (cull.active) {
+				int measured = ledger.height(row);
+				if (measured < 0) {
+					measured = 0;
+					for (int column = 0; column < columns; ++column) {
+						const int index = indexAt(row, column);
+						if (index < count) {
+							const Entry &entry = section.entries.at(index);
+							measured = std::max(
+								measured, measureCell(entry, cellX(entry, column), y));
+						}
+					}
+				}
+				if (!cull.reaches(y, measured)) {
+					y += measured + section.entryGap;
+					continue;
+				}
+			}
 
 			/*
 			 * A cell's panel is the height of its *row* rather than of its own content, so the
@@ -2432,6 +2565,7 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 				}
 			}
 
+			ledger.note(rowHeight);
 			y += rowHeight + section.entryGap;
 		}
 
@@ -2462,6 +2596,8 @@ struct PlacedSection {
 	int index;
 	int top;
 	int height;
+	/* Its list's row heights, as this pass measured them; see RowLedger. */
+	QVector<int> rows;
 };
 
 /*
@@ -2499,10 +2635,11 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 		collector.section = index;
 		animatedCollector.section = index;
 		stickyCollector.section = index;
+		QVector<int> rows;
 		const int height = layoutSection(nullptr, section, document, logos, bridges, dividers, y,
 						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr,
-						 sticky ? &stickyCollector : nullptr);
-		placed.append(PlacedSection{&section, index, y, height});
+						 sticky ? &stickyCollector : nullptr, RowLedger{&rows, nullptr});
+		placed.append(PlacedSection{&section, index, y, height, std::move(rows)});
 		y += height;
 
 		if (y > kMaxStripHeight) {
@@ -2886,6 +3023,8 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 			continue;
 
 		layer.key = keyFor(*entry.section, layer);
+		if (!entry.rows.isEmpty())
+			layer.rowHeights = std::make_shared<const QVector<int>>(entry.rows);
 		layout->layers.append(layer);
 	}
 
@@ -2945,14 +3084,26 @@ QImage RollRenderer::rasterize(const RollLayout &layout, int layerIndex, int chu
 	/* Holes for animated logos only if the layout left them; see the constructor. */
 	const LogoSource art{logos, layout.animated ? animations : nullptr};
 
+	/*
+	 * Clipped to the chunk -- grown by a couple of pixels so that the clip itself can never touch a
+	 * pixel the chunk keeps -- which is what tells a long list which of its rows are worth painting
+	 * here; see RowCull.
+	 */
+	const qreal chunkTop = layer.pictureTop + layer.chunkTop(chunk);
+	const qreal clipTop = (layer.kind == RollLayer::Kind::Block ? layer.sectionTop : 0) + chunkTop - 2.0;
+	const QRectF chunkClip(-2.0, clipTop, layer.width + 4.0, layer.chunkHeight(chunk) + 4.0);
+
 	if (layer.kind == RollLayer::Kind::Block) {
 		/* A block's origin is its slot's top; its children are laid out in strip space. */
 		const StickyBlockPlacement &placement = layout.blocks.at(layer.block);
 		painter.translate(0, -layer.sectionTop);
+		painter.setClipRect(chunkClip);
 		paintBlockPicture(&painter, section, document, art, &bridges, &dividers, layer.sectionTop,
 				  qRound(placement.rect.height()));
 	} else {
-		layoutSection(&painter, section, document, art, &bridges, &dividers, layer.sectionTop);
+		painter.setClipRect(chunkClip);
+		layoutSection(&painter, section, document, art, &bridges, &dividers, layer.sectionTop, nullptr, nullptr,
+			      nullptr, RowLedger{nullptr, layer.rowHeights.get()});
 	}
 
 	painter.end();
