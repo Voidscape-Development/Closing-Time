@@ -3021,7 +3021,8 @@ int RollRenderer::measure(const Document &input) const
 	return total - document.leadIn - document.leadOut;
 }
 
-RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std::function<bool()> &cancelled) const
+RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std::function<bool()> &cancelled,
+				   const RollLayout *previous) const
 {
 	auto layout = std::make_shared<RollLayout>();
 
@@ -3058,13 +3059,58 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 	}
 
 	const QByteArray context = documentFingerprint(document);
+	layout->context = context;
+
+	/*
+	 * Whether the previous layout's keys can be trusted at all: the same context, the same choice
+	 * about animated logos, and the same presets -- a key covers the styles and panels a section
+	 * draws with as resolved through them, and a section that names a preset is equal to itself
+	 * whether or not the preset changed underneath it.
+	 */
+	const bool reusable = previous && previous->document && previous->context == context &&
+			      previous->animated == layout->animated &&
+			      previous->document->stylePresets == document.stylePresets &&
+			      previous->document->backgroundPresets == document.backgroundPresets;
+
+	/*
+	 * The key a layer had in the previous layout, when the section is the same section at the same
+	 * picture bounds, or 0. Matched in order, with a short look ahead past the cursor so a section
+	 * inserted or deleted above does not lose every key below it; the cursor only moves forward, so
+	 * the whole walk is linear in the length of the roll.
+	 */
+	int cursor = 0;
+	/* Where a picture starts relative to what it belongs to: a section's top, or a block's slot, already. */
+	const auto relativeTop = [](const RollLayer &layer) {
+		return layer.kind == RollLayer::Kind::Block ? layer.pictureTop : layer.pictureTop - layer.sectionTop;
+	};
+	const auto reuse = [&](const Section &section, const RollLayer &layer) -> quint64 {
+		if (!reusable)
+			return 0;
+
+		constexpr int kLookAhead = 8;
+		const QVector<RollLayer> &before = previous->layers;
+		for (int i = cursor, seen = 0; i < before.size() && seen < kLookAhead; ++i) {
+			const RollLayer &candidate = before.at(i);
+			if (candidate.kind != layer.kind)
+				continue;
+			++seen;
+
+			const bool sameBounds = relativeTop(candidate) == relativeTop(layer) &&
+						candidate.pictureHeight == layer.pictureHeight &&
+						candidate.width == layer.width;
+			if (sameBounds && previous->document->sections.at(candidate.section) == section) {
+				cursor = i + 1;
+				++layout->reusedKeys;
+				return candidate.key;
+			}
+		}
+		return 0;
+	};
 
 	const auto keyFor = [&](const Section &section, const RollLayer &layer) {
 		QByteArray bytes = context;
 		bytes.append(layer.kind == RollLayer::Kind::Block ? "block|" : "section|");
-		bytes.append(QByteArray::number(layer.pictureTop -
-						(layer.kind == RollLayer::Kind::Block ? 0 : layer.sectionTop)))
-			.append('|');
+		bytes.append(QByteArray::number(relativeTop(layer))).append('|');
 		bytes.append(QByteArray::number(layer.pictureHeight)).append('|');
 		bytes.append(layout->animated ? "holes|" : "stills|");
 		appendSectionFingerprint(&bytes, document, section);
@@ -3089,7 +3135,9 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 		if (layer.pictureHeight <= 0)
 			continue;
 
-		layer.key = keyFor(*entry.section, layer);
+		layer.key = reuse(*entry.section, layer);
+		if (!layer.key)
+			layer.key = keyFor(*entry.section, layer);
 		if (!entry.rows.isEmpty())
 			layer.rowHeights = std::make_shared<const QVector<int>>(entry.rows);
 		layout->layers.append(layer);
@@ -3106,7 +3154,10 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 		layer.width = layout->width;
 		layer.pictureTop = -placement.margin;
 		layer.pictureHeight = qRound(placement.rect.height()) + placement.margin * 2;
-		layer.key = keyFor(document.sections.at(placement.section), layer);
+		const Section &block = document.sections.at(placement.section);
+		layer.key = reuse(block, layer);
+		if (!layer.key)
+			layer.key = keyFor(block, layer);
 
 		placement.layer = layout->layers.size();
 		layout->layers.append(layer);

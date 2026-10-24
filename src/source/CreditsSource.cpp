@@ -305,7 +305,8 @@ RollFrame currentFrame(CreditsSourceData *data, const RollTimeline &timeline)
 
 /* ------------------------------------------------------------------ strip rebuilding */
 
-void runRebuild(CreditsSourceData *data, const Document &document, const QString &sourceName, uint64_t generation);
+void runRebuild(CreditsSourceData *data, const Document &document, const QString &sourceName, uint64_t generation,
+		const RollLayoutPtr &previous);
 
 void queueRebuild(CreditsSourceData *data)
 {
@@ -321,17 +322,23 @@ void queueRebuild(CreditsSourceData *data)
 		data->rebuildInFlight = true;
 	}
 
-	/* Copied rather than read back later, so the render thread never touches the source's state. */
+	/*
+	 * Copied rather than read back later, so the render thread never touches the source's state --
+	 * the layout being replaced included, whose unchanged sections hand their keys straight on.
+	 */
+	RollLayoutPtr previous = data->staged ? data->staged->layout : data->live;
 	postRenderJob([weak = data->weakSelf, data, document = data->document,
-		       sourceName = QString::fromUtf8(obs_source_get_name(data->source)), generation] {
+		       sourceName = QString::fromUtf8(obs_source_get_name(data->source)), generation,
+		       previous = std::move(previous)] {
 		OBSSourceAutoRelease source = obs_weak_source_get_source(weak);
 		if (!source)
 			return;
-		runRebuild(data, document, sourceName, generation);
+		runRebuild(data, document, sourceName, generation, previous);
 	});
 }
 
-void runRebuild(CreditsSourceData *data, const Document &document, const QString &sourceName, uint64_t generation)
+void runRebuild(CreditsSourceData *data, const Document &document, const QString &sourceName, uint64_t generation,
+		const RollLayoutPtr &previous)
 {
 	/*
 	 * The roll's own font files, registered before anything is measured against them. Doing it here
@@ -366,8 +373,8 @@ void runRebuild(CreditsSourceData *data, const Document &document, const QString
 	}
 
 	const RollRenderer renderer(data->logos.get(), data->animations.get());
-	RollLayoutPtr layout =
-		renderer.layout(document, false, [data, generation] { return data->generation.load() != generation; });
+	RollLayoutPtr layout = renderer.layout(
+		document, false, [data, generation] { return data->generation.load() != generation; }, previous.get());
 
 	/*
 	 * An abandoned layout hands nothing over. Either way an edit that arrived meanwhile is left in

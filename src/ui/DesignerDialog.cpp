@@ -1609,15 +1609,16 @@ void DesignerDialog::refreshPreview()
 	 * it is laid out. Only the layout is made here; the pane asks for the pictures it shows, at its
 	 * own scale, as it shows them.
 	 */
-	postRenderJob([rendered = document, cache = logos, animationCache = animations, target = sink, generation] {
+	postRenderJob([rendered = document, cache = logos, animationCache = animations, target = sink, generation,
+		       previous = shownLayout] {
 		const RollRenderer renderer(cache.get(), animationCache.get());
 		/*
 		 * The overlay's boxes are collected on every layout rather than only while it is showing,
 		 * so switching it on draws what is already on screen instead of waiting on another one.
 		 */
-		RollLayoutPtr layout = renderer.layout(rendered, true, [target, generation] {
-			return target->generation.load() != generation;
-		});
+		RollLayoutPtr layout = renderer.layout(
+			rendered, true, [target, generation] { return target->generation.load() != generation; },
+			previous.get());
 
 		QMetaObject::invokeMethod(
 			qApp,
@@ -1642,6 +1643,7 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 		return;
 	}
 
+	shownLayout = layout;
 	preview->setLayout(layout, rendered.background);
 	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
 

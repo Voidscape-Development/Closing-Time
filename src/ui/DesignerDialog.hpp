@@ -386,6 +386,8 @@ private:
 	 */
 	bool previewInFlight = false;
 	bool previewAgain = false;
+	/* The layout on screen, which the next one takes the keys of its unchanged sections from. */
+	RollLayoutPtr shownLayout;
 
 	QSplitter *splitter = nullptr;
 	SectionListWidget *sectionList = nullptr;

@@ -387,6 +387,16 @@ struct RollLayout {
 	/* True when animated logos are holes with placements, rather than baked in as stills. */
 	bool animated = false;
 
+	/*
+	 * Everything every picture depends on besides its own section -- the canvas width, the fonts,
+	 * the renderer's version -- as the bytes the keys were hashed with. Kept so the next layout can
+	 * tell whether this one's keys still hold; see RollRenderer::layout.
+	 */
+	QByteArray context;
+
+	/* How many keys were carried over from the previous layout rather than hashed; for the harness. */
+	int reusedKeys = 0;
+
 	bool isEmpty() const { return height <= 0 || layers.isEmpty(); }
 
 	/* What the timeline needs, from the layout and the document's own playback settings. */
@@ -429,9 +439,13 @@ public:
 	 * The document's fonts are resolved on the way in -- its bundle registered, its stand-ins
 	 * applied to whatever this machine still lacks -- so what is drawn later is in the fonts the
 	 * roll asks for wherever they can be had. See render/FontResolution.hpp.
+	 *
+	 * `previous`, when given, is the layout this one replaces. A section it holds unchanged, at the
+	 * same picture bounds, keeps the key it had there rather than being hashed again -- which is most
+	 * of what laying out a long roll costs, and an edit changes one section.
 	 */
-	RollLayoutPtr layout(const Document &document, bool boxes = false,
-			     const std::function<bool()> &cancelled = {}) const;
+	RollLayoutPtr layout(const Document &document, bool boxes = false, const std::function<bool()> &cancelled = {},
+			     const RollLayout *previous = nullptr) const;
 
 	/*
 	 * Rasterizes one chunk of one layer, at `scale` device pixels per roll pixel. `files`, when

@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QThread>
 
 #include <cstdlib>
+#include <functional>
 
 #include "harness/Fixtures.hpp"
 #include "harness/Harness.hpp"
@@ -585,5 +586,98 @@ CT_SUITE(layers_long_lists, "A list many chunks tall paints only the rows each c
 			      "and painting it a chunk at a time changes no pixel (largest difference %1 over %2)")
 			      .arg(difference.largest)
 			      .arg(difference.pixels));
+	}
+}
+
+CT_SUITE(layers_key_reuse, "A key carried over from the last layout is exactly the key hashing would give")
+{
+	/*
+	 * Laying a roll out again reuses the key of every section that has not changed, which is most of
+	 * what a layout of a long roll costs. A reused key that differs from the one hashing would give
+	 * is a stale picture on air, so every kind of edit is checked against laying the roll out afresh.
+	 */
+	Document base;
+	base.width = 1280;
+	for (int i = 0; i < 12; ++i) {
+		Section section = Section::makeDefault(i % 3 == 0 ? SectionType::TextList : SectionType::Title);
+		section.text = QStringLiteral("Heading %1").arg(i);
+		section.entries = {Entry{QStringLiteral("Entry %1").arg(i), {}, {}, {}, {}}};
+		base.sections.append(section);
+	}
+	Section block = Section::makeDefault(SectionType::StickyBlock);
+	block.children.front().text = QStringLiteral("The End");
+	base.sections.append(block);
+	base.setStylePreset(QStringLiteral("Lead"), base.sections.at(1).style);
+	base.sections[1].stylePresetName = QStringLiteral("Lead");
+
+	const QVector<QPair<QString, std::function<void(Document &)>>> edits = {
+		{QStringLiteral("nothing"),
+		 [](Document &) {
+		 }},
+		{QStringLiteral("one section's text"),
+		 [](Document &d) {
+			 d.sections[5].text = QStringLiteral("Changed");
+		 }},
+		{QStringLiteral("a section inserted at the top"),
+		 [](Document &d) {
+			 d.sections.prepend(Section::makeDefault(SectionType::Spacer));
+		 }},
+		{QStringLiteral("a section removed from the middle"),
+		 [](Document &d) {
+			 d.sections.removeAt(6);
+		 }},
+		{QStringLiteral("two sections swapped"),
+		 [](Document &d) {
+			 d.sections.swapItemsAt(2, 3);
+		 }},
+		{QStringLiteral("a preset edited"),
+		 [](Document &d) {
+			 TextStyle style = *d.findStylePreset(QStringLiteral("Lead"));
+			 style.color = QColor(255, 0, 0);
+			 d.setStylePreset(QStringLiteral("Lead"), style);
+		 }},
+		{QStringLiteral("the canvas widened"),
+		 [](Document &d) {
+			 d.width = 1920;
+		 }},
+		{QStringLiteral("a stand-in font named"),
+		 [](Document &d) {
+			 d.setFontSubstitute(QStringLiteral("Nowhere Sans"), QStringLiteral("Sans Serif"));
+		 }},
+		{QStringLiteral("the block's card edited"),
+		 [](Document &d) {
+			 d.sections.last().children.front().text = QStringLiteral("Fin");
+		 }},
+		{QStringLiteral("a section's shadow switched on"),
+		 [](Document &d) {
+			 d.sections[8].style.shadow.enabled = true;
+		 }},
+	};
+
+	const RollRenderer renderer(&stills());
+	const RollLayoutPtr before = renderer.layout(base);
+
+	for (const auto &[name, edit] : edits) {
+		const Context context(name);
+
+		Document after = base;
+		edit(after);
+
+		const RollLayoutPtr reused = renderer.layout(after, false, {}, before.get());
+		const RollLayoutPtr fresh = renderer.layout(after);
+
+		bool same = reused->layers.size() == fresh->layers.size();
+		for (int i = 0; same && i < fresh->layers.size(); ++i)
+			same = reused->layers.at(i).key == fresh->layers.at(i).key;
+		check(same, "every key is the one hashing gives");
+		checkEq(fresh->reusedKeys, 0, "a layout with nothing to go on reuses nothing");
+
+		if (name == QStringLiteral("nothing"))
+			checkEq(reused->reusedKeys, static_cast<long long>(fresh->layers.size()),
+				"an unchanged roll reuses every key");
+		if (name == QStringLiteral("one section's text") ||
+		    name == QStringLiteral("a section inserted at the top"))
+			check(reused->reusedKeys >= fresh->layers.size() - 2,
+			      "and an edit reuses all but what it touched");
 	}
 }
