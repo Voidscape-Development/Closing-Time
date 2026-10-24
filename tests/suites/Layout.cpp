@@ -171,8 +171,14 @@ CT_SUITE(layout_tiling, "A roll long enough to be cut into several tiles")
 	const QString tiling = tilingProblem(strip);
 	check(tiling.isEmpty(), QStringLiteral("the tiles partition the strip: %1").arg(tiling));
 
-	for (const StripTile &tile : strip.tiles)
+	for (const StripTile &tile : strip.tiles) {
 		check(tile.image.height() <= StripRenderer::kTileHeight, "no tile exceeds the cap");
+		/*
+		 * The source uploads these as they are and blends them premultiplied; a straight-alpha
+		 * tile would put a dark fringe round every edge the moment the roll moved by a fraction.
+		 */
+		check(tile.image.format() == QImage::Format_ARGB32_Premultiplied, "a tile stays premultiplied");
+	}
 
 	checkEq(strip.height, measure(document), "measure agrees over a multi-tile strip");
 

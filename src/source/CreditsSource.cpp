@@ -32,6 +32,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "model/CreditsModel.hpp"
@@ -71,7 +72,7 @@ enum class Phase {
  * that picture has been uploaded into.
  *
  * The picture is kept rather than uploaded and dropped the moment the strip arrives, because a
- * roll is tiled into as many 2048 px slices as it is long and only ever a screenful of them is on
+ * roll is tiled into as many 1024 px slices as it is long and only ever a screenful of them is on
  * display. Creating every one of those textures in the frame a rebuild lands in means tens or
  * hundreds of megabytes of upload inside one `video_render` -- a frame that takes long enough to
  * be seen, which is exactly the hitch this splitting up exists to avoid. A tile is instead put on
@@ -96,6 +97,35 @@ struct TileRuntime {
 	 * big for the GPU from logging once a frame for as long as it is on screen.
 	 */
 	QImage image;
+};
+
+/*
+ * The tiles of one strip, and how many of them still hold a picture that has not been to the GPU.
+ *
+ * Counted rather than looked for, so the frames after the last tile has gone up -- which is every
+ * frame of a roll that has been running for a few seconds -- have nothing to look through. A set of
+ * its own because a source holds two of them while a rebuild is landing: the one on screen, and the
+ * one being put on the GPU to replace it (see StagedStrip).
+ *
+ * Graphics-thread state.
+ */
+struct TileSet {
+	std::vector<TileRuntime> tiles;
+	size_t awaitingUpload = 0;
+};
+
+/*
+ * A strip that has arrived from the render thread but is not on screen yet: the tiles it will show
+ * where the roll is now are being put on the GPU first, one a frame, so the frame it takes over in
+ * has nothing to upload -- see stageStrip. Everything but its tiles waits in `strip`.
+ *
+ * Graphics-thread state.
+ */
+struct StagedStrip {
+	TileSet tiles;
+	Strip strip;
+	/* The video frame it arrived in, for kMaxStagingNs. */
+	uint64_t arrived = 0;
 };
 
 /*
@@ -305,13 +335,16 @@ struct CreditsSourceData {
 	double libraryPollElapsed = 0.0;
 
 	/* Graphics-thread state. */
-	std::vector<TileRuntime> tiles;
+	TileSet live;
+	std::optional<StagedStrip> staged;
 	/*
-	 * How many of them still hold a picture that has not been to the GPU. Counted rather than
-	 * looked for, so the frames after the last tile has gone up -- which is every frame of a roll
-	 * that has been running for a few seconds -- have nothing to look through.
+	 * The video frame the last large upload -- a tile or a sticky block -- was made in. One a frame
+	 * is the budget, and it is a budget per video frame rather than per call to video_render: a
+	 * source in both panes of Studio Mode, a projector and the multiview is rendered several times
+	 * a frame, and each of those calls spending a budget of its own is several uploads in the one
+	 * frame the spreading exists to keep them out of.
 	 */
-	size_t tilesAwaitingUpload = 0;
+	uint64_t lastUploadFrame = UINT64_MAX;
 	std::vector<AnimatedLogoRuntime> animatedLogos;
 	std::vector<StickyBlockRuntime> stickyBlocks;
 	/*
@@ -498,12 +531,21 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 }
 
 /* Graphics thread only. */
-void releaseTextures(CreditsSourceData *data)
+void releaseTiles(TileSet &set)
 {
-	for (TileRuntime &tile : data->tiles) {
+	for (TileRuntime &tile : set.tiles) {
 		if (tile.texture)
 			gs_texture_destroy(tile.texture);
 	}
+
+	set.tiles.clear();
+	set.awaitingUpload = 0;
+}
+
+/* Graphics thread only. Everything on screen; a strip still being staged is not touched. */
+void releaseTextures(CreditsSourceData *data)
+{
+	releaseTiles(data->live);
 
 	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
 		if (runtime.texture)
@@ -517,8 +559,6 @@ void releaseTextures(CreditsSourceData *data)
 			gs_texture_destroy(runtime.texture);
 	}
 
-	data->tiles.clear();
-	data->tilesAwaitingUpload = 0;
 	data->animatedLogos.clear();
 	data->stickyBlocks.clear();
 	data->stripHeight = 0;
@@ -588,6 +628,24 @@ void uploadFrame(AnimatedLogoRuntime &runtime)
 }
 
 /*
+ * Whether this video frame's large upload has already been made, and the call that spends it.
+ *
+ * A tile or a sticky block that is on screen is uploaded whatever this says, because what reaches
+ * the frame does not get to depend on the spreading. Everything done ahead of need asks first.
+ *
+ * Graphics thread only.
+ */
+bool uploadSpent(const CreditsSourceData *data)
+{
+	return data->lastUploadFrame == obs_get_video_frame_time();
+}
+
+void spendUpload(CreditsSourceData *data)
+{
+	data->lastUploadFrame = obs_get_video_frame_time();
+}
+
+/*
  * Puts one tile's picture on the GPU and lets go of the picture.
  *
  * Returns false for a tile there is nothing to draw from: one whose texture could not be
@@ -597,9 +655,9 @@ void uploadFrame(AnimatedLogoRuntime &runtime)
  * Graphics thread only; requires an active graphics context, and must not be called from inside a
  * technique's pass -- see the ordering in videoRender.
  */
-bool uploadTile(CreditsSourceData *data, size_t index)
+bool uploadTile(CreditsSourceData *data, TileSet &set, size_t index)
 {
-	TileRuntime &tile = data->tiles[index];
+	TileRuntime &tile = set.tiles[index];
 
 	if (tile.texture)
 		return true;
@@ -616,7 +674,8 @@ bool uploadTile(CreditsSourceData *data, size_t index)
 	 * says the failure has already been reported.
 	 */
 	tile.image = QImage();
-	--data->tilesAwaitingUpload;
+	--set.awaitingUpload;
+	spendUpload(data);
 	return tile.texture != nullptr;
 }
 
@@ -634,13 +693,13 @@ struct TileRange {
 	size_t last = 0;
 };
 
-TileRange visibleTiles(const CreditsSourceData *data, double stripTop, int canvasHeight)
+TileRange visibleTiles(const TileSet &set, double stripTop, int canvasHeight)
 {
 	TileRange range;
 	bool started = false;
 
-	for (size_t i = 0; i < data->tiles.size(); ++i) {
-		const TileRuntime &tile = data->tiles[i];
+	for (size_t i = 0; i < set.tiles.size(); ++i) {
+		const TileRuntime &tile = set.tiles[i];
 		const double top = stripTop + tile.top;
 
 		if (top + tile.height <= 0.0)
@@ -662,39 +721,52 @@ TileRange visibleTiles(const CreditsSourceData *data, double stripTop, int canva
  * Uploads one tile that is not on screen yet.
  *
  * A tile is put on the GPU when it is about to be drawn, which on its own is enough to keep the
- * picture right: at a couple of tiles a screenful and 2048 pixels a tile, a roll meets a new one
+ * picture right: at a few tiles a screenful and 1024 pixels a tile, a roll meets a new one
  * every several seconds. This is what keeps the pictures from sitting in RAM in the meantime, and
  * what puts the upload a frame or more before the tile is needed rather than in the frame that
- * needs it. One per frame, because a tile is fifteen megabytes and the whole point is not to do
+ * needs it. One per frame, because a tile is eight megabytes and the whole point is not to do
  * several of them at once.
  *
  * Started from the tile after the visible run and wrapping round, so the roll uploads in the
- * direction it is travelling.
+ * direction it is travelling. Skipped in a frame whose upload has already been made.
  *
  * Graphics thread only; requires an active graphics context.
  */
 void uploadTileAhead(CreditsSourceData *data, size_t from)
 {
-	if (data->tilesAwaitingUpload == 0)
+	TileSet &set = data->live;
+	if (set.awaitingUpload == 0 || uploadSpent(data))
 		return;
 
-	const size_t count = data->tiles.size();
+	const size_t count = set.tiles.size();
 
 	for (size_t step = 0; step < count; ++step) {
 		const size_t index = (from + step) % count;
-		if (data->tiles[index].image.isNull())
+		if (set.tiles[index].image.isNull())
 			continue;
 
-		uploadTile(data, index);
+		uploadTile(data, set, index);
 		return;
 	}
 }
 
 /*
- * Takes the finished strip off the render thread.
+ * How long a staged strip may take to get its visible tiles onto the GPU before it is put on screen
+ * regardless, in nanoseconds of video time. At one tile a frame and a few tiles a screenful it needs
+ * a handful of frames; this is the backstop for a roll scrubbed or wrapped onto fresh tiles faster
+ * than they can go up, which would otherwise go on showing the old strip for as long as that kept up.
+ * Measured in video time rather than in calls, because a source can be rendered several times a frame.
+ */
+constexpr uint64_t kMaxStagingNs = 500'000'000;
+
+/*
+ * Takes the finished strip off the render thread and stages it.
  *
- * Nothing is uploaded here: the tiles are adopted with their pictures still in hand and go to the
- * GPU as they are reached -- see TileRuntime, which is where the reason for that lives.
+ * Nothing is uploaded here, and nothing changes on screen: the tiles are adopted with their
+ * pictures still in hand -- see TileRuntime, which is where the reason for that lives -- and held
+ * beside the strip being shown until stageStrip has put the ones the roll is looking at on the GPU.
+ * A strip arriving while another is still staged simply replaces it; the one that was staged never
+ * reached the screen, so nothing is lost by its going.
  *
  * Graphics thread only.
  */
@@ -715,7 +787,41 @@ void adoptPendingStrip(CreditsSourceData *data)
 		data->hasPendingStrip.store(false, std::memory_order_relaxed);
 	}
 
+	if (data->staged)
+		releaseTiles(data->staged->tiles);
+
+	data->staged.emplace();
+	data->staged->arrived = obs_get_video_frame_time();
+	TileSet &tiles = data->staged->tiles;
+
+	tiles.tiles.reserve(strip.tiles.size());
+	for (StripTile &tile : strip.tiles) {
+		TileRuntime runtime;
+		runtime.top = tile.top;
+		runtime.height = tile.image.height();
+		runtime.image = std::move(tile.image);
+		tiles.tiles.push_back(std::move(runtime));
+	}
+	tiles.awaitingUpload = tiles.tiles.size();
+
+	strip.tiles.clear();
+	data->staged->strip = std::move(strip);
+}
+
+/*
+ * Puts the staged strip on screen in place of the one that was there.
+ *
+ * Graphics thread only; requires an active graphics context.
+ */
+void commitStagedStrip(CreditsSourceData *data)
+{
+	StagedStrip staged = std::move(*data->staged);
+	data->staged.reset();
+
 	releaseTextures(data);
+
+	Strip &strip = staged.strip;
+	data->live = std::move(staged.tiles);
 	data->stripHeight = strip.height;
 
 	data->animatedLogos.reserve(strip.animatedLogos.size());
@@ -744,17 +850,49 @@ void adoptPendingStrip(CreditsSourceData *data)
 		 */
 		data->stickyBlocks.push_back(std::move(runtime));
 	}
+}
 
-	data->tiles.reserve(strip.tiles.size());
-	for (StripTile &tile : strip.tiles) {
-		TileRuntime runtime;
-		runtime.top = tile.top;
-		runtime.height = tile.image.height();
-		runtime.image = std::move(tile.image);
-		data->tiles.push_back(std::move(runtime));
+/*
+ * Moves a staged strip one frame closer to the screen, and puts it there once it is ready.
+ *
+ * Ready means every tile it would show at the roll's current position is on the GPU. Until then it
+ * spends this frame's upload on one of them and the old strip goes on being drawn, so the frame the
+ * new one takes over in is a frame with nothing to upload. Putting a rebuilt strip straight on
+ * screen instead means uploading a screenful of tiles in the frame it arrives -- several of them,
+ * at eight megabytes or so apiece -- which is exactly the hitch the spreading exists to avoid,
+ * and one that lands mid-roll whenever a linked style is changed in the library while the roll is
+ * on air.
+ *
+ * A strip that would show nothing where the roll is -- which is where a content change puts it, at
+ * the top of a re-armed roll with the strip still below the frame -- is ready at once.
+ *
+ * Graphics thread only; requires an active graphics context, and must not be called from inside a
+ * technique's pass -- see the ordering in videoRender.
+ */
+void stageStrip(CreditsSourceData *data, double stripTop, int canvasHeight)
+{
+	if (!data->staged)
+		return;
+
+	StagedStrip &staged = *data->staged;
+	TileSet &tiles = staged.tiles;
+
+	const TileRange visible = visibleTiles(tiles, stripTop, canvasHeight);
+	bool ready = true;
+	for (size_t i = visible.first; i < visible.last; ++i) {
+		if (tiles.tiles[i].image.isNull())
+			continue;
+
+		if (uploadSpent(data)) {
+			ready = false;
+			break;
+		}
+
+		uploadTile(data, tiles, i);
 	}
 
-	data->tilesAwaitingUpload = data->tiles.size();
+	if (ready || obs_get_video_frame_time() - staged.arrived >= kMaxStagingNs)
+		commitStagedStrip(data);
 }
 
 /* ------------------------------------------------------------------ playback control */
@@ -1358,6 +1496,8 @@ void destroy(void *raw)
 
 	obs_enter_graphics();
 	releaseTextures(data);
+	if (data->staged)
+		releaseTiles(data->staged->tiles);
 	if (data->fadeEffect)
 		gs_effect_destroy(data->fadeEffect);
 	obs_leave_graphics();
@@ -1473,7 +1613,19 @@ void videoTick(void *raw, float seconds)
 	data->libraryPollElapsed += seconds;
 	if (data->libraryPollElapsed >= kLibraryPollSeconds) {
 		data->libraryPollElapsed = 0.0;
-		postRenderJob([] { StyleLibrary::instance().pollForChanges(); });
+
+		/*
+		 * One poll in the queue at a time for the whole machine. Every roll asks once a second,
+		 * and the render thread can be several seconds into rasterizing a long one: without this
+		 * the asks pile up behind it and are answered back to back, all of them the same answer.
+		 */
+		static std::atomic<bool> pollQueued{false};
+		if (!pollQueued.exchange(true, std::memory_order_acq_rel)) {
+			postRenderJob([] {
+				pollQueued.store(false, std::memory_order_release);
+				StyleLibrary::instance().pollForChanges();
+			});
+		}
 	}
 
 	if (const quint64 serial = StyleLibrary::instance().serial(); serial != data->librarySerial) {
@@ -1668,9 +1820,9 @@ void drawAnimatedLogos(CreditsSourceData *data, gs_eparam_t *imageParam, double 
  * The one shader in the plugin: libobs' own textured quad with an opacity on it.
  *
  * A sticky block whose entrance waits for the roll fades up in place, and the base effect draws a
- * texture exactly as it is. Multiplying the alpha rather than the whole color is what makes the
- * fade a fade rather than a fade to black: the pictures are straight alpha, blended the same way
- * the tiles are, so scaling the channel the blend reads is the whole of the change.
+ * texture exactly as it is. The pictures are premultiplied, blended the same way the tiles are, so
+ * the fade scales all four channels together: scaling the alpha alone would leave the color at full
+ * strength on top of a background the blend no longer takes away, which glows rather than fades.
  *
  * Written out here rather than shipped as a .effect file because it is thirty lines and because a
  * data file is one more thing that has to be found at runtime on three platforms.
@@ -1702,8 +1854,7 @@ VertData VSDefault(VertData vert_in)
 float4 PSFade(VertData vert_in) : TARGET
 {
 	float4 rgba = image.Sample(textureSampler, vert_in.uv);
-	rgba.a *= alpha;
-	return rgba;
+	return rgba * alpha;
 }
 
 technique Draw
@@ -1750,7 +1901,9 @@ gs_effect_t *stickyFadeEffect(CreditsSourceData *data)
  * nothing to do but draw it.
  *
  * A block is still uploaded on the spot if it turns up already on screen, which is what a scrub or
- * a canvas resize does; the lookahead is an optimization rather than a precondition of drawing.
+ * a canvas resize does; the lookahead is an optimization rather than a precondition of drawing. The
+ * lookahead takes its turn with the strip's tiles for the frame's one upload, and a block that is
+ * not on screen yet waits a frame rather than going up beside a tile.
  *
  * Graphics thread only; requires an active graphics context, and must not be called from inside a
  * technique's pass -- see the ordering in videoRender.
@@ -1765,7 +1918,12 @@ void prepareStickyBlocks(CreditsSourceData *data, double stripTop, int canvasHei
 		if (runtime.placement.pictureTop(top) >= canvasHeight * 2.0 || runtime.placement.clearedFrame(top))
 			continue;
 
+		const bool needed = runtime.showing() && !runtime.placement.offFrame(top, canvasHeight);
+		if (!needed && uploadSpent(data))
+			continue;
+
 		runtime.texture = createTexture(runtime.placement.image, 0);
+		spendUpload(data);
 		if (!runtime.texture)
 			obs_log(LOG_ERROR, "failed to allocate a %dx%d sticky block texture",
 				runtime.placement.image.width(), runtime.placement.image.height());
@@ -1847,9 +2005,6 @@ void videoRender(void *raw, gs_effect_t *)
 
 	drawBackground(data->document.background, canvasWidth, canvasHeight);
 
-	if (data->tiles.empty())
-		return;
-
 	double offset = 0.0;
 	{
 		std::lock_guard<std::mutex> lock(data->stateMutex);
@@ -1866,20 +2021,26 @@ void videoRender(void *raw, gs_effect_t *)
 	 * Everything this frame draws goes on the GPU before the pass that draws it is started,
 	 * rather than being allocated part-way through one: a technique's pass is a poor place to
 	 * create a resource, and gs_effect_loop may run its body more than once.
+	 *
+	 * A rebuilt strip comes first, so that the frame it takes over in draws it rather than the one
+	 * it replaced -- and so that while it is still being staged, it has the frame's upload.
 	 */
-	const TileRange visible = visibleTiles(data, stripTop, canvasHeight);
-	bool uploaded = false;
-	for (size_t i = visible.first; i < visible.last; ++i) {
-		uploaded = uploaded || !data->tiles[i].image.isNull();
-		uploadTile(data, i);
-	}
+	stageStrip(data, stripTop, canvasHeight);
+
+	if (data->live.tiles.empty())
+		return;
 
 	/*
-	 * One tile a frame between the two of them. A tile that had to go up this frame because it is
-	 * being drawn has already had the frame's share of the upload, and putting a second one up
-	 * behind it would be doing exactly what spreading them out is for avoiding.
+	 * A tile on screen goes up whatever the budget says. One about to come on screen goes up a
+	 * frame or more ahead of that, as long as nothing else has had this frame's upload -- and not
+	 * at all while a rebuilt strip is waiting to replace these, since it would be gone before it
+	 * was drawn.
 	 */
-	if (!uploaded)
+	const TileRange visible = visibleTiles(data->live, stripTop, canvasHeight);
+	for (size_t i = visible.first; i < visible.last; ++i)
+		uploadTile(data, data->live, i);
+
+	if (!data->staged)
 		uploadTileAhead(data, visible.last);
 
 	prepareAnimatedLogos(data, stripTop, canvasHeight);
@@ -1888,12 +2049,20 @@ void videoRender(void *raw, gs_effect_t *)
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
 
+	/*
+	 * Premultiplied, because the pictures are -- see StripRenderer::render. It is also what OBS
+	 * itself expects of a source: its default blend leaves a straight-alpha draw premultiplied in
+	 * the target, and a plain SRCALPHA/INVSRCALPHA, applied to the alpha channel as well, writes
+	 * alpha squared there instead -- harmless straight onto the program, but every antialiased
+	 * edge comes out thinner wherever the source is first drawn into a texture of its own: a
+	 * filter, a nested scene, a transition.
+	 */
 	gs_blend_state_push();
-	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
 	while (gs_effect_loop(effect, "Draw")) {
 		for (size_t i = visible.first; i < visible.last; ++i) {
-			gs_texture_t *texture = data->tiles[i].texture;
+			gs_texture_t *texture = data->live.tiles[i].texture;
 			if (!texture)
 				continue;
 
@@ -1903,7 +2072,7 @@ void videoRender(void *raw, gs_effect_t *)
 			 * itself that actually falls inside the canvas.
 			 */
 			gs_effect_set_texture(imageParam, texture);
-			drawTile(texture, stripTop + data->tiles[i].top, canvasHeight);
+			drawTile(texture, stripTop + data->live.tiles[i].top, canvasHeight);
 		}
 
 		drawAnimatedLogos(data, imageParam, stripTop, canvasHeight);

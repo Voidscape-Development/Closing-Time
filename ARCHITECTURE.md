@@ -889,14 +889,21 @@ Document ──StripRenderer.render()──> Strip { tiles: [ {top, QImage} ], w
 measures; with a painter it draws. Both passes run the identical code, so measurement and
 painting cannot drift apart — the harness asserts `measure()` agrees with `render()`.
 
-**Tiling.** The strip is cut into ≤2048 px tall tiles. A long roll easily exceeds the
+**Tiling.** The strip is cut into ≤1024 px tall tiles. A long roll easily exceeds the
 maximum texture height a GPU will accept (commonly 16384 px), and tiling also avoids
 allocating one enormous texture when only a screenful is ever visible. Total strip height is
 capped at 200 000 px as a backstop against a runaway import.
 
-**Alpha.** QPainter needs a premultiplied buffer; OBS composites with straight alpha. Each
-tile is unpremultiplied once at the end of rasterization (`Format_ARGB32`, which is `GS_BGRA`
-in memory on little-endian) rather than corrected per frame on the GPU.
+**Alpha.** Premultiplied from end to end. QPainter draws into `Format_ARGB32_Premultiplied`, which
+is `GS_BGRA` in memory on little-endian, and the tiles, the sticky blocks and the animation frames
+are uploaded exactly as drawn and blended with `ONE, INVSRCALPHA`. Two things rule out the straight
+alpha this used to unpremultiply into. A straight tile has black under every transparent pixel, and
+a roll that moves by a fraction of a pixel a frame is bilinearly filtered between the two in every
+frame it is on screen — a dark fringe round the type that shifts as the fraction does. And the
+`SRCALPHA, INVSRCALPHA` that straight alpha is drawn with applies to the alpha channel too, writing
+alpha squared into any texture the source is first drawn into — a filter, a nested scene, a
+transition — where every antialiased edge then comes out thinner. Premultiplied output is what OBS's
+own default blend leaves in such a texture, and what it expects to find there.
 
 **Upload is spread out; drawing is not.** A finished strip is *adopted* rather than uploaded: the
 graphics thread takes the tiles with their pictures still in hand and puts each one on the GPU as
@@ -905,7 +912,24 @@ lands in is tens or hundreds of megabytes inside one `video_render`, which is a 
 to be seen — and a hitch there is a hitch in whatever else OBS was compositing, not only in the
 roll. A tile that is about to be drawn is uploaded first, in the same frame, so nothing about what
 reaches the screen depends on the spreading; one further tile goes up per frame ahead of the roll,
-which is what keeps the pictures from sitting in RAM behind it. The peak is no worse than it was:
+which is what keeps the pictures from sitting in RAM behind it. The tile is the unit of upload, so
+its height is the size of the largest upload any one frame carries — 1024 px is eight megabytes at
+1920 wide, half of what a 2048 px tile cost.
+
+"Per frame" means per *video* frame, not per `video_render`. A source in both panes of Studio Mode,
+on a projector and in the multiview is rendered several times a frame, so the budget is keyed to
+`obs_get_video_frame_time()`, and a tile going up ahead of need, a sticky block going up ahead of its
+entrance and a rebuilt strip being staged all take turns at the one upload a frame allows.
+
+**A rebuilt strip is staged before it is shown.** Swapping a new strip in the frame it arrives means
+uploading the screenful of tiles it shows at the roll's current position in that frame — several of
+them at once, which is the hitch all of the above exists to avoid, and one that lands mid-roll when a
+linked style changes in the library while the roll is on air. So the new strip is held beside the
+one on screen while its visible tiles go up one a frame, and takes over in the first frame they are
+all resident; until then the old strip goes on being drawn. A content edit re-arms the roll, which
+puts the new strip entirely below the frame, so the common case has nothing to stage and swaps at
+once. A backstop of half a second swaps regardless, for a roll scrubbed onto fresh tiles faster than
+they can go up. The peak is no worse than it was:
 every picture was in RAM at once anyway while the old code uploaded them one after another.
 
 An animated logo and a sticky block are on the same footing, and always were — their textures are
@@ -1149,7 +1173,9 @@ Three threads touch the source, and the split is deliberate:
   drawing. libobs defers `update()` for video sources to the graphics thread, so the
   document has exactly one writer.
 - **Render thread** owns rasterization. One thread, shared by every source and every open
-  designer window, running jobs strictly in the order they were posted (`RenderThread.hpp`).
+  designer window, running jobs strictly in the order they were posted (`RenderThread.hpp`). It
+  runs a step below normal priority — below normal on Windows, utility QoS on macOS, nice 5 on
+  Linux — because nothing waits on it frame by frame and the graphics and encoder threads do.
   Rebuilds coalesce: while one is in flight, further edits set a re-run flag instead of
   queueing another job, so a long roll cannot accumulate a backlog of stale frames behind
   the one being waited on. Both the source and the designer do this.

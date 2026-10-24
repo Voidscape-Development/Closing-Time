@@ -64,11 +64,11 @@ QImage prepareFrame(const QImage &source, int maxHeight, const QSize &fixed)
 	}
 
 	/*
-	 * Straight alpha, matching the strip tiles: these frames are uploaded as GPU textures for
-	 * the source and composited by QPainter for the preview, and OBS composites with straight
-	 * alpha. Converting once here is cheaper than correcting per frame in either consumer.
+	 * Premultiplied, matching the strip tiles: these frames are uploaded as GPU textures for
+	 * the source, which blends them premultiplied, and composited by QPainter for the preview,
+	 * whose fast path is this format. Converting once here is cheaper than in either consumer.
 	 */
-	return image.convertToFormat(QImage::Format_ARGB32);
+	return image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
 /* True once the decode has taken all it is allowed to. */

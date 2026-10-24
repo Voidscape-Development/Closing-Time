@@ -72,6 +72,8 @@ CT_SUITE(animated_logo_decode, "Decoding an animation, and telling one from a st
 	}
 
 	check(decoded->frames.at(0).image != decoded->frames.at(1).image, "the two frames differ");
+	check(decoded->frames.at(0).image.format() == QImage::Format_ARGB32_Premultiplied,
+	      "frames are premultiplied, as the source blends them");
 
 	/* A still asked of the animation cache is not an animation, and the answer is cached as such. */
 	check(cache.get(testLogoPath(), 64) == nullptr, "a still returns no animation");

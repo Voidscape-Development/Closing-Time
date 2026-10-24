@@ -379,6 +379,7 @@ bool StyleLibrary::save()
 
 bool StyleLibrary::pollForChanges()
 {
+	QString file;
 	{
 		std::lock_guard<std::mutex> lock(libraryMutex());
 		if (path.isEmpty())
@@ -388,11 +389,21 @@ bool StyleLibrary::pollForChanges()
 		if (now - lastPollMs < kPollIntervalMs)
 			return false;
 		lastPollMs = now;
+		file = path;
+	}
 
-		const QFileInfo info(path);
-		const qint64 modified = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
-		const qint64 size = info.exists() ? info.size() : -1;
-		if (modified == fileModifiedMs && size == fileSize)
+	/*
+	 * The look at the file is taken outside the lock. It is a `stat`, which can block for as long
+	 * as the disk or a filter driver cares to make it, and the graphics thread takes this same lock
+	 * to read the library whenever a roll is bringing its linked styles up to date.
+	 */
+	const QFileInfo info(file);
+	const qint64 modified = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+	const qint64 size = info.exists() ? info.size() : -1;
+
+	{
+		std::lock_guard<std::mutex> lock(libraryMutex());
+		if (file != path || (modified == fileModifiedMs && size == fileSize))
 			return false;
 	}
 

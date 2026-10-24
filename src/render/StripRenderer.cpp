@@ -710,7 +710,8 @@ struct AnimatedCollector {
 				}
 
 				placement.shadowOffset = offset;
-				placement.shadowFrames.append(shadow.convertToFormat(QImage::Format_ARGB32));
+				placement.shadowFrames.append(
+					shadow.convertToFormat(QImage::Format_ARGB32_Premultiplied));
 			}
 		}
 
@@ -1910,8 +1911,8 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 					     nullptr);
 			blockPainter.end();
 
-			/* Straight alpha, for the same reason the tiles are. */
-			placement.image = image.convertToFormat(QImage::Format_ARGB32);
+			/* Premultiplied, for the same reason the tiles are. */
+			placement.image = std::move(image);
 			sticky->add(std::move(placement));
 		}
 
@@ -2699,10 +2700,13 @@ Strip StripRenderer::render(const Document &input, LayoutBoxes *boxes) const
 		painter.end();
 
 		/*
-		 * OBS composites with straight alpha, so the premultiplied buffer QPainter needs
-		 * is unpremultiplied once here rather than corrected per frame on the GPU.
+		 * Left premultiplied, exactly as QPainter drew it, and blended that way on the GPU --
+		 * see videoRender. A straight-alpha tile has black under every transparent pixel, and a
+		 * roll that moves by a fraction of a pixel a frame is filtered between them in every
+		 * frame it is on screen: a dark fringe round the edges of the type that shifts as the
+		 * fraction does.
 		 */
-		strip.tiles.append(StripTile{top, tile.convertToFormat(QImage::Format_ARGB32)});
+		strip.tiles.append(StripTile{top, std::move(tile)});
 	}
 
 	return strip;

@@ -280,8 +280,15 @@ public:
 	{
 	}
 
-	/* Maximum tile height in pixels. Tiles are also capped to the strip's own height. */
-	static constexpr int kTileHeight = 2048;
+	/*
+	 * Maximum tile height in pixels. Tiles are also capped to the strip's own height.
+	 *
+	 * A tile is the unit the source uploads in, one per frame, so its size is the size of the
+	 * largest single upload a frame of the roll ever carries: eight megabytes at 1920 wide, against
+	 * the sixteen a 2048 px tile cost. The price is a tile more to draw in some frames and a seam
+	 * more for the rasterizer to paint across, which is nothing beside a frame that takes too long.
+	 */
+	static constexpr int kTileHeight = 1024;
 
 	/*
 	 * Rasterizes the document. When `boxes` is given it is filled with the rectangles the

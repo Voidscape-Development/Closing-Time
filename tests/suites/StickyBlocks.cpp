@@ -101,6 +101,8 @@ CT_SUITE(sticky_hole, "The strip leaving the block's slot empty")
 	checkEq(placement.image.height(), qRound(slot.height()) + placement.margin * 2,
 		"and as tall as its slot plus the margin at each end");
 	check(!inkOf(placement.image).isEmpty(), "with the block's own content drawn in it");
+	check(placement.image.format() == QImage::Format_ARGB32_Premultiplied,
+	      "and left premultiplied, as the source blends it");
 
 	/* The slot is reported to the overlay, so the designer can say where the block sits. */
 	const QRectF box = boxOf(document, LayoutBox::Kind::Sticky);
