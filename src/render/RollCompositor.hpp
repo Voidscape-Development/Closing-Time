@@ -108,6 +108,14 @@ struct ComposeView {
  */
 DrawList composeFrame(const RollLayout &layout, const RollFrame &frame, const ComposeView &view);
 
+/*
+ * Fits a draw to a picture that covers only part of what the draw expects -- a chunk cut down to its
+ * ink, which covers `size` at `offset` in the chunk's full rectangle. Returns false when none of the
+ * draw falls on the picture. `target` and `source` come back as the draw to make of the picture as it
+ * is.
+ */
+bool fitToPicture(const DrawItem &item, QPoint offset, QSize size, QRectF *target, QRectF *source);
+
 /* The chunks a draw list uses, each once, in the order they are first drawn. */
 QVector<DrawSource> chunksIn(const DrawList &list);
 

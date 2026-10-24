@@ -42,6 +42,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #include "render/BackgroundPainter.hpp"
 #include "render/BridgeArtRenderer.hpp"
@@ -2772,6 +2773,72 @@ quint64 mix(quint64 value)
 	return value ^ (value >> 31);
 }
 
+/*
+ * Cuts a rasterized chunk down to the pixels that carry anything, and records where they came from
+ * in the image's offset.
+ *
+ * A chunk is the canvas wide, and a credit roll is mostly empty canvas: a centered name is a few
+ * hundred pixels of ink in a row nineteen hundred wide. Everything a chunk costs after it is drawn --
+ * the memory it is kept in, the bytes uploaded, the texture it occupies -- is paid for its width, so
+ * the empty part is cut away here, once, for every consumer.
+ *
+ * One transparent pixel is kept round what is left wherever there is room for it, so that a texture
+ * sampled bilinearly at a fractional position fades out at its edge rather than repeating its last
+ * row of ink. A chunk with nothing in it at all comes back as a single transparent pixel.
+ */
+QImage cropToInk(const QImage &image)
+{
+	const int width = image.width();
+	const int height = image.height();
+
+	int top = -1;
+	int bottom = -1;
+	int left = width;
+	int right = -1;
+
+	/*
+	 * Premultiplied, so a transparent pixel is all four channels zero and a row with nothing in it is
+	 * a run of zero bytes -- which memcmp answers far faster than a pixel at a time, and most rows of
+	 * most chunks are exactly that.
+	 */
+	const std::vector<uchar> zeros(static_cast<size_t>(width) * 4, 0);
+
+	for (int y = 0; y < height; ++y) {
+		const auto *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+		if (std::memcmp(row, zeros.data(), zeros.size()) == 0)
+			continue;
+
+		int first = 0;
+		while (first < width && row[first] == 0)
+			++first;
+
+		int last = width - 1;
+		while (last > first && row[last] == 0)
+			--last;
+
+		if (top < 0)
+			top = y;
+		bottom = y;
+		left = std::min(left, first);
+		right = std::max(right, last);
+	}
+
+	if (top < 0) {
+		QImage empty(1, 1, QImage::Format_ARGB32_Premultiplied);
+		empty.fill(Qt::transparent);
+		return empty;
+	}
+
+	const QRect ink =
+		QRect(QPoint(left, top), QPoint(right, bottom)).adjusted(-1, -1, 1, 1).intersected(image.rect());
+	if (ink == image.rect())
+		return image;
+
+	QImage cropped = image.copy(ink);
+	cropped.setOffset(ink.topLeft());
+	return cropped;
+}
+
 } // namespace
 
 QBrush textFillBrush(const TextStyle &style, const QRectF &box)
@@ -3107,7 +3174,7 @@ QImage RollRenderer::rasterize(const RollLayout &layout, int layerIndex, int chu
 	}
 
 	painter.end();
-	return image;
+	return cropToInk(image);
 }
 
 QImage RollRenderer::rasterizeLayer(const RollLayout &layout, int layerIndex) const
@@ -3122,8 +3189,10 @@ QImage RollRenderer::rasterizeLayer(const RollLayout &layout, int layerIndex) co
 	QPainter painter(&picture);
 	/* Assembly rather than compositing: the chunks partition the picture. */
 	painter.setCompositionMode(QPainter::CompositionMode_Source);
-	for (int chunk = 0; chunk < layer.chunkCount(); ++chunk)
-		painter.drawImage(0, layer.chunkTop(chunk), rasterize(layout, layerIndex, chunk));
+	for (int chunk = 0; chunk < layer.chunkCount(); ++chunk) {
+		const QImage image = rasterize(layout, layerIndex, chunk);
+		painter.drawImage(image.offset() + QPoint(0, layer.chunkTop(chunk)), image);
+	}
 
 	return picture;
 }
@@ -3178,7 +3247,8 @@ Strip RollRenderer::render(const Document &document, LayoutBoxes *boxes) const
 				if (chunkTop >= top + tileHeight || chunkTop + layer.chunkHeight(chunk) <= top)
 					continue;
 
-				painter.drawImage(0, chunkTop - top, chunkImage(index, chunk));
+				const QImage &image = chunkImage(index, chunk);
+				painter.drawImage(image.offset() + QPoint(0, chunkTop - top), image);
 			}
 		}
 		painter.end();

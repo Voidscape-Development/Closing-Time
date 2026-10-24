@@ -56,6 +56,10 @@ int XCloseDisplay(Display *);
 #include <QSignalSpy>
 
 #include "render/RenderThread.hpp"
+#include "render/RollCompositor.hpp"
+#include "render/RollTimeline.hpp"
+
+#include <QPainter>
 
 #include <chrono>
 #include <cmath>
@@ -495,6 +499,67 @@ int main(int argc, char **argv)
 	QImage parkedB = renderSource(source, W, H);
 	check(textInk(parkedA).pixels > 500, "a roll parked at 40% shows its titles");
 	check(parkedA == parkedB, "and holds perfectly still");
+
+	/*
+	 * The GPU draws the same frame QPainter does. Same layout, same timeline, same draw list; the
+	 * pictures differ only in how edges blend -- linear light on the GPU, gamma here -- so what is
+	 * compared is where the type is: which pixels are bright. A picture misplaced by its crop offset,
+	 * or a draw fitted to the wrong part of it, moves whole glyphs and shows up at once.
+	 */
+	{
+		LogoCache stills;
+		AnimatedLogoCache moving;
+		const RollRenderer renderer(&stills, &moving);
+		const RollLayoutPtr layout = renderer.layout(document);
+		const RollTimeline timeline(layout->timelineInputs());
+		const RollFrame frame = timeline.evaluateScrubbed((H + layout->height) * 0.40);
+		const DrawList list = composeFrame(*layout, frame, ComposeView::canvas(frame, H));
+
+		QImage expected(W, H, QImage::Format_ARGB32_Premultiplied);
+		expected.fill(Qt::black);
+		{
+			QPainter painter(&expected);
+			paintDrawList(painter, list, [&](const DrawSource &item) {
+				return item.kind == DrawSource::Kind::Chunk
+					       ? renderer.rasterize(*layout, item.layer, item.chunk)
+					       : logoImage(*layout, item);
+			});
+		}
+		saveArtifact("parked-gpu", parkedA);
+		saveArtifact("parked-qpainter", expected);
+
+		/*
+		 * Linear light lands an antialiased edge a little brighter, so a bright pixel in one picture
+		 * agrees with the other when the other has a bright pixel within one of it. A misplaced
+		 * glyph is many pixels from where it belongs and disagrees all along its length.
+		 */
+		const auto brightNear = [](const QImage &image, int x, int y) {
+			for (int dy = -1; dy <= 1; ++dy)
+				for (int dx = -1; dx <= 1; ++dx) {
+					const int px = x + dx;
+					const int py = y + dy;
+					if (px >= 0 && py >= 0 && px < image.width() && py < image.height() &&
+					    qRed(image.pixel(px, py)) > 160)
+						return true;
+				}
+			return false;
+		};
+
+		int bright = 0;
+		int disagree = 0;
+		for (int y = 0; y < H; ++y) {
+			for (int x = 0; x < W; ++x) {
+				const bool gpu = qRed(parkedA.pixel(x, y)) > 160;
+				const bool reference = qRed(expected.pixel(x, y)) > 160;
+				bright += reference;
+				if ((gpu && !brightNear(expected, x, y)) || (reference && !brightNear(parkedA, x, y)))
+					++disagree;
+			}
+		}
+		std::printf("     %d bright pixels, %d disagree\n", bright, disagree);
+		check(bright > 500 && disagree * 50 < bright,
+		      "the GPU puts every picture where QPainter does, to within the edges' blending");
+	}
 
 	std::printf("\n-- a long roll, fast\n");
 	{

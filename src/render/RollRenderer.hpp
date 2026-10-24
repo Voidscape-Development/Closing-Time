@@ -437,6 +437,10 @@ public:
 	 * Rasterizes one chunk of one layer, at `scale` device pixels per roll pixel. `files`, when
 	 * given, receives every file the picture was drawn from -- see FileDependencies.hpp.
 	 *
+	 * The picture comes back cut down to its ink: `offset()` says where its top-left corner sits in
+	 * the chunk's full rows (see chunkRows), and everything outside it is transparent. A chunk with
+	 * nothing in it is a single transparent pixel.
+	 *
 	 * The layout must have been made by a renderer with the same caches, or at least the same
 	 * answer to whether it has an animation cache: a layout that left holes for animated logos
 	 * rasterized by one that has no animations to fill them would lose the logos.

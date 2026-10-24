@@ -107,6 +107,11 @@ struct ChunkTexture {
 	gs_texture_t *texture = nullptr;
 	/* The video frame it was last wanted in; see kTextureGraceNs. */
 	uint64_t lastWanted = 0;
+	/*
+	 * Where the texture sits in its chunk's full rectangle: a chunk is cut down to its ink before it
+	 * is uploaded, so the texture is usually a small part of the canvas-wide rows it stands for.
+	 */
+	QPoint offset;
 };
 
 /*
@@ -456,13 +461,14 @@ bool uploadChunk(CreditsSourceData *data, quint64 key, bool now)
 		data->failed.insert(key);
 	}
 
+	const QPoint pictureOffset = it->image.offset();
 	data->ready.erase(it);
 	spendUpload(data);
 
 	if (!texture)
 		return false;
 
-	data->textures.insert(key, ChunkTexture{texture, obs_get_video_frame_time()});
+	data->textures.insert(key, ChunkTexture{texture, obs_get_video_frame_time(), pictureOffset});
 	return true;
 }
 
@@ -1402,12 +1408,20 @@ void drawQuad(gs_texture_t *texture, const QRectF &target, const QRectF &source)
 	gs_render_stop(GS_TRISTRIP);
 }
 
-/* The texture a draw takes its pixels from, or null when it is not on the GPU. */
-gs_texture_t *textureFor(CreditsSourceData *data, const DrawSource &source)
+/*
+ * The texture a draw takes its pixels from, or null when it is not on the GPU. `offset`, for a
+ * chunk, comes back as where the texture sits in the chunk's full rectangle.
+ */
+gs_texture_t *textureFor(CreditsSourceData *data, const DrawSource &source, QPoint *offset)
 {
+	*offset = QPoint();
+
 	if (source.kind == DrawSource::Kind::Chunk) {
 		const auto it = data->textures.constFind(keyOf(*data->live, source));
-		return it == data->textures.constEnd() ? nullptr : it->texture;
+		if (it == data->textures.constEnd())
+			return nullptr;
+		*offset = it->offset;
+		return it->texture;
 	}
 
 	if (source.logo < 0 || source.logo >= data->logoTextures.size())
@@ -1502,14 +1516,25 @@ void videoRender(void *raw, gs_effect_t *)
 
 	while (gs_effect_loop(effect, "Draw")) {
 		for (const DrawItem &item : list) {
-			gs_texture_t *texture = textureFor(data, item.source);
+			QPoint offset;
+			gs_texture_t *texture = textureFor(data, item.source, &offset);
 			if (!texture)
+				continue;
+
+			/* A chunk's texture is its ink alone; the draw is fitted to the part of the chunk it covers. */
+			QRectF target = item.target;
+			QRectF source = item.sourceRect;
+			if (item.source.kind == DrawSource::Kind::Chunk &&
+			    !fitToPicture(item, offset,
+					  QSize(static_cast<int>(gs_texture_get_width(texture)),
+						static_cast<int>(gs_texture_get_height(texture))),
+					  &target, &source))
 				continue;
 
 			gs_effect_set_texture(imageParam, texture);
 			if (alphaParam)
 				gs_effect_set_float(alphaParam, static_cast<float>(item.alpha));
-			drawQuad(texture, item.target, item.sourceRect);
+			drawQuad(texture, target, source);
 		}
 	}
 

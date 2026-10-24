@@ -179,6 +179,23 @@ DrawList composeFrame(const RollLayout &layout, const RollFrame &frame, const Co
 	return list;
 }
 
+bool fitToPicture(const DrawItem &item, QPoint offset, QSize size, QRectF *target, QRectF *source)
+{
+	const QRectF picture{QPointF(offset), QSizeF(size)};
+	const QRectF visible = item.sourceRect.intersected(picture);
+	if (visible.isEmpty())
+		return false;
+
+	const double perX = item.target.width() / item.sourceRect.width();
+	const double perY = item.target.height() / item.sourceRect.height();
+
+	*target = QRectF(item.target.left() + (visible.left() - item.sourceRect.left()) * perX,
+			 item.target.top() + (visible.top() - item.sourceRect.top()) * perY, visible.width() * perX,
+			 visible.height() * perY);
+	*source = visible.translated(-QPointF(offset));
+	return true;
+}
+
 QVector<DrawSource> chunksIn(const DrawList &list)
 {
 	QVector<DrawSource> chunks;
@@ -216,8 +233,14 @@ void paintDrawList(QPainter &painter, const DrawList &list, const DrawImageLooku
 		if (picture.isNull())
 			continue;
 
+		QRectF target = item.target;
+		QRectF source = item.sourceRect;
+		if (item.source.kind == DrawSource::Kind::Chunk &&
+		    !fitToPicture(item, picture.offset(), picture.size(), &target, &source))
+			continue;
+
 		painter.setOpacity(opacity * item.alpha);
-		painter.drawImage(item.target.translated(origin), picture, item.sourceRect);
+		painter.drawImage(target.translated(origin), picture, source);
 	}
 
 	painter.setOpacity(opacity);

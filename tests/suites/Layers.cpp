@@ -323,10 +323,26 @@ CT_SUITE(layers_chunks, "A tall picture is cut into chunks that meet at every sc
 	check(chunkKey(layer, 0, 1.0) != chunkKey(layer, 0, 0.5), "and so does every scale");
 
 	const RollRenderer renderer(&stills());
+	/*
+	 * Cut down to its ink: the picture sits inside the chunk's full rectangle at its offset, and a
+	 * column of names in the middle of a wide canvas is a fraction of the canvas wide.
+	 */
 	const QImage half = renderer.rasterize(*layout, 0, 1, 0.5);
-	checkEq(half.width(), qCeil(layout->width * 0.5), "a half-scale chunk is half as wide");
-	checkEq(half.height(), chunkRows(layer, 1, 0.5).height, "and exactly as tall as its rows");
+	const QRect full(0, 0, qCeil(layout->width * 0.5), chunkRows(layer, 1, 0.5).height);
+	check(full.contains(QRect(half.offset(), half.size())), "a half-scale chunk lies inside its rows");
+	check(half.width() < full.width() / 2, "and is cut down to the names, a fraction of the canvas wide");
 	check(!inkOf(half).isEmpty(), "with the names drawn into it");
+	checkEq(qAlpha(half.pixel(0, half.height() / 2)), 0, "keeping a transparent edge for filtering to fade into");
+
+	/* Nothing in it at all: a single transparent pixel rather than a canvas-wide nothing. */
+	Section spacer = Section::makeDefault(SectionType::Spacer);
+	spacer.spacerHeight = 300;
+	const RollLayoutPtr blank = layoutOf(documentWith(spacer));
+	if (!blank->layers.isEmpty()) {
+		const QImage nothing = renderer.rasterize(*blank, 0, 0);
+		check(nothing.size() == QSize(1, 1) && qAlpha(nothing.pixel(0, 0)) == 0,
+		      "an empty chunk is a single transparent pixel");
+	}
 }
 
 CT_SUITE(layers_cancelled, "A layout that has been overtaken stops")
