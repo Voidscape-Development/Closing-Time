@@ -359,14 +359,13 @@ CT_SUITE(sticky_children, "What a block may hold")
 		check(loaded.children.front().type == SectionType::Title, "and everything else survives");
 }
 
-CT_SUITE(sticky_animated_logo, "Animated artwork inside a block")
+CT_SUITE(sticky_animated_logo, "Animated artwork inside a block plays with the block")
 {
 	/*
-	 * A block is drawn as one quad, so there is nowhere inside it to leave a second hole for an
-	 * animation to be drawn into. Its children are therefore laid out without the animation
-	 * cache, which is the renderer's own way of asking for every logo as a still -- and the
-	 * check that matters is that something is drawn at all, since a logo left as a hole with
-	 * nothing over it is a block with a gap in it.
+	 * A block is a layer of its own, and a logo inside it is drawn over that layer the same way a
+	 * logo in a section is drawn over the roll: a hole in the block's picture, and a placement that
+	 * says it belongs to the block, so that it goes wherever the block goes rather than staying
+	 * behind with the slot.
 	 */
 	Section block = unpadded(SectionType::StickyBlock);
 	block.children.clear();
@@ -375,12 +374,29 @@ CT_SUITE(sticky_animated_logo, "Animated artwork inside a block")
 	withAnimatedLogo(logos);
 	block.children.push_back(logos);
 
-	const Strip strip = renderAnimatedStrip(documentWith(block));
+	const Document document = documentWith(block);
+	const Strip strip = renderAnimatedStrip(document);
 	checkEq(strip.stickyBlocks.size(), 1, "the block is carried");
-	check(strip.animatedLogos.isEmpty(), "and its artwork is not reported as a hole in the strip");
+	checkEq(strip.animatedLogos.size(), 1, "its logo is reported for animation");
+	if (strip.stickyBlocks.isEmpty() || strip.animatedLogos.isEmpty())
+		return;
 
-	if (!strip.stickyBlocks.isEmpty())
-		check(!inkOf(strip.stickyBlocks.first().image).isEmpty(), "the artwork is drawn into the block");
+	const StickyBlockPlacement &placement = strip.stickyBlocks.first();
+	const AnimatedLogoPlacement &logo = strip.animatedLogos.first();
+	checkEq(logo.block, 0, "as the block's, not the roll's");
+	check(placement.rect.contains(logo.rect), "placed inside the block's slot");
+
+	/* The block's picture starts `margin` above the slot; the hole is where the logo sits in it. */
+	const QRectF inPicture = logo.rect.translated(0, placement.margin - placement.rect.top());
+	check(inkOf(placement.image, inPicture.adjusted(2, 2, -2, -2)).isEmpty(),
+	      "and left as a hole in the block's picture for the animation to fill");
+
+	/* Without an animation cache the logo is a still, painted into the block like any other. */
+	const Strip still = renderStrip(document);
+	check(still.animatedLogos.isEmpty(), "a renderer that cannot animate reports nothing to animate");
+	if (!still.stickyBlocks.isEmpty())
+		check(!inkOf(still.stickyBlocks.first().image, inPicture).isEmpty(),
+		      "and draws the artwork into the block instead");
 }
 
 CT_SUITE(sticky_roll, "A block among the sections of a whole roll")

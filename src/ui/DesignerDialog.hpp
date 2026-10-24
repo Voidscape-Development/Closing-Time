@@ -28,7 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <memory>
 
 #include "model/CreditsModel.hpp"
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 
 class QCheckBox;
 class QDialogButtonBox;

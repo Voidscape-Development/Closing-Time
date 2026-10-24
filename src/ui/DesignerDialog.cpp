@@ -1597,7 +1597,7 @@ void DesignerDialog::refreshPreview()
 	 * while a long roll rasterizes.
 	 */
 	postRenderJob([rendered = document, cache = logos, animationCache = animations, target = sink] {
-		const StripRenderer renderer(cache.get(), animationCache.get());
+		const RollRenderer renderer(cache.get(), animationCache.get());
 		/*
 		 * Collected on every preview render rather than only while the overlay is showing,
 		 * so switching it on draws what is already on screen instead of waiting on a

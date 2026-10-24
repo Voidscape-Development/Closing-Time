@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 
 #include <plugin-support.h>
 
@@ -35,8 +35,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QTextOption>
 #include <QtMath>
 
+#include <QCryptographicHash>
+
+#include <obs.hpp>
+
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "render/BackgroundPainter.hpp"
 #include "render/BridgeArtRenderer.hpp"
@@ -273,7 +278,7 @@ void paintShadow(QPainter *painter, const QPainterPath &path, const TextStyle &s
  * to map a gradient; see fillBrush.
  *
  * None of this changes where anything sits: an outline and a shadow paint outside the block
- * without growing it, the way a CSS text-shadow does. StripRenderer::render widens which
+ * without growing it, the way a CSS text-shadow does. RollRenderer::render widens which
  * sections it visits per tile by the same amount, so a shadow cast across a tile boundary is
  * still drawn rather than cut off at the seam.
  */
@@ -682,6 +687,8 @@ struct StickyCollector {
 struct AnimatedCollector {
 	QVector<AnimatedLogoPlacement> *placements = nullptr;
 	int section = -1;
+	/* The block the logos being collected are drawn inside, or -1 for the roll. */
+	int block = -1;
 
 	void add(const LogoArt &art, const LogoRef &ref, const QRect &rect, const TextStyle &style)
 	{
@@ -693,6 +700,7 @@ struct AnimatedCollector {
 		placement.animation = art.animation;
 		placement.playback = ref.playback;
 		placement.section = section;
+		placement.block = block;
 
 		if (style.shadow.enabled && ref.playback.animatedShadow) {
 			/*
@@ -1835,35 +1843,33 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		/*
 		 * The block takes up its slot in the roll exactly as its content would have inline, so
 		 * everything above and below it sits where it always did and the slot goes on scrolling
-		 * after the block has detached from it. What it does *not* do is draw into the strip:
-		 * with a painter this leaves the slot empty, and the block itself is handed to the
-		 * compositor as a picture of its own.
+		 * after the block has detached from it. What it does *not* do is draw into the roll: with
+		 * a painter this leaves the slot empty, and the block is a layer of its own -- see
+		 * paintBlockPicture, which is what draws it.
 		 *
-		 * Its children are laid out without the animation cache, which is the documented way to
-		 * ask for every logo as a still: the strip's hole-and-overlay trick has nowhere to put a
-		 * second hole inside a picture that is itself drawn as one quad, and a logo left as a
-		 * hole with nothing over it would simply not be drawn at all.
+		 * Its children report their animated logos as the block's, so that they are drawn over
+		 * the block's picture wherever the block goes rather than over the slot it left behind.
 		 */
-		const LogoSource stills{logos.stills, nullptr};
+		AnimatedCollector blockLogos;
+		AnimatedCollector *childLogos = nullptr;
+		if (animated && sticky && sticky->placements) {
+			blockLogos = AnimatedCollector{animated->placements, animated->section,
+						       static_cast<int>(sticky->placements->size())};
+			childLogos = &blockLogos;
+		}
 
-		const int height =
-			layoutStickyChildren(nullptr, section, document, stills, bridges, dividers, y, boxes, nullptr);
+		const int height = layoutStickyChildren(nullptr, section, document, logos, bridges, dividers, y, boxes,
+							childLogos);
 		record(LayoutBox::Kind::Sticky, QRectF(0, y, document.width, height));
 
 		if (sticky && height > 0) {
 			/*
-			 * Rasterized at the strip's full width, because a child places itself across
-			 * the canvas exactly as a top-level section does -- its own `sectionWidth` and
-			 * placement are what narrow it, and they would mean something different if the
-			 * block handed them a narrower canvas to sit in.
-			 *
-			 * The picture is grown by the roll's bleed at top and bottom: a shadow cast by
-			 * the first or last child reaches outside the slot, and unlike the strip -- where
-			 * the neighboring tile catches it -- there is nothing outside this picture to
-			 * catch it in.
+			 * The picture is grown at top and bottom by whatever the block and its children can
+			 * paint outside the slot -- a shadow cast by the first or last child, the panel's
+			 * outset. Unlike a section, whose neighbors' pictures would catch it anyway, there is
+			 * nothing outside this picture to catch it in.
 			 */
-			const int bleed = qCeil(sectionBleed(document, section));
-			int blockBleed = bleed;
+			int blockBleed = qCeil(sectionBleed(document, section));
 			for (const Section &child : section.children)
 				blockBleed = std::max(blockBleed, qCeil(sectionBleed(document, child)));
 
@@ -1877,42 +1883,10 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			placement.hold = section.stickyHold;
 			placement.holdForever = section.stickyHoldForever;
 			placement.release = section.stickyRelease;
-			/*
-			 * A panel's outset reaches outside the slot as surely as a shadow does, so the
-			 * picture is grown by whichever of the two asks for more.
-			 */
+
 			const BackgroundPanel &blockPanel =
 				document.effectiveBackground(section, BackgroundSlot::Section);
-			const int margin = std::max(blockBleed, qCeil(blockPanel.bleed()));
-			placement.margin = margin;
-
-			QImage image(std::max(1, document.width), std::max(1, height + margin * 2),
-				     QImage::Format_ARGB32_Premultiplied);
-			image.fill(Qt::transparent);
-
-			QPainter blockPainter(&image);
-			blockPainter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing |
-						    QPainter::SmoothPixmapTransform);
-			/* The children are laid out in strip space; shift the picture under them. */
-			blockPainter.translate(0, -(y - margin));
-
-			/*
-			 * The panel goes down first, under everything the block holds: keeping the roll
-			 * running past behind the block from reading through its lettering is a job it
-			 * can only do from underneath. It is painted into the picture rather than carried
-			 * out as a color to be drawn behind it, because a flat quad would mean a second
-			 * effect started inside the pass that is drawing the strip, and the panel is a
-			 * shape the rasterizer can fill for nothing at rebuild time.
-			 */
-			paintBackgroundPanel(&blockPainter, blockPanel, QRectF(0, y, document.width, height),
-					     stills.stills);
-
-			layoutStickyChildren(&blockPainter, section, document, stills, bridges, dividers, y, nullptr,
-					     nullptr);
-			blockPainter.end();
-
-			/* Premultiplied, for the same reason the tiles are. */
-			placement.image = std::move(image);
+			placement.margin = std::max(blockBleed, qCeil(blockPanel.bleed()));
 			sticky->add(std::move(placement));
 		}
 
@@ -2485,34 +2459,23 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 
 struct PlacedSection {
 	const Section *section;
+	int index;
 	int top;
 	int height;
 };
 
 /*
- * How far outside their own boxes the document's sections can paint, in pixels. Outlines and
- * shadows do not take part in the layout, so a section drawn near a tile's edge can reach
- * into the next one; the tile loop widens what it visits by this so the seam stays invisible.
+ * Lays the document's sections out one under the next, measuring each once.
+ *
+ * `cancelled`, when given, is asked between sections; when it says so the layout stops where it is
+ * and `*abandoned` is set, so a roll that has been edited again does not finish laying out an edit
+ * nobody will see.
  */
-int effectBleed(const Document &document)
-{
-	double bleed = 0.0;
-
-	/*
-	 * A sticky block's own children are counted too. They are not drawn into the strip, so they
-	 * cannot bleed across a tile seam -- but the block is rasterized into a picture of its own,
-	 * and that picture has to be big enough to hold what they paint outside their boxes.
-	 */
-	visitSections(document.sections,
-		      [&](const Section &section) { bleed = std::max(bleed, sectionBleed(document, section)); });
-
-	return qCeil(bleed);
-}
-
 QVector<PlacedSection> placeSections(const Document &document, const LogoSource &logos, BridgeArtCache *bridges,
 				     DividerArtCache *dividers, int *totalHeight, LayoutBoxes *boxes = nullptr,
 				     QVector<AnimatedLogoPlacement> *animated = nullptr,
-				     QVector<StickyBlockPlacement> *sticky = nullptr)
+				     QVector<StickyBlockPlacement> *sticky = nullptr,
+				     const std::function<bool()> *cancelled = nullptr, bool *abandoned = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
@@ -2523,6 +2486,12 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 
 	int y = document.leadIn;
 	for (int index = 0; index < document.sections.size(); ++index) {
+		if (cancelled && *cancelled && (*cancelled)()) {
+			if (abandoned)
+				*abandoned = true;
+			break;
+		}
+
 		const Section &section = document.sections.at(index);
 		if (!section.visible)
 			continue;
@@ -2533,7 +2502,7 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 		const int height = layoutSection(nullptr, section, document, logos, bridges, dividers, y,
 						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr,
 						 sticky ? &stickyCollector : nullptr);
-		placed.append(PlacedSection{&section, y, height});
+		placed.append(PlacedSection{&section, index, y, height});
 		y += height;
 
 		if (y > kMaxStripHeight) {
@@ -2545,6 +2514,125 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 
 	*totalHeight = y + document.leadOut;
 	return placed;
+}
+
+/*
+ * Draws a sticky block's picture: its panel, and then its children over it.
+ *
+ * In strip space, with the slot at `slotTop`, so the children are laid out exactly where the roll's
+ * layout put them; the caller moves the painter so the slot lands where the picture wants it.
+ *
+ * The panel goes down first, under everything the block holds -- keeping the roll running past
+ * behind the block from reading through its lettering is a job it can only do from underneath. It is
+ * painted into the picture rather than drawn as a quad behind it, because the panel is a shape the
+ * rasterizer fills for nothing once, and a quad would be a second effect started in the middle of
+ * drawing the roll.
+ */
+void paintBlockPicture(QPainter *painter, const Section &block, const Document &document, const LogoSource &logos,
+		       BridgeArtCache *bridges, DividerArtCache *dividers, int slotTop, int slotHeight)
+{
+	const BackgroundPanel &panel = document.effectiveBackground(block, BackgroundSlot::Section);
+	paintBackgroundPanel(painter, panel, QRectF(0, slotTop, document.width, slotHeight), logos.stills);
+
+	layoutStickyChildren(painter, block, document, logos, bridges, dividers, slotTop, nullptr, nullptr);
+}
+
+/*
+ * How far past its own box a section's picture is grown, in pixels.
+ *
+ * What it can paint outside the box on purpose -- shadows, outlines, a panel's outset -- and on top
+ * of that some room for what type does by itself: a line set tighter than its font, an italic's
+ * overhang, an accent stacked above the ascent. The single shared picture this replaces caught all
+ * of that in whichever neighbor was underneath; a section that is a picture of its own has to make
+ * the room itself, and too little room is a clipped glyph where too much is a few transparent rows.
+ */
+int pictureMargin(const Document &document, const Section &section)
+{
+	/*
+	 * Half the type's size covers what a face inks outside its own line at ordinary leading; every
+	 * step tighter than that lets each line ink further into the next one's room, by up to the whole
+	 * of the difference.
+	 */
+	double slack = 16.0;
+	for (const TextStyle *style :
+	     {&document.effectiveStyle(section), &document.effectiveSecondaryStyle(section),
+	      &document.effectiveRowSubtitleStyle(section), &document.effectiveRowSecondarySubtitleStyle(section)}) {
+		const double tightening = std::max(0.0, 1.0 - style->lineSpacing);
+		slack = std::max(slack, style->pixelSize * (0.5 + tightening));
+	}
+
+	return qCeil(sectionBleed(document, section)) + qCeil(slack);
+}
+
+/* JSON for anything with a `save(obs_data_t *)`, appended to `out`. */
+template<typename T> void appendSaved(QByteArray *out, const T &value)
+{
+	OBSDataAutoRelease data = obs_data_create();
+	value.save(data);
+	out->append(obs_data_get_json(data));
+	out->append('\n');
+}
+
+/*
+ * Everything one section's pixels depend on, in one byte string: the section as written, and then
+ * every style and panel it draws with as resolved through the presets -- so that editing a preset
+ * changes the key of exactly the sections bound to it and no others. A block's children are
+ * included with their own resolved styles, since the block's picture is theirs.
+ */
+void appendSectionFingerprint(QByteArray *out, const Document &document, const Section &section)
+{
+	appendSaved(out, section);
+
+	appendSaved(out, document.effectiveStyle(section));
+	appendSaved(out, document.effectiveSecondaryStyle(section));
+	appendSaved(out, document.effectiveRowSubtitleStyle(section));
+	appendSaved(out, document.effectiveRowSecondarySubtitleStyle(section));
+	appendSaved(out, document.effectiveBridgeStyle(section));
+
+	for (BackgroundSlot slot :
+	     {BackgroundSlot::Section, BackgroundSlot::Title, BackgroundSlot::Subtitle, BackgroundSlot::Logo,
+	      BackgroundSlot::Entry, BackgroundSlot::EntryAlt, BackgroundSlot::Bridge, BackgroundSlot::Divider})
+		appendSaved(out, document.effectiveBackground(section, slot));
+
+	for (const Section &child : section.children)
+		appendSectionFingerprint(out, document, child);
+}
+
+/*
+ * What every picture in the roll depends on besides its own section: the canvas width, the fonts
+ * the roll carries and the stand-ins it names, and a version for the renderer itself -- bumped
+ * whenever a change to the painting code would make an old picture of the same section wrong.
+ */
+constexpr int kRasterVersion = 1;
+
+QByteArray documentFingerprint(const Document &document)
+{
+	QByteArray out;
+	out.append(QByteArray::number(kRasterVersion)).append('|');
+	out.append(QByteArray::number(document.width)).append('|');
+	for (const BundledFont &font : document.bundledFonts)
+		out.append(font.family.toUtf8()).append('=').append(font.hash().toLatin1()).append('|');
+	for (const FontSubstitution &substitution : document.fontSubstitutions)
+		out.append(substitution.from.toUtf8()).append('>').append(substitution.to.toUtf8()).append('|');
+	return out;
+}
+
+quint64 hashBytes(const QByteArray &bytes)
+{
+	const QByteArray digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+	quint64 key = 0;
+	for (int i = 0; i < 8; ++i)
+		key = (key << 8) | static_cast<quint8>(digest.at(i));
+	return key;
+}
+
+/* SplitMix64's finalizer: spreads a combination of keys over all 64 bits. */
+quint64 mix(quint64 value)
+{
+	value += 0x9e3779b97f4a7c15ULL;
+	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+	value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+	return value ^ (value >> 31);
 }
 
 } // namespace
@@ -2576,6 +2664,9 @@ QImage LogoCache::get(const QString &path, int maxHeight)
 
 	const int height = std::max(1, maxHeight);
 	const QString key = QStringLiteral("%1|%2").arg(path).arg(height);
+
+	/* Reported on a cache hit too: what the caller's picture depends on is the file, not the decode. */
+	noteFileRead(path);
 
 	const QFileInfo info(path);
 	const qint64 fileSize = info.size();
@@ -2618,9 +2709,92 @@ void LogoCache::invalidate(const QString &path)
 	}
 }
 
-int StripRenderer::measure(const Document &input) const
+int RollLayer::chunkCount() const
 {
-	/* Measured against the fonts the roll will really be drawn in; see render() below. */
+	return pictureHeight <= 0 ? 0 : (pictureHeight + kChunkHeight - 1) / kChunkHeight;
+}
+
+int RollLayer::chunkTop(int chunk) const
+{
+	return chunk * kChunkHeight;
+}
+
+int RollLayer::chunkHeight(int chunk) const
+{
+	return std::clamp(pictureHeight - chunkTop(chunk), 0, kChunkHeight);
+}
+
+ChunkRows chunkRows(const RollLayer &layer, int chunk, qreal scale)
+{
+	const int rollTop = layer.pictureTop + layer.chunkTop(chunk);
+	const int rollBottom = rollTop + layer.chunkHeight(chunk);
+	const bool last = chunk == layer.chunkCount() - 1;
+
+	/*
+	 * Every boundary is rounded down, so the chunk below starts on exactly the row this one stops
+	 * on; the picture's own bottom edge is rounded up, so its last fraction of a row is not lost.
+	 */
+	ChunkRows rows;
+	rows.top = qFloor(rollTop * scale);
+	const int bottom = last ? qCeil(rollBottom * scale) : qFloor(rollBottom * scale);
+	rows.height = std::max(0, bottom - rows.top);
+	return rows;
+}
+
+quint64 chunkKey(const RollLayer &layer, int chunk, qreal scale)
+{
+	quint64 scaleBits = 0;
+	const double exact = scale;
+	std::memcpy(&scaleBits, &exact, sizeof(scaleBits));
+	return mix(layer.key ^ mix(static_cast<quint64>(chunk) ^ mix(scaleBits)));
+}
+
+TimelineInputs RollLayout::timelineInputs() const
+{
+	TimelineInputs in;
+	if (!document)
+		return in;
+
+	in.canvasHeight = std::max(1, document->height);
+	in.stripHeight = height;
+	in.leadOut = document->leadOut;
+	in.scrollSpeed = document->scrollSpeed;
+	in.loop = document->loop;
+
+	in.blocks.reserve(blocks.size());
+	for (const StickyBlockPlacement &placement : blocks) {
+		TimelineBlock block;
+		block.slotTop = placement.rect.top();
+		block.slotHeight = placement.rect.height();
+		block.margin = placement.margin;
+		block.pinnedTop = placement.pinnedTop(in.canvasHeight);
+		block.entrance = placement.entrance;
+		block.fadeIn = placement.fadeIn;
+		block.hold = placement.hold;
+		block.holdForever = placement.holdForever;
+		block.release = placement.release;
+		in.blocks.append(block);
+	}
+
+	in.logos.reserve(animatedLogos.size());
+	for (const AnimatedLogoPlacement &placement : animatedLogos) {
+		TimelineLogo logo;
+		logo.block = placement.block;
+		/* A logo on a card is placed from the card's slot; one in the roll from the strip's top. */
+		logo.top = placement.rect.top();
+		if (placement.block >= 0 && placement.block < blocks.size())
+			logo.top -= blocks.at(placement.block).rect.top();
+		logo.startOnEnter = placement.playback.startOnEnter;
+		logo.speed = placement.playback.speed;
+		in.logos.append(logo);
+	}
+
+	return in;
+}
+
+int RollRenderer::measure(const Document &input) const
+{
+	/* Measured against the fonts the roll will really be drawn in; see layout() below. */
 	Document resolved;
 	const Document &document = documentWithFontsResolved(input, resolved);
 
@@ -2637,79 +2811,258 @@ int StripRenderer::measure(const Document &input) const
 	/*
 	 * Measured without the animation cache. An animated logo occupies its first frame's box,
 	 * which is the box a still of the same artwork occupies, so the height comes out the same --
-	 * and a duration shown while the user is still typing is not worth decoding a video for.
+	 * and a duration shown while the user is still typing is not worth decoding an animation for.
 	 */
 	placeSections(document, LogoSource{logos, nullptr}, &bridges, &dividers, &total);
 	return total - document.leadIn - document.leadOut;
 }
 
-Strip StripRenderer::render(const Document &input, LayoutBoxes *boxes) const
+RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std::function<bool()> &cancelled) const
 {
+	auto layout = std::make_shared<RollLayout>();
+
 	/*
-	 * Fonts are resolved here rather than by each caller, so nothing can render a roll in a
-	 * font the document did not ask for by forgetting to. The common case -- every family
-	 * present -- hands `input` straight back and copies nothing.
+	 * Fonts are resolved here rather than by each caller, so nothing can draw a roll in a font the
+	 * document did not ask for by forgetting to. The layout keeps its own copy of the document,
+	 * resolved, because everything rasterized from it later has to be drawn from the same one.
 	 */
 	Document resolved;
-	const Document &document = documentWithFontsResolved(input, resolved);
+	layout->document = std::make_shared<const Document>(documentWithFontsResolved(input, resolved));
+	const Document &document = *layout->document;
 
-	Strip strip;
-	strip.width = std::max(1, document.width);
+	layout->width = std::max(1, document.width);
+	layout->animated = animations != nullptr;
 
 	BridgeArtCache bridges;
 	DividerArtCache dividers;
 
-	if (boxes)
-		boxes->clear();
-
 	int total = 0;
+	bool abandoned = false;
 	const LogoSource art{logos, animations};
-	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total, boxes,
-							    &strip.animatedLogos, &strip.stickyBlocks);
+	const QVector<PlacedSection> placed =
+		placeSections(document, art, &bridges, &dividers, &total, boxes ? &layout->boxes : nullptr,
+			      &layout->animatedLogos, &layout->blocks, cancelled ? &cancelled : nullptr, &abandoned);
+	if (abandoned)
+		return nullptr;
 
-	strip.height = std::min(std::max(total, 0), kMaxStripHeight);
-	if (strip.height <= 0 || placed.isEmpty()) {
-		/* Nothing is drawn over a strip that is not drawn. */
-		strip.animatedLogos.clear();
-		strip.stickyBlocks.clear();
-		return strip;
+	layout->height = std::min(std::max(total, 0), kMaxStripHeight);
+	if (layout->height <= 0 || placed.isEmpty()) {
+		/* Nothing is drawn over a roll that is not drawn. */
+		layout->animatedLogos.clear();
+		layout->blocks.clear();
+		return layout;
 	}
 
-	const int bleed = effectBleed(document);
+	const QByteArray context = documentFingerprint(document);
+
+	const auto keyFor = [&](const Section &section, const RollLayer &layer) {
+		QByteArray bytes = context;
+		bytes.append(layer.kind == RollLayer::Kind::Block ? "block|" : "section|");
+		bytes.append(QByteArray::number(layer.pictureTop -
+						(layer.kind == RollLayer::Kind::Block ? 0 : layer.sectionTop)))
+			.append('|');
+		bytes.append(QByteArray::number(layer.pictureHeight)).append('|');
+		bytes.append(layout->animated ? "holes|" : "stills|");
+		appendSectionFingerprint(&bytes, document, section);
+		return hashBytes(bytes);
+	};
+
+	for (const PlacedSection &entry : placed) {
+		/* A block's slot draws nothing into the roll; the block is a layer of its own, below. */
+		if (entry.section->type == SectionType::StickyBlock)
+			continue;
+
+		const int margin = pictureMargin(document, *entry.section);
+
+		RollLayer layer;
+		layer.kind = RollLayer::Kind::Section;
+		layer.section = entry.index;
+		layer.sectionTop = entry.top;
+		layer.width = layout->width;
+		/* Grown by the margin, and cut at the ends of the strip, which is as far as the roll goes. */
+		layer.pictureTop = std::max(0, entry.top - margin);
+		layer.pictureHeight = std::min(layout->height, entry.top + entry.height + margin) - layer.pictureTop;
+		if (layer.pictureHeight <= 0)
+			continue;
+
+		layer.key = keyFor(*entry.section, layer);
+		layout->layers.append(layer);
+	}
+
+	for (int index = 0; index < layout->blocks.size(); ++index) {
+		StickyBlockPlacement &placement = layout->blocks[index];
+
+		RollLayer layer;
+		layer.kind = RollLayer::Kind::Block;
+		layer.section = placement.section;
+		layer.block = index;
+		layer.sectionTop = qRound(placement.rect.top());
+		layer.width = layout->width;
+		layer.pictureTop = -placement.margin;
+		layer.pictureHeight = qRound(placement.rect.height()) + placement.margin * 2;
+		layer.key = keyFor(document.sections.at(placement.section), layer);
+
+		placement.layer = layout->layers.size();
+		layout->layers.append(layer);
+	}
+
+	return layout;
+}
+
+QImage RollRenderer::rasterize(const RollLayout &layout, int layerIndex, int chunk, qreal scale,
+			       FileStamps *files) const
+{
+	if (!layout.document || layerIndex < 0 || layerIndex >= layout.layers.size())
+		return QImage();
+
+	const RollLayer &layer = layout.layers.at(layerIndex);
+	if (chunk < 0 || chunk >= layer.chunkCount() || scale <= 0.0)
+		return QImage();
+
+	const FileDependencyScope scope(files);
+	const Document &document = *layout.document;
+	const Section &section = document.sections.at(layer.section);
+
+	const ChunkRows rows = chunkRows(layer, chunk, scale);
+	QImage image(std::max(1, qCeil(layer.width * scale)), std::max(1, rows.height),
+		     QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::transparent);
+
+	QPainter painter(&image);
+	painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
+	/* Device rows first, so a chunk lands on exactly the rows chunkRows says, whatever the scale. */
+	painter.translate(0, -rows.top);
+	/*
+	 * Only when there is a scale to apply. Even an identity scale makes the transform a scaling one
+	 * as far as the raster engine is concerned, and type is then drawn by a different path than the
+	 * plain translation the roll has always been painted under -- differently enough to see.
+	 */
+	if (scale != 1.0)
+		painter.scale(scale, scale);
+
+	BridgeArtCache bridges;
+	DividerArtCache dividers;
+	/* Holes for animated logos only if the layout left them; see the constructor. */
+	const LogoSource art{logos, layout.animated ? animations : nullptr};
+
+	if (layer.kind == RollLayer::Kind::Block) {
+		/* A block's origin is its slot's top; its children are laid out in strip space. */
+		const StickyBlockPlacement &placement = layout.blocks.at(layer.block);
+		painter.translate(0, -layer.sectionTop);
+		paintBlockPicture(&painter, section, document, art, &bridges, &dividers, layer.sectionTop,
+				  qRound(placement.rect.height()));
+	} else {
+		layoutSection(&painter, section, document, art, &bridges, &dividers, layer.sectionTop);
+	}
+
+	painter.end();
+	return image;
+}
+
+QImage RollRenderer::rasterizeLayer(const RollLayout &layout, int layerIndex) const
+{
+	if (layerIndex < 0 || layerIndex >= layout.layers.size())
+		return QImage();
+
+	const RollLayer &layer = layout.layers.at(layerIndex);
+	QImage picture(std::max(1, layer.width), std::max(1, layer.pictureHeight), QImage::Format_ARGB32_Premultiplied);
+	picture.fill(Qt::transparent);
+
+	QPainter painter(&picture);
+	/* Assembly rather than compositing: the chunks partition the picture. */
+	painter.setCompositionMode(QPainter::CompositionMode_Source);
+	for (int chunk = 0; chunk < layer.chunkCount(); ++chunk)
+		painter.drawImage(0, layer.chunkTop(chunk), rasterize(layout, layerIndex, chunk));
+
+	return picture;
+}
+
+Strip RollRenderer::render(const Document &document, LayoutBoxes *boxes) const
+{
+	const RollLayoutPtr layout = this->layout(document, boxes != nullptr);
+
+	Strip strip;
+	if (boxes)
+		*boxes = layout->boxes;
+
+	strip.width = layout->width;
+	strip.height = layout->height;
+	strip.animatedLogos = layout->animatedLogos;
+	strip.stickyBlocks = layout->blocks;
+
+	if (layout->isEmpty())
+		return strip;
+
+	for (StickyBlockPlacement &placement : strip.stickyBlocks)
+		placement.image = rasterizeLayer(*layout, placement.layer);
+
+	/*
+	 * The tiles are the section layers composited, exactly as the source composites them: each
+	 * chunk drawn over the ones before it, in document order. A chunk spanning a tile seam is
+	 * rasterized once and drawn into both.
+	 */
+	QHash<QPair<int, int>, QImage> chunks;
+	const auto chunkImage = [&](int layer, int chunk) -> const QImage & {
+		const QPair<int, int> key(layer, chunk);
+		auto it = chunks.find(key);
+		if (it == chunks.end())
+			it = chunks.insert(key, rasterize(*layout, layer, chunk));
+		return *it;
+	};
 
 	for (int top = 0; top < strip.height; top += kTileHeight) {
 		const int tileHeight = std::min(kTileHeight, strip.height - top);
-		const int bottom = top + tileHeight;
 
 		QImage tile(strip.width, tileHeight, QImage::Format_ARGB32_Premultiplied);
 		tile.fill(Qt::transparent);
 
 		QPainter painter(&tile);
-		painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing |
-				       QPainter::SmoothPixmapTransform);
-		/* Sections are laid out in strip space, so shift the tile under them. */
-		painter.translate(0, -top);
-
-		for (const PlacedSection &entry : placed) {
-			if (entry.top - bleed >= bottom || entry.top + entry.height + bleed <= top)
+		for (int index = 0; index < layout->layers.size(); ++index) {
+			const RollLayer &layer = layout->layers.at(index);
+			if (layer.kind != RollLayer::Kind::Section)
 				continue;
 
-			layoutSection(&painter, *entry.section, document, art, &bridges, &dividers, entry.top);
-		}
+			for (int chunk = 0; chunk < layer.chunkCount(); ++chunk) {
+				const int chunkTop = layer.pictureTop + layer.chunkTop(chunk);
+				if (chunkTop >= top + tileHeight || chunkTop + layer.chunkHeight(chunk) <= top)
+					continue;
 
+				painter.drawImage(0, chunkTop - top, chunkImage(index, chunk));
+			}
+		}
 		painter.end();
 
-		/*
-		 * Left premultiplied, exactly as QPainter drew it, and blended that way on the GPU --
-		 * see videoRender. A straight-alpha tile has black under every transparent pixel, and a
-		 * roll that moves by a fraction of a pixel a frame is filtered between them in every
-		 * frame it is on screen: a dark fringe round the edges of the type that shifts as the
-		 * fraction does.
-		 */
 		strip.tiles.append(StripTile{top, std::move(tile)});
 	}
 
 	return strip;
+}
+
+QImage RollRenderer::paintReference(const Document &input) const
+{
+	Document resolved;
+	const Document &document = documentWithFontsResolved(input, resolved);
+
+	BridgeArtCache bridges;
+	DividerArtCache dividers;
+	const LogoSource art{logos, animations};
+
+	int total = 0;
+	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total);
+	const int height = std::min(std::max(total, 0), kMaxStripHeight);
+	if (height <= 0 || placed.isEmpty())
+		return QImage();
+
+	QImage image(std::max(1, document.width), height, QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::transparent);
+
+	QPainter painter(&image);
+	painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
+	for (const PlacedSection &entry : placed)
+		layoutSection(&painter, *entry.section, document, art, &bridges, &dividers, entry.top);
+	painter.end();
+
+	return image;
 }
 
 } // namespace closingtime

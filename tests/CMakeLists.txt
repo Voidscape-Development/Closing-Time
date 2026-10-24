@@ -19,6 +19,7 @@ target_sources(
     suites/BridgedRows.cpp
     suites/Dividers.cpp
     suites/Fonts.cpp
+    suites/Layers.cpp
     suites/Layout.cpp
     suites/LogoRows.cpp
     suites/Persistence.cpp

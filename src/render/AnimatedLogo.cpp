@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cmath>
 
 #include "plugin-support.h"
+#include "render/FileDependencies.hpp"
 
 namespace closingtime {
 
@@ -195,6 +196,9 @@ LogoAnimationPtr AnimatedLogoCache::get(const QString &path, int maxHeight)
 
 	const int height = std::max(1, maxHeight);
 	const QString key = QStringLiteral("%1|%2").arg(path).arg(height);
+
+	/* Reported on a cache hit too: what the caller's picture depends on is the file, not the decode. */
+	noteFileRead(path);
 
 	const QFileInfo info(path);
 	const qint64 fileSize = info.size();

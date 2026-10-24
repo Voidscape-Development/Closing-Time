@@ -24,8 +24,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QRectF>
 #include <QVector>
 
+#include <functional>
+#include <memory>
+
 #include "model/CreditsModel.hpp"
 #include "render/AnimatedLogo.hpp"
+#include "render/FileDependencies.hpp"
+#include "render/RollTimeline.hpp"
 
 namespace closingtime {
 
@@ -83,18 +88,26 @@ struct StripTile {
 /*
  * An animated logo the layout placed, and everything needed to draw it.
  *
- * The strip is rasterized once and scrolled; an animation is by definition not that. So an
- * animated logo is not painted into the strip at all. The tile it would have occupied is left
- * empty and the artwork is drawn over the strip afterwards, from its own texture -- by the source
- * on the graphics thread, or by the designer's preview widget on the UI thread. This is what
- * carries it across: where the hole is, what goes in it, and how the frames are timed.
+ * A layer's picture is rasterized once and moved; an animation is by definition not that. So an
+ * animated logo is not painted into the picture it sits in at all. The spot it would have occupied
+ * is left empty and the artwork is drawn over the picture afterwards, from its own texture -- by
+ * the source on the graphics thread, or by the designer's preview widget on the UI thread. This is
+ * what carries it across: where the hole is, what goes in it, and how the frames are timed.
+ *
+ * The hole can be in a section, which scrolls with the roll, or in a sticky block, which goes
+ * wherever the block goes; `block` says which, and the logo is drawn after the picture it belongs
+ * to and at that picture's opacity.
  *
  * The layout is unchanged by any of it. An animated logo occupies exactly the box its first frame
  * would have occupied as a still, so nothing above or below it moves when a PNG is swapped for a
  * GIF of the same artwork.
  */
 struct AnimatedLogoPlacement {
-	/* The hole, in strip space. Consumers add the scroll offset and draw here. */
+	/*
+	 * The hole, in strip space -- for a logo in a block too, where it is the spot in the block's
+	 * slot. Consumers move it with whatever it belongs to: the scroll offset for a section, the
+	 * block's own position less its slot's top for a block.
+	 */
 	QRectF rect;
 	LogoAnimationPtr animation;
 	LogoPlayback playback;
@@ -112,6 +125,8 @@ struct AnimatedLogoPlacement {
 	QPointF shadowOffset;
 	/* Index into Document::sections, for the designer's overlay and its highlighting. */
 	int section = -1;
+	/* The block it is drawn inside -- an index into RollLayout::blocks -- or -1 for the roll. */
+	int block = -1;
 };
 
 /*
@@ -131,8 +146,14 @@ struct AnimatedLogoPlacement {
 struct StickyBlockPlacement {
 	/* The slot, in strip space. Consumers add the scroll offset to find where it would be. */
 	QRectF rect;
-	/* The block itself, rasterized at the strip's width, exactly `rect` in size. */
+	/*
+	 * The block's picture, `rect.height() + margin * 2` tall at the strip's width. Filled only by
+	 * RollRenderer::render, which rasterizes everything up front; a RollLayout leaves it null and
+	 * carries the block as a layer instead, rasterized when it is wanted.
+	 */
 	QImage image;
+	/* The layer the block's picture is, in RollLayout::layers. */
+	int layer = -1;
 
 	/* Everything about how it pins, copied off the section so the compositor reads no model. */
 	StickyEntrance entrance = StickyEntrance::WithRoll;
@@ -193,6 +214,12 @@ struct StickyBlockPlacement {
 	bool clearedFrame(double top) const { return pictureBottom(top) <= 0.0; }
 };
 
+/*
+ * The whole roll rasterized up front: every section composited into tiles, every block's picture
+ * filled in. What RollRenderer::render hands back, for the harness and for anything else that wants
+ * the roll as pictures rather than as layers to draw from -- the source and the designer draw from a
+ * RollLayout and rasterize only what they are about to show.
+ */
 struct Strip {
 	QVector<StripTile> tiles;
 	/*
@@ -258,48 +285,173 @@ struct LayoutBox {
 using LayoutBoxes = QVector<LayoutBox>;
 
 /*
- * Lays a document out into a strip of tiles.
+ * One picture the roll is drawn from, and where it goes.
  *
- * Painting is into a QImage, which Qt supports off the GUI thread, so this runs on the
- * shared render thread (see RenderThread.hpp) rather than anywhere OBS needs to stay
- * responsive. The credits source hands the finished tiles to the graphics thread for
- * upload; the designer hands them back to the UI thread for the preview.
+ * The roll used to be one tall picture, rasterized whole on every edit and kept whole on the GPU.
+ * It is now a stack of these: a picture per section, which scrolls with the roll, and one per sticky
+ * block, which goes wherever the timeline puts the block. Composited in order with premultiplied
+ * over they make exactly the pixels one shared picture would have -- over is associative -- but
+ * each can be rasterized, cached, uploaded and dropped on its own. Changing one name redraws one
+ * section rather than the roll, and a ten-minute roll holds only the few sections near the frame.
+ *
+ * A picture is drawn in chunks of at most kChunkHeight rows, which are what is actually rasterized,
+ * cached and uploaded: a list of four hundred names is one section and far too tall to be one
+ * texture, or one upload.
  */
-class StripRenderer {
+struct RollLayer {
+	enum class Kind {
+		/* A top-level section. Its origin is the top of the strip; it scrolls with the roll. */
+		Section,
+		/* A sticky block. Its origin is its slot's top edge, wherever the block currently is. */
+		Block,
+	};
+
+	Kind kind = Kind::Section;
+	/* Index into Document::sections. */
+	int section = -1;
+	/* For a block, the index into RollLayout::blocks. */
+	int block = -1;
+	/* The section's own top edge in strip space; a block's slot top. What it is laid out at. */
+	int sectionTop = 0;
+
+	/*
+	 * The picture's top edge and height, relative to the layer's origin. A section's picture runs
+	 * past its box by whatever it paints outside it -- shadows, a panel's outset, glyphs taller than
+	 * their line -- and stops at the ends of the strip; a block's runs past its slot by its margin.
+	 */
+	int pictureTop = 0;
+	int pictureHeight = 0;
+	int width = 0;
+
+	/*
+	 * A hash of everything the picture's pixels depend on: the section with its styles and panels
+	 * resolved through their presets, the canvas width, the fonts, the picture's bounds, and
+	 * whether animated logos are left as holes. Two layers with the same key draw the same pixels,
+	 * which is what lets a rebuilt roll keep every picture it did not change -- on the render thread
+	 * and on the GPU both.
+	 */
+	quint64 key = 0;
+
+	int chunkCount() const;
+	/* A chunk's rows, relative to the picture's top edge. */
+	int chunkTop(int chunk) const;
+	int chunkHeight(int chunk) const;
+};
+
+/* Rows per chunk: the most any one rasterization, cache entry or upload covers. */
+constexpr int kChunkHeight = 1024;
+
+/*
+ * Where a chunk lands at `scale`, in device pixels relative to the layer's origin scaled -- rows
+ * [top, top + height). Chunk boundaries are rounded down at every scale, so the chunks of a picture
+ * always meet exactly, whatever fraction of a pixel the scale puts them on.
+ */
+struct ChunkRows {
+	int top = 0;
+	int height = 0;
+};
+
+ChunkRows chunkRows(const RollLayer &layer, int chunk, qreal scale);
+
+/* A cache key for one chunk of one layer at one scale. */
+quint64 chunkKey(const RollLayer &layer, int chunk, qreal scale);
+
+/*
+ * A roll laid out: everything needed to draw any part of it at any moment, and none of the pixels.
+ *
+ * Built on the render thread, at about the cost of measuring the roll, and handed whole to the
+ * thread that draws it. Immutable once built, and shared, because the source and the designer keep
+ * drawing from one long after the job that built it has gone.
+ */
+struct RollLayout {
+	/* The document as it was laid out, with its fonts resolved. Rasterizing reads it. */
+	std::shared_ptr<const Document> document;
+	int width = 0;
+	/* The strip's height: every section and both leads. */
+	int height = 0;
+
+	/* Sections in document order, then blocks in block order -- the order they are composited in. */
+	QVector<RollLayer> layers;
+	QVector<StickyBlockPlacement> blocks;
+	QVector<AnimatedLogoPlacement> animatedLogos;
+	/* Collected only when asked for; see RollRenderer::layout. */
+	LayoutBoxes boxes;
+
+	/* True when animated logos are holes with placements, rather than baked in as stills. */
+	bool animated = false;
+
+	bool isEmpty() const { return height <= 0 || layers.isEmpty(); }
+
+	/* What the timeline needs, from the layout and the document's own playback settings. */
+	TimelineInputs timelineInputs() const;
+};
+
+using RollLayoutPtr = std::shared_ptr<const RollLayout>;
+
+/*
+ * Lays documents out and rasterizes them.
+ *
+ * Painting is into a QImage, which Qt supports off the GUI thread, so this runs on the shared render
+ * thread (see RenderThread.hpp) rather than anywhere OBS needs to stay responsive.
+ */
+class RollRenderer {
 public:
 	/*
 	 * `animations` may be null, and a renderer without one draws every logo as a still: an
-	 * animated file contributes its first frame, baked into the strip exactly as artwork always
+	 * animated file contributes its first frame, baked into the picture exactly as artwork always
 	 * was. That is the fallback the test harness and any caller with nowhere to draw an overlay
 	 * quad want, and it means animation is something a consumer opts into by being able to
 	 * honor it rather than something the renderer assumes of everybody.
 	 */
-	explicit StripRenderer(LogoCache *logos, AnimatedLogoCache *animations = nullptr)
+	explicit RollRenderer(LogoCache *logos, AnimatedLogoCache *animations = nullptr)
 		: logos(logos),
 		  animations(animations)
 	{
 	}
 
-	/*
-	 * Maximum tile height in pixels. Tiles are also capped to the strip's own height.
-	 *
-	 * A tile is the unit the source uploads in, one per frame, so its size is the size of the
-	 * largest single upload a frame of the roll ever carries: eight megabytes at 1920 wide, against
-	 * the sixteen a 2048 px tile cost. The price is a tile more to draw in some frames and a seam
-	 * more for the rasterizer to paint across, which is nothing beside a frame that takes too long.
-	 */
+	/* Height of the tiles RollRenderer::render composites into. Tiles are also capped to the strip. */
 	static constexpr int kTileHeight = 1024;
 
 	/*
-	 * Rasterizes the document. When `boxes` is given it is filled with the rectangles the
-	 * layout placed things in, for the designer's overlay; the source passes nothing and
-	 * pays for none of it.
+	 * Lays the document out without rasterizing anything. `boxes` asks for the layout overlay's
+	 * rectangles as well, which only the designer wants.
+	 *
+	 * `cancelled`, when given, is asked between sections, and an abandoned layout comes back null:
+	 * a roll edited again while the last edit was still being laid out has no use for the result.
 	 *
 	 * The document's fonts are resolved on the way in -- its bundle registered, its stand-ins
-	 * applied to whatever this machine still lacks -- so what comes out is drawn in the fonts
-	 * the roll asks for wherever they can be had. See render/FontResolution.hpp.
+	 * applied to whatever this machine still lacks -- so what is drawn later is in the fonts the
+	 * roll asks for wherever they can be had. See render/FontResolution.hpp.
+	 */
+	RollLayoutPtr layout(const Document &document, bool boxes = false,
+			     const std::function<bool()> &cancelled = {}) const;
+
+	/*
+	 * Rasterizes one chunk of one layer, at `scale` device pixels per roll pixel. `files`, when
+	 * given, receives every file the picture was drawn from -- see FileDependencies.hpp.
+	 *
+	 * The layout must have been made by a renderer with the same caches, or at least the same
+	 * answer to whether it has an animation cache: a layout that left holes for animated logos
+	 * rasterized by one that has no animations to fill them would lose the logos.
+	 */
+	QImage rasterize(const RollLayout &layout, int layer, int chunk, qreal scale = 1.0,
+			 FileStamps *files = nullptr) const;
+
+	/* Every chunk of one layer, stitched into one picture at scale 1. */
+	QImage rasterizeLayer(const RollLayout &layout, int layer) const;
+
+	/*
+	 * Lays out and rasterizes the whole roll: sections composited into tiles, blocks' pictures
+	 * filled in. When `boxes` is given it is filled with the layout overlay's rectangles.
 	 */
 	Strip render(const Document &document, LayoutBoxes *boxes = nullptr) const;
+
+	/*
+	 * The roll painted the way it used to be: every section into one shared picture, in order,
+	 * with no layers. Kept for the harness, which compares it against the layered roll -- the two
+	 * must agree to within rounding wherever pictures overlap, and exactly everywhere else.
+	 */
+	QImage paintReference(const Document &document) const;
 
 	/*
 	 * Total content height in pixels, excluding lead-in and lead-out. Cheaper than a full

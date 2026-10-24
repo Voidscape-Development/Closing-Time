@@ -35,7 +35,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 
 namespace closingtime {
 

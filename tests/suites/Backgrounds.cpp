@@ -216,7 +216,7 @@ CT_SUITE(background_bleed, "A panel that reaches outside its section is not cut 
 	 * the second one.
 	 */
 	Section above = unpadded(SectionType::Spacer);
-	above.spacerHeight = StripRenderer::kTileHeight - 48;
+	above.spacerHeight = RollRenderer::kTileHeight - 48;
 
 	Section band = unpadded(SectionType::Spacer);
 	band.spacerHeight = 20;
@@ -239,8 +239,8 @@ CT_SUITE(background_bleed, "A panel that reaches outside its section is not cut 
 		return;
 
 	const QRectF box = boxes.at(1);
-	check(box.bottom() < StripRenderer::kTileHeight, "the band's own box stops short of the seam");
-	check(box.bottom() + 200.0 > StripRenderer::kTileHeight, "while its panel reaches past it");
+	check(box.bottom() < RollRenderer::kTileHeight, "the band's own box stops short of the seam");
+	check(box.bottom() + 200.0 > RollRenderer::kTileHeight, "while its panel reaches past it");
 
 	/*
 	 * A Spacer draws nothing of its own, so every pixel here is the panel -- which also pins down
@@ -253,7 +253,7 @@ CT_SUITE(background_bleed, "A panel that reaches outside its section is not cut 
 	checkEq(ink.bottom, qRound(box.bottom() + 200.0) - 1, "and runs the whole of its reach");
 
 	/* Continuous across the seam rather than stopping at it. */
-	for (int y = StripRenderer::kTileHeight - 2; y < StripRenderer::kTileHeight + 2; ++y) {
+	for (int y = RollRenderer::kTileHeight - 2; y < RollRenderer::kTileHeight + 2; ++y) {
 		check(image.pixelColor(4, y).alpha() > 0, qPrintable(QStringLiteral("row %1 is drawn").arg(y)));
 	}
 

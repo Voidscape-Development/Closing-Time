@@ -39,7 +39,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "model/StyleLibrary.hpp"
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 #include "ui/DesignerDialog.hpp"
 
 namespace closingtime {
@@ -513,7 +513,7 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 				substitute.toUtf8().constData());
 	}
 
-	StripRenderer renderer(&data->logos, &data->animations);
+	RollRenderer renderer(&data->logos, &data->animations);
 	Strip strip = renderer.render(task->document);
 
 	bool again = false;
@@ -2050,7 +2050,7 @@ void videoRender(void *raw, gs_effect_t *)
 	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
 
 	/*
-	 * Premultiplied, because the pictures are -- see StripRenderer::render. It is also what OBS
+	 * Premultiplied, because the pictures are -- see RollRenderer::render. It is also what OBS
 	 * itself expects of a source: its default blend leaves a straight-alpha draw premultiplied in
 	 * the target, and a plain SRCALPHA/INVSRCALPHA, applied to the alpha channel as well, writes
 	 * alpha squared there instead -- harmless straight onto the program, but every antialiased
