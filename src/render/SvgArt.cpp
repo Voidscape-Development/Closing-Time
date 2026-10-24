@@ -29,8 +29,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <cmath>
 
+#include "render/FileDependencies.hpp"
 #include "render/ImageEffects.hpp"
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 
 namespace closingtime {
 
@@ -128,6 +129,8 @@ SvgArtCache::~SvgArtCache() = default;
 
 QSvgRenderer *SvgArtCache::load(const QString &key, const QString &path, const QString &markup)
 {
+	noteFileRead(path);
+
 	const auto it = cache.constFind(key);
 	if (it != cache.constEnd())
 		return it->get();

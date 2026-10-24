@@ -51,16 +51,15 @@ AnimatedLogoCache &animationCache()
 
 int measure(const Document &document)
 {
-	StripRenderer renderer(&logoCache());
+	RollRenderer renderer(&logoCache());
 	return renderer.measure(document);
 }
 
 LayoutBoxes layout(const Document &document)
 {
-	StripRenderer renderer(&logoCache());
-	LayoutBoxes boxes;
-	renderer.render(document, &boxes);
-	return boxes;
+	/* The boxes come out of the layout alone; nothing needs rasterizing to answer for them. */
+	RollRenderer renderer(&logoCache());
+	return renderer.layout(document, true)->boxes;
 }
 
 QVector<QRectF> boxesOf(const Document &document, LayoutBox::Kind kind)
@@ -81,13 +80,13 @@ QRectF boxOf(const Document &document, LayoutBox::Kind kind, int index)
 
 Strip renderStrip(const Document &document)
 {
-	StripRenderer renderer(&logoCache());
+	RollRenderer renderer(&logoCache());
 	return renderer.render(document);
 }
 
 Strip renderAnimatedStrip(const Document &document)
 {
-	StripRenderer renderer(&logoCache(), &animationCache());
+	RollRenderer renderer(&logoCache(), &animationCache());
 	return renderer.render(document);
 }
 

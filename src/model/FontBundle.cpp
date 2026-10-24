@@ -19,16 +19,94 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "model/FontBundle.hpp"
 
 #include <obs.hpp>
+#include <plugin-support.h>
 
 #include "util/FontFiles.hpp"
 
 #include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 
 #include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <mutex>
 
 namespace closingtime {
+
+namespace {
+
+/*
+ * Every bundled font this process has decoded, by SHA-256, with the compressed text it is written
+ * as.
+ *
+ * A source's settings are loaded on every update(), and libobs sends one per frame of a slider
+ * drag -- on the thread compositing the program. Decoding a font is base64 and zlib over
+ * megabytes, which for a roll carrying a couple of them was most of a hundred milliseconds a frame.
+ * The settings say which font they hold by its hash, so a font already decoded is handed back as
+ * the same bytes, and two rolls carrying the same font share one copy.
+ *
+ * Fonts nobody holds any more are let go whenever a new one arrives.
+ */
+struct StoredFont {
+	QByteArray data;
+	/* What `save` writes, made once: compressing a font is not free either. */
+	QByteArray encoded;
+};
+
+struct FontStore {
+	std::mutex mutex;
+	QHash<QString, StoredFont> fonts;
+	std::atomic<int> decodes{0};
+};
+
+FontStore &fontStore()
+{
+	static FontStore store;
+	return store;
+}
+
+QString sha256(const QByteArray &bytes)
+{
+	return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+}
+
+/* Remembers a decoded font, letting go of any the store alone is still holding. Callers hold the mutex. */
+void keepLocked(FontStore &store, const QString &hash, const StoredFont &font)
+{
+	for (auto it = store.fonts.begin(); it != store.fonts.end();) {
+		/* Detached means the store's is the only copy left: no document carries it. */
+		if (it.key() != hash && it->data.isDetached())
+			it = store.fonts.erase(it);
+		else
+			++it;
+	}
+	store.fonts.insert(hash, font);
+}
+
+} // namespace
+
+int fontStoreSize()
+{
+	FontStore &store = fontStore();
+	std::lock_guard<std::mutex> lock(store.mutex);
+	return static_cast<int>(store.fonts.size());
+}
+
+int fontStoreDecodes()
+{
+	return fontStore().decodes.load();
+}
+
+bool BundledFont::operator==(const BundledFont &other) const
+{
+	if (family != other.family || styleNames != other.styleNames || fileName != other.fileName)
+		return false;
+	if (data.constData() == other.data.constData() && data.size() == other.data.size())
+		return true;
+	return data == other.data;
+}
 
 QString BundledFont::hash() const
 {
@@ -73,13 +151,31 @@ void BundledFont::save(obs_data_t *data) const
 	obs_data_set_array(data, "faces", faces);
 
 	/*
-	 * obs_data holds text, not bytes, so the file goes in base64 -- a third larger than the
-	 * font, and the only shape a scene collection's JSON can carry it in at all.
+	 * obs_data holds text, not bytes, so the file goes in base64 -- the only shape a scene
+	 * collection's JSON can carry it in at all -- compressed first, which more than pays back the
+	 * third base64 adds for the outline data a font is mostly made of. Named by its hash, so a
+	 * reader that already holds the font never decodes it.
 	 */
-	obs_data_set_string(data, "data", this->data.toBase64().constData());
+	const QString name = hash();
+	QByteArray encoded;
+	{
+		FontStore &store = fontStore();
+		std::lock_guard<std::mutex> lock(store.mutex);
+		const auto it = store.fonts.constFind(name);
+		if (it != store.fonts.constEnd() && !it->encoded.isEmpty()) {
+			encoded = it->encoded;
+		} else {
+			encoded = qCompress(this->data, 9).toBase64();
+			keepLocked(store, name, StoredFont{this->data, encoded});
+		}
+	}
+
+	obs_data_set_string(data, "encoding", "zlib");
+	obs_data_set_string(data, "sha256", name.toLatin1().constData());
+	obs_data_set_string(data, "data", encoded.constData());
 }
 
-void BundledFont::load(obs_data_t *data)
+void BundledFont::load(obs_data_t *data, bool *legacy)
 {
 	family = QString::fromUtf8(obs_data_get_string(data, "family"));
 	fileName = QString::fromUtf8(obs_data_get_string(data, "file"));
@@ -92,15 +188,53 @@ void BundledFont::load(obs_data_t *data)
 		styleNames.append(QString::fromUtf8(obs_data_get_string(face, "style_name")));
 	}
 
-	const QByteArray encoded(obs_data_get_string(data, "data"));
+	cachedHash.clear();
+	this->data.clear();
+
+	const QString name = QString::fromLatin1(obs_data_get_string(data, "sha256"));
+	const bool compressed = std::strcmp(obs_data_get_string(data, "encoding"), "zlib") == 0;
+	if (legacy && !compressed)
+		*legacy = true;
+
+	FontStore &store = fontStore();
+
+	/* The common case, every frame of a drag: the font is already decoded, and is handed straight back. */
+	if (!name.isEmpty()) {
+		std::lock_guard<std::mutex> lock(store.mutex);
+		const auto it = store.fonts.constFind(name);
+		if (it != store.fonts.constEnd()) {
+			this->data = it->data;
+			cachedHash = name;
+			return;
+		}
+	}
+
 	/*
 	 * A hand-edited or truncated collection is a broken bundle rather than a broken document:
 	 * the entry loads empty, nothing is registered from it, and the family reports as missing
 	 * exactly as it would if it had never been bundled.
 	 */
+	const QByteArray encoded(obs_data_get_string(data, "data"));
 	const auto decoded = QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
-	this->data = decoded ? *decoded : QByteArray();
-	cachedHash.clear();
+	if (!decoded)
+		return;
+
+	QByteArray bytes = compressed ? qUncompress(*decoded) : *decoded;
+	if (bytes.isEmpty())
+		return;
+
+	/* A hash that does not match what it names is a damaged entry; the bytes are what is trusted. */
+	const QString actual = sha256(bytes);
+	if (!name.isEmpty() && actual != name)
+		obs_log(LOG_WARNING, "bundled font '%s' did not match the hash it was saved with",
+			fileName.toUtf8().constData());
+
+	++store.decodes;
+	this->data = bytes;
+	cachedHash = actual;
+
+	std::lock_guard<std::mutex> lock(store.mutex);
+	keepLocked(store, actual, StoredFont{bytes, compressed ? encoded : QByteArray()});
 }
 
 void FontSubstitution::save(obs_data_t *data) const

@@ -407,6 +407,12 @@ CT_SUITE(fonts_persistence, "A bundle and its stand-ins survive the settings rou
 	OBSDataArrayAutoRelease array = obs_data_get_array(damaged, "bundled_fonts");
 	OBSDataAutoRelease first = obs_data_array_item(array, 0);
 	obs_data_set_string(first, "data", "not base64 at all !!!");
+	/*
+	 * The hash too: a font is named by it, and one this process already holds is handed back from
+	 * the store whatever the text beside it says -- see fonts_store. Damaged all the way through is
+	 * what a machine that has never seen the font would make of this.
+	 */
+	obs_data_set_string(first, "sha256", "0000");
 
 	Document salvaged;
 	salvaged.load(damaged);

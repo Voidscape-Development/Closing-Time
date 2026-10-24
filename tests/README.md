@@ -113,3 +113,25 @@ deliberately broken build first:
 
 The failures should name the defect. If a break produces no failure, or produces one whose message
 does not describe what was broken, the check is not finished.
+
+# The live harness
+
+`tests/live` is the other half: the built plugin loaded into a real libobs on a real graphics
+device, playing rolls and having its frames read back. It is what checks the shader, the GPU
+residency, playback through the timeline, the finish and its signal, and the designer's preview --
+none of which the offscreen harness can reach.
+
+Linux only. It needs the libobs runtime with its OpenGL backend and effect files, and an X display
+for EGL; Xvfb and Mesa's software renderer are enough.
+
+```sh
+cmake -S . -B build -DENABLE_LIVE_TESTS=ON
+cmake --build build --target closing-time-live-tests
+xvfb-run -a -s '-screen 0 1280x720x24' ./build/tests/live/closing-time-live-tests build/closing-time.so data
+```
+
+The two arguments are the module to load and its data directory. Set `CLOSING_TIME_LIVE_ARTIFACTS`
+to a directory to have it write PNGs of the preview and of the source's frames.
+
+It is not run in CI, which builds the plugin against OBS's sources rather than an installed runtime.
+On Debian/Ubuntu the runtime is `libobs-dev`, which brings `libobs-opengl` and the effects with it.

@@ -48,11 +48,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 #include "model/StyleLibrary.hpp"
 #include "render/AnimatedLogo.hpp"
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
+#include "render/RollTimeline.hpp"
 #include "ui/FontDialog.hpp"
 #include "ui/PreviewWidget.hpp"
 #include "ui/SectionEditor.hpp"
@@ -515,7 +517,14 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 
 	preview = new PreviewWidget(previewBody);
 	preview->setToolTip(moduleText("Designer.Preview.Tip"));
+	preview->setCaches(logos, animations);
 	previewBodyLayout->addWidget(preview, 1);
+	/* A click on a section in the pane selects it in the list, so a long roll is edited from where it is seen. */
+	connect(preview, &PreviewWidget::sectionClicked, this, [this](int section) {
+		const int row = rowOf(SectionPath{-1, section});
+		if (row >= 0)
+			sectionList->setCurrentRow(row);
+	});
 	/*
 	 * Off by default: this is a view of the layout rather than of the roll, wanted only while
 	 * a section is not landing where its settings say it should.
@@ -1586,6 +1595,9 @@ void DesignerDialog::schedulePreviewRefresh()
 
 void DesignerDialog::refreshPreview()
 {
+	/* Overtakes whatever layout is in flight: it gives up between sections when it sees this. */
+	const uint64_t generation = ++sink->generation;
+
 	if (previewInFlight) {
 		previewAgain = true;
 		return;
@@ -1593,46 +1605,71 @@ void DesignerDialog::refreshPreview()
 	previewInFlight = true;
 
 	/*
-	 * The whole document goes to the render thread by value, so the user can keep editing
-	 * while a long roll rasterizes.
+	 * The whole document goes to the render thread by value, so the user can keep editing while
+	 * it is laid out. Only the layout is made here; the pane asks for the pictures it shows, at its
+	 * own scale, as it shows them.
 	 */
-	postRenderJob([rendered = document, cache = logos, animationCache = animations, target = sink] {
-		const StripRenderer renderer(cache.get(), animationCache.get());
+	postRenderJob([rendered = document, cache = logos, animationCache = animations, target = sink, generation,
+		       previous = shownLayout] {
+		const RollRenderer renderer(cache.get(), animationCache.get());
 		/*
-		 * Collected on every preview render rather than only while the overlay is showing,
-		 * so switching it on draws what is already on screen instead of waiting on a
-		 * rebuild. It is a few rectangles per section against a full rasterization.
+		 * The overlay's boxes are collected on every layout rather than only while it is showing,
+		 * so switching it on draws what is already on screen instead of waiting on another one.
 		 */
-		LayoutBoxes boxes;
-		Strip strip = renderer.render(rendered, &boxes);
+		RollLayoutPtr layout = renderer.layout(
+			rendered, true, [target, generation] { return target->generation.load() != generation; },
+			previous.get());
 
 		QMetaObject::invokeMethod(
 			qApp,
-			[rendered, strip = std::move(strip), boxes = std::move(boxes), target] {
+			[rendered, layout = std::move(layout), target] {
 				if (target->dialog)
-					target->dialog->applyPreview(rendered, strip, boxes);
+					target->dialog->applyPreview(rendered, layout);
 			},
 			Qt::QueuedConnection);
 	});
 }
 
-void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, const LayoutBoxes &boxes)
+void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr &layout)
 {
 	previewInFlight = false;
 
-	preview->setStrip(strip, rendered.width, rendered.height, rendered.background);
-	preview->setLayoutBoxes(boxes);
+	/* An abandoned layout shows nothing; the edit that overtook it is laid out below. */
+	if (!layout) {
+		if (previewAgain) {
+			previewAgain = false;
+			refreshPreview();
+		}
+		return;
+	}
+
+	shownLayout = layout;
+	preview->setLayout(layout, rendered.background);
 	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
 
-	const double travel = rendered.height + strip.height;
-	const double seconds = rendered.scrollSpeed > 0.0 ? travel / rendered.scrollSpeed : 0.0;
+	/*
+	 * How long the roll runs is the timeline's answer, which counts what the strip's height alone
+	 * cannot: a card holding at the end, a card that waits for the roll and then fades up.
+	 */
+	const RollTimeline timeline(layout->timelineInputs());
+	const auto clock = [](double seconds) {
+		const int whole = static_cast<int>(seconds);
+		return QStringLiteral("%1:%2").arg(whole / 60).arg(whole % 60, 2, 10, QLatin1Char('0'));
+	};
 
-	durationLabel->setText(QStringLiteral("%1 %2:%3  ·  %4 %5 px")
-				       .arg(moduleText("Designer.Duration"))
-				       .arg(static_cast<int>(seconds) / 60)
-				       .arg(static_cast<int>(seconds) % 60, 2, 10, QLatin1Char('0'))
+	QString running;
+	if (rendered.loop && std::isfinite(timeline.travelTime()))
+		running =
+			QStringLiteral("%1 %2").arg(moduleText("Designer.DurationLoops"), clock(timeline.travelTime()));
+	else if (std::isfinite(timeline.finishTime()))
+		running = QStringLiteral("%1 %2").arg(moduleText("Designer.Duration"), clock(timeline.finishTime()));
+	else
+		running = moduleText("Designer.DurationForever");
+
+	durationLabel->setText(QStringLiteral("%1  ·  %2 %3 px")
+				       .arg(running)
 				       .arg(moduleText("Designer.StripHeight"))
-				       .arg(strip.height));
+				       .arg(layout->height));
 
 	QStringList warnings;
 
@@ -1657,10 +1694,10 @@ void DesignerDialog::applyPreview(const Document &rendered, const Strip &strip, 
 		warnings.append(moduleText("Designer.SubstitutedFonts").arg(substituted.join(QStringLiteral(", "))));
 
 	/*
-	 * Reported from the strip rather than from the document, because it is an answer only the
+	 * Reported from the layout rather than from the document, because it is an answer only the
 	 * decoder has: how long a file turned out to be once every frame of it had been read.
 	 */
-	const bool truncated = std::any_of(strip.animatedLogos.cbegin(), strip.animatedLogos.cend(),
+	const bool truncated = std::any_of(layout->animatedLogos.cbegin(), layout->animatedLogos.cend(),
 					   [](const AnimatedLogoPlacement &placement) {
 						   return placement.animation && placement.animation->truncated;
 					   });

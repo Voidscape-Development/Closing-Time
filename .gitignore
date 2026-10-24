@@ -18,6 +18,7 @@
 !LICENSE
 !README.md
 !ARCHITECTURE.md
+!/docs
 
 # Exclude lock files
 *.lock.json

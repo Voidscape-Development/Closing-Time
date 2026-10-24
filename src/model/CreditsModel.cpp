@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "model/StyleLibrary.hpp"
 
 #include <obs.hpp>
+#include <plugin-support.h>
 
 #include <QFileInfo>
 
@@ -2310,8 +2311,29 @@ bool Document::refreshFontBundle(QStringList *skipped, bool recollect)
 	return false;
 }
 
+Document Document::contentOnly() const
+{
+	Document content = *this;
+
+	content.scrollSpeed = 0.0;
+	content.loop = false;
+	content.startOnShow = false;
+	content.startDelay = 0.0;
+	content.manualScroll = false;
+	content.scrollPosition = 0.0;
+	content.endingAction = EndingActionConfig();
+
+	return content;
+}
+
+bool Document::sameContent(const Document &other) const
+{
+	return contentOnly() == other.contentOnly();
+}
+
 void Document::save(obs_data_t *data) const
 {
+	obs_data_set_int(data, "schema_version", kSchemaVersion);
 	obs_data_set_int(data, "width", width);
 	obs_data_set_int(data, "height", height);
 	obs_data_set_int(data, "background", static_cast<long long>(background.rgba()));
@@ -2366,6 +2388,25 @@ void Document::save(obs_data_t *data) const
 
 void Document::load(obs_data_t *data, bool *migrated)
 {
+	/*
+	 * Missing means version 1: everything written before versions were recorded. Nothing below
+	 * branches on the number -- every reader recognizes the shape it is given, which is what lets a
+	 * version 1 document load exactly as it always did -- but an older document is reported back
+	 * as migrated, so its settings are written again in the current shape, and a newer one is
+	 * worth a line in the log.
+	 */
+	if (migrated)
+		*migrated = false;
+
+	const int schema = obs_data_has_user_value(data, "schema_version")
+				   ? static_cast<int>(obs_data_get_int(data, "schema_version"))
+				   : 1;
+	if (schema > kSchemaVersion)
+		obs_log(LOG_WARNING,
+			"a credit roll was saved by a newer Closing Time (format %d, this reads %d); "
+			"anything it does not recognize is left out",
+			schema, kSchemaVersion);
+
 	width = static_cast<int>(obs_data_get_int(data, "width"));
 	height = static_cast<int>(obs_data_get_int(data, "height"));
 	background = QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "background")));
@@ -2450,7 +2491,10 @@ void Document::load(obs_data_t *data, bool *migrated)
 		for (size_t i = 0; i < count; ++i) {
 			OBSDataAutoRelease item = obs_data_array_item(fontArray, i);
 			BundledFont font;
-			font.load(item);
+			bool legacyFont = false;
+			font.load(item, &legacyFont);
+			if (legacyFont && migrated)
+				*migrated = true;
 			/* A font with no family names nothing and can resolve nothing. */
 			if (!font.family.isEmpty() && !font.isEmpty())
 				bundledFonts.append(font);
@@ -2482,7 +2526,7 @@ void Document::load(obs_data_t *data, bool *migrated)
 	 */
 	const bool changed = refreshLinkedPresets();
 	if (migrated)
-		*migrated = changed;
+		*migrated = *migrated || changed;
 }
 
 void Document::defaults(obs_data_t *data)

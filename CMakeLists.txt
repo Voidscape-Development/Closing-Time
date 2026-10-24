@@ -35,7 +35,7 @@ target_compile_options(
 )
 set_target_properties(
   ${CMAKE_PROJECT_NAME}
-  PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+  PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
 )
 
 # The document, the renderer and the parser. None of them carry Q_OBJECT or touch Qt Widgets,
@@ -64,17 +64,25 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ChunkPipeline.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ChunkPipeline.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FileDependencies.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FileDependencies.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FontResolution.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FontResolution.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.hpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/StripRenderer.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/StripRenderer.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollTimeline.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollTimeline.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollCompositor.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollCompositor.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollRenderer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.cpp"
@@ -90,6 +98,9 @@ target_sources(
     src/plugin-main.cpp
     src/source/CreditsSource.cpp
     src/source/CreditsSource.hpp
+    src/source/RollControl.cpp
+    src/source/RollControl.hpp
+    src/third-party/obs-websocket-api.h
     src/ui/BackgroundControls.cpp
     src/ui/BackgroundControls.hpp
     src/ui/CollapsibleGroup.cpp
@@ -121,6 +132,13 @@ option(ENABLE_TESTS "Build the offscreen test harness" OFF)
 if(ENABLE_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# The plugin loaded into a real libobs on a graphics device; Linux only. See tests/live/LiveHost.cpp.
+option(ENABLE_LIVE_TESTS "Build the live libobs harness" OFF)
+
+if(ENABLE_LIVE_TESTS)
+  add_subdirectory(tests/live)
 endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

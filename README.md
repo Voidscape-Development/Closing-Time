@@ -205,10 +205,18 @@ lead-out padding, start behavior, looping, and the ending action.
 - Per-source hotkeys for **start/resume**, **pause**, and **restart**.
 - Optional looping, which wraps seamlessly.
 - Lead-in and lead-out padding so the roll eases on and fully clears the frame.
+- Driven over **obs-websocket** too, when it is installed: the vendor `closing-time` takes
+  `Start`, `Pause`, `Resume`, `Restart` and `GetState` requests with a `sourceName`, and emits a
+  `RollFinished` event — so a Stream Deck or a show-control system can run the roll and know when it
+  is over.
+
+The designer shows how long the roll runs, counting a closing card's hold, and clicking a
+section in its preview selects it.
 
 ## Ending actions
 
-When the last pixel clears the top of the canvas, Closing Time can:
+When the roll is over — the last pixel clears the top of the canvas, or a closing card's release
+says so — Closing Time can:
 
 - switch scene, stop recording, stop streaming, stop the virtual camera, hide itself
   (everywhere it appears, nested scenes and groups included), or restart the roll;
@@ -223,7 +231,7 @@ and ending actions are mutually exclusive — a looping roll never ends.
 
 ## Building
 
-Requires CMake 3.28+, a C++17 compiler, Qt 6 (Core, Gui, Widgets and Svg — Svg is what draws
+Requires CMake 3.28+, a C++20 compiler, Qt 6 (Core, Gui, Widgets and Svg — Svg is what draws
 the bridge and divider artwork), and the OBS Studio sources/dependencies. The plugin needs both
 `ENABLE_QT` and `ENABLE_FRONTEND_API`, which are on by default.
 

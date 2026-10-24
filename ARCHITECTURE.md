@@ -21,7 +21,7 @@ growing a second personality.
 
 | Question | Choice |
 |---|---|
-| Rendering | Qt/QPainter composites the whole roll into one tall image on a dedicated thread, uploaded as GPU textures and scrolled by offset |
+| Rendering | Qt/QPainter rasterizes a picture per section on a dedicated thread, on demand and cached by content; the GPU composites them, positioned by a timeline |
 | Persistence | The document lives in the source's `obs_data` settings, so it saves with the scene collection |
 | Ending actions | Built-in actions, named-hotkey trigger, filter toggle, and a signal/frontend event — all four |
 | Logo variants | "… w/ Logo" = text **with a logo beside it**; "Logo …" = the heading **is** an image, no text |
@@ -29,15 +29,21 @@ growing a second personality.
 | Import | Delimited files (CSV/TSV) with a preview and per-column field mapping |
 | Style reuse | Named presets on the document; sections bind by name and fall back to their own style |
 | Shared styles | One machine-wide library file; a document's preset may *link* to it, keeping a copy as the fallback |
-| Animated logos | The strip leaves a hole and the artwork is drawn over it as its own quad, per frame |
+| Animated logos | The picture they sit in leaves a hole and the artwork is drawn over it as its own quad, per frame -- in a section or in a sticky block |
+| Playback | Where everything is comes from a timeline built once per layout: a pure function of roll time |
+| Color | Premultiplied pictures, blended in linear light; the source is sRGB-aware |
+| Remote control | An obs-websocket vendor, `closing-time`, with start/pause/resume/restart/state requests and a finished event |
 | Missing fonts | The roll carries its own font files inside the scene collection, with a recorded stand-in for the ones it cannot carry |
 
 Rendering with QPainter rather than native libobs text sources buys exact WYSIWYG parity
 between the designer preview and the video output, real text layout (wrapping, alignment,
 line spacing, multi-column flow), and a per-frame cost of nothing more than a few textured
-quads. What it cannot do is move: a strip is rasterized once and scrolled. Animated logos are
-therefore *not* in the strip at all — see *Animated logos* below — which is the one place the
-renderer has two draw paths instead of one, and the reason that split exists.
+quads. What a picture cannot do is move inside itself, so anything that animates is drawn over
+the picture it sits in rather than painted into it -- see *Animated logos* below.
+
+The roll used to be one tall picture, rasterized whole on every edit and held whole on the GPU. It
+is now a picture per section, each cached by what it shows; `docs/design/layered-renderer.md`
+records why, with the measurements that decided it.
 
 ## Layout of the source tree
 
@@ -54,9 +60,13 @@ src/
     StyleLibrary.{hpp,cpp} the machine-wide style library file, and reading it into a document
     FontBundle.{hpp,cpp}   the font files a document carries, and collecting them off the machine
   render/
-    RenderThread.{hpp,cpp} the shared rasterization thread and its job queue
+    RenderThread.{hpp,cpp} the shared rasterization thread, with a live lane ahead of the rest
     AnimatedLogo.{hpp,cpp} decoding animated artwork with Qt, and frame timing
-    StripRenderer.{hpp,cpp} LogoCache, layout/measure, tiled QImage rasterization
+    RollRenderer.{hpp,cpp} LogoCache, layout into layers, content keys, per-chunk rasterization
+    RollTimeline.{hpp,cpp} where everything is as a pure function of roll time
+    RollCompositor.{hpp,cpp} what is drawn where for one view, as a draw list; RasterCache
+    ChunkPipeline.{hpp,cpp} a consumer's wanted chunks, drawn most urgent first
+    FileDependencies.{hpp,cpp} the files a picture was drawn from, as they were
     BackgroundPainter.{hpp,cpp} a panel's path, its fills and its border; the one gradient mapping
     SvgArt.{hpp,cpp}       the SVG tile cache, and painting a silhouette through a TextStyle's ink
     BridgeArtRenderer.{hpp,cpp} bridge tiling, on top of SvgArt
@@ -64,14 +74,17 @@ src/
     ImageEffects.{hpp,cpp} box blur and tinting, shared by both shadow paths
     FontResolution.{hpp,cpp} registering a document's fonts, standing in for the rest, reporting what is left
   source/
-    CreditsSource.{hpp,cpp} obs_source_info: playback, GPU upload, draw, hotkeys, properties
+    CreditsSource.{hpp,cpp} obs_source_info: playback, picture residency, draw, hotkeys, properties
+    RollControl.{hpp,cpp}   the obs-websocket vendor
+  third-party/
+    obs-websocket-api.h     obs-websocket's vendor API, as published
   ui/
     DesignerDialog.{hpp,cpp} three-pane designer window
     SectionEditor.{hpp,cpp}  per-section editor + StyleEditor
     BackgroundControls.{hpp,cpp} BackgroundEditor: one panel's fill, shape, edge and preset
     StyleControls.{hpp,cpp}  color button, gradient stop editor and its swatch
     ToolButtons.{hpp,cpp}    the compact button shapes a list's controls are built from
-    PreviewWidget.{hpp,cpp}  scaled preview of the rendered strip
+    PreviewWidget.{hpp,cpp}  the roll end to end at the pane's scale, through the shared compositor
     CsvImportDialog.{hpp,cpp} file picker, preview, column mapping
     StyleLibraryDialog.{hpp,cpp} the two-list manager: this roll's presets, and the machine's, for either kind
     FontDialog.{hpp,cpp}     what this roll carries, and what stands in for what it cannot
@@ -370,7 +383,7 @@ returns by value — a merge has nothing to return a reference to — and only t
 have any use for it. `effectBleed` is the exception and asks every section for it: a separately
 inked bridge can carry a heavier shadow than either text beside it, and letting the bleed's
 predicate disagree with the layout switch about which types draw bridges would clip that shadow at
-a tile seam for exactly the sections it was wrong about.
+the edge of the section's picture for exactly the sections it was wrong about.
 
 The one place it does not reach is a custom tile with `bridgeTint` off, which is painted to the
 strip in the colors it was authored with before any of this runs. The designer hides the whole
@@ -461,7 +474,7 @@ gap that would have sat beside it, rather than left as a hole in the rule.
 A word and an image in the center go through **exactly the helpers that draw a section's own
 title and its own logo**, which is why they can be there at all: they pick up the style's
 gradient, outline and shadow with no second implementation of any of it. That is also why the
-composition lives in `StripRenderer.cpp` beside the other section geometry while
+composition lives in `RollRenderer.cpp` beside the other section geometry while
 `DividerArtRenderer` handles only the artwork — the same split `prepareBridge`/`paintBridge`
 already make.
 
@@ -649,8 +662,8 @@ and its outset reaches outside that box exactly the way a text shadow does — s
 outlines and shadows*, which this is deliberately modeled on. Switching a panel on, at any size, on
 any slot, cannot move a section, grow the roll or change how long it runs, so a roll can be given
 cards and bands after it has been timed. The cost is the same cost a shadow pays: `sectionBleed`
-counts the outset, so a band drawn across a tile seam is drawn into both tiles rather than being cut
-at it. A `Spacer` with a panel is why that bleed is taken over *every* type rather than only the
+counts the outset, so the section's picture is grown to hold the band rather than cutting it off at
+the section's own edge. A `Spacer` with a panel is why that bleed is taken over *every* type rather than only the
 ones that set text or place artwork — a spacer draws nothing else at all, and a band across one is a
 design rather than an oversight.
 
@@ -870,6 +883,24 @@ collections for nothing.
 Font sizes are stored and laid out in **pixels**, not points, so a roll renders identically
 regardless of the DPI of whatever screen OBS happens to be running on.
 
+**The format is versioned.** `schema_version` is written on every save; a document without one is
+version 1. Nothing branches on the number -- every reader recognizes the shape it is given, which is
+what lets a version 1 document load exactly as it always did -- but an older document is reported
+back as migrated so its settings are written once in the current shape, and a newer one is logged.
+
+**Bundled fonts are named by their hash.** Version 2 writes each one zlib-compressed with its SHA-256
+beside it, and loading goes through a process-wide store of decoded fonts keyed by that hash. This is
+not about disk: `update()` reloads the whole document on OBS's compositing thread once per frame of a
+slider drag, and base64-decoding a couple of fonts there was most of a hundred milliseconds a frame.
+A font already decoded is handed back as the same bytes, two rolls carrying the same font share one
+copy, and a font the store alone still holds is let go when the next one arrives.
+
+**A change is noticed by comparison, not serialization.** Whether an update changed what the roll is
+made of is `Document::contentOnly()` compared with `operator==` -- defaulted across the model, so a
+field added later is compared without anyone having to list it. It replaced a key built by saving the
+whole document to JSON twice per update, which on a long roll cost more than everything else in the
+update put together.
+
 A style's face travels as the face's own name (`style_name`) with `bold` and `italic` written
 beside it rather than instead of it — they are what renders on a machine without that exact face,
 and they are the whole of what a reader older than the picker sees.
@@ -877,65 +908,144 @@ and they are the whole of what a reader older than the picker sees.
 ## Render pipeline
 
 ```
-Document ──StripRenderer.render()──> Strip { tiles: [ {top, QImage} ], width, height }
-              (render thread)                      │
-                                                   ├──> PreviewWidget  (designer, scaled)
-                                                   │    posted back to the UI thread
-                                                   └──> gs_texture_create per tile
-                                                        (graphics thread) ──> gs_draw_sprite_subregion
+Document ──RollRenderer::layout()──> RollLayout ──timelineInputs()──> RollTimeline   (pure)
+             (render thread; about       │  layers, blocks, logos,
+              the cost of measuring)     │  boxes, content keys
+                                         │
+                RollRenderer::rasterize(layer, chunk, scale)    on demand, through a RasterCache
+                (render thread, via ChunkPipeline)
+                                         │
+ each frame:  timeline.evaluate(t) ──> RollFrame ──composeFrame(layout, frame, view)──> DrawList
+                                                                                       │
+                                     CreditsSource: one shader, linear light ◀─────────┤
+                                     PreviewWidget / harness: QPainter      ◀──────────┘
 ```
 
-**Two-pass layout.** `layoutSection()` takes an optional `QPainter`. With a null painter it
-measures; with a painter it draws. Both passes run the identical code, so measurement and
-painting cannot drift apart — the harness asserts `measure()` agrees with `render()`.
+**Layers.** A layout is a list of pictures, each with a rule for where it goes: one per top-level
+section, which scrolls with the roll, and one per sticky block, which goes wherever the timeline puts
+the block. Composited in document order with premultiplied over they make the same pixels as painting
+every section into one shared picture -- over is associative -- and the harness checks exactly that,
+scene by scene. What separate pictures buy is that each can be rasterized, cached, uploaded and let go
+of on its own: changing one name redraws one section, and a ten-minute roll holds only the part of
+itself near the frame.
 
-**Tiling.** The strip is cut into ≤2048 px tall tiles. A long roll easily exceeds the
-maximum texture height a GPU will accept (commonly 16384 px), and tiling also avoids
-allocating one enormous texture when only a screenful is ever visible. Total strip height is
-capped at 200 000 px as a backstop against a runaway import.
+A section's picture runs past its box by what the section can paint outside it -- its shadows,
+outlines and panel outsets, and on top of that room for type, which inks outside its own line by half
+its size at ordinary leading and by more when the leading is tightened. The one shared picture this
+replaced caught all of that in whatever lay underneath; a picture of its own has to leave the room
+itself, and too little room is a clipped glyph. Pictures stop at the ends of the strip, which is as far
+as the roll goes.
 
-**Alpha.** QPainter needs a premultiplied buffer; OBS composites with straight alpha. Each
-tile is unpremultiplied once at the end of rasterization (`Format_ARGB32`, which is `GS_BGRA`
-in memory on little-endian) rather than corrected per frame on the GPU.
+**Chunks.** A picture is drawn in chunks of at most 1024 rows, and the chunk is the unit everything
+else works in: what is rasterized, cached, uploaded and evicted. A list of four hundred names is one
+section and far too tall to be one texture or one upload. At a fractional scale every chunk boundary is
+rounded down, so the chunks of a picture meet exactly whatever the scale.
 
-**Upload is spread out; drawing is not.** A finished strip is *adopted* rather than uploaded: the
-graphics thread takes the tiles with their pictures still in hand and puts each one on the GPU as
-it is reached, letting go of the picture as it does. Creating every texture in the frame a rebuild
-lands in is tens or hundreds of megabytes inside one `video_render`, which is a frame long enough
-to be seen — and a hitch there is a hitch in whatever else OBS was compositing, not only in the
-roll. A tile that is about to be drawn is uploaded first, in the same frame, so nothing about what
-reaches the screen depends on the spreading; one further tile goes up per frame ahead of the roll,
-which is what keeps the pictures from sitting in RAM behind it. The peak is no worse than it was:
-every picture was in RAM at once anyway while the old code uploaded them one after another.
+**A chunk is cut down to its ink.** A chunk is the canvas wide and a credit roll is mostly empty canvas
+-- a centered name is a few hundred pixels of ink in a row nineteen hundred wide -- and everything a
+chunk costs after it is drawn is paid for its width. So `rasterize` crops each chunk to the box of its
+non-transparent pixels, keeping one transparent pixel round it so bilinear sampling fades out at the
+edge rather than repeating the last row of ink, and records where it sits in `QImage::offset()`. Every
+consumer fits its draws to that (`fitToPicture`). On a typical roll it is an order of magnitude less
+memory and upload, for about a millisecond per chunk on the render thread.
 
-An animated logo and a sticky block are on the same footing, and always were — their textures are
-allocated when they reach the frame rather than when the strip arrives. A block gets a screenful of
-warning, because its picture is the canvas over and the frame it becomes visible in is a closing
-card arriving on screen: the worst moment in the roll to spend several megabytes of upload.
+**A long list paints only the rows a chunk shows.** Painting every row of a four-hundred-name list into
+every one of its chunks, and letting the clip discard nearly all of it, made the list cost its length
+squared. The layout pass records each row's height (`RowLedger`), and painting a chunk skips the rows
+that cannot reach it by those heights -- grown by everything the section paints outside a row -- and
+paints only the rest. Rows are still placed from exact heights, so nothing below a skipped row moves.
 
-All of it happens *before* the technique's pass that draws the frame is started, rather than part
-way through one: `gs_effect_loop` may run its body more than once, and a pass is a poor place to be
-creating resources.
+**Two-pass layout, kept.** `layoutSection()` takes an optional `QPainter`; with a null painter it
+measures, with a painter it draws. Both passes run the identical code, so measurement and painting
+cannot drift apart. The split into layout and painting is made at the section boundary -- the layout
+pass produces placed layers and boxes, painting consumes one layer at a time -- rather than by turning
+every text run, gradient and shadow into data for a separate painter to replay, which nothing would
+consume and which would put the renderer's fidelity at risk for no gain.
 
-**Only what is on screen is drawn.** The visible tiles are a single run — they are slices of one
-strip, held in strip order — so the draw walks that run rather than the whole roll. A ten-minute
-roll is a hundred tiles of which two are ever on display, and asking the other ninety-eight to set
-a texture parameter and work out that they have nothing to draw is a per-frame cost that grows with
-the length of the roll for no picture at all.
+**Content keys.** Every layer carries a hash of everything its pixels depend on: the section as
+written, every style and panel it draws with as resolved through the presets (so editing a preset
+changes the key of exactly the sections bound to it), the canvas width, the fonts the roll carries and
+the stand-ins it names, the picture's bounds, whether animated logos are holes, and a version for the
+renderer itself. Two layers with the same key draw the same pixels, which is what lets a rebuilt roll
+keep every picture it did not change -- on the render thread and on the GPU both.
+
+Hashing is most of what a layout of a long roll costs, so a layout is handed the one it replaces and
+a section it holds unchanged -- equal by `operator==`, at the same picture bounds, under the same
+presets, fonts, width and animation choice -- keeps the key it had. Sections are matched in order with
+a short look-ahead, so an insertion above does not cost every key below it.
+
+Files on disk are tracked by **recording** them rather than by listing them. Every loader -- the logo
+cache, the animation cache, the SVG cache -- reports the path it reads while a picture is being drawn,
+and a cached picture is reused only while every one of those files has the size and modification time
+it had. A field added later that names a file is covered without anyone adding it to a list.
+
+**Alpha.** Premultiplied from end to end. QPainter draws into `Format_ARGB32_Premultiplied`, which is
+`GS_BGRA` in memory on little-endian, and every picture is uploaded exactly as drawn and blended with
+`ONE, INVSRCALPHA`. Two things rule out the straight alpha this used to unpremultiply into: a straight
+picture has black under every transparent pixel, which bilinear filtering at a fractional scroll
+position blends into the edge of the type as a dark fringe that shifts as the roll moves; and the
+`SRCALPHA, INVSRCALPHA` straight alpha is drawn with applies to the alpha channel too, writing alpha
+squared into any texture the source is first drawn into -- a filter, a nested scene, a transition.
+
+**Color.** The source is sRGB-aware (`OBS_SOURCE_SRGB`) and composites in linear light, the way OBS's
+own sources do, which is also what lets OBS put it on an HDR canvas correctly. Its one shader decodes
+each premultiplied sRGB texel to linear, premultiplies again and applies the draw's opacity, scaling
+all four channels -- scaling the alpha alone over premultiplied color would glow rather than fade.
+The background color is linearized to match. Inside a picture QPainter still blends in gamma space,
+which is what the designer shows; an antialiased edge composited over other content on the canvas
+reads very slightly heavier, as it does for every sRGB-aware source.
+
+**The compositor.** `composeFrame(layout, frame, view)` decides what is drawn from which picture,
+where, in what order, at what opacity and cut to what -- sections, then their animated logos, then
+each block that is showing with its own logos at its opacity -- and returns a draw list. The source
+executes it on the GPU and the designer and the harness with QPainter; the decision is made once.
+A view is either the canvas at a moment (blocks where the timeline puts them) or the roll end to end
+(blocks back in their slots, which is the designer's pane).
+
+**Asking for pictures.** Nothing rasterizes a whole roll any more. Each consumer has a
+`ChunkPipeline` and replaces its list of wanted chunks as often as it likes; the render thread draws
+the most urgent chunk one job at a time through the consumer's `RasterCache` and re-posts itself, so
+urgency is decided afresh for every chunk, a chunk nobody wants any more drops out, and every consumer
+on the machine gets a turn. The source plans its list every tick, on the graphics thread: what is on
+the canvas now, then the strip from a little above the frame to four seconds of travel below it, each
+chunk as urgent as it is near, then the frame one, two and four seconds out -- which is what catches a
+card about to come up -- and, for a loop nearing the end of a pass, the opening of the next. A source
+nobody is looking at asks only for what is on its canvas now.
+
+**Residency.** Textures are kept by chunk key rather than by layout, so a rebuilt roll finds every
+section it did not change already on the GPU. A chunk drawn in this frame goes up whatever the budget
+says; anything ahead of need waits for a video frame whose one upload has not been spent -- per video
+frame, not per `video_render`, since a source in Studio Mode, on a projector and in the multiview is
+rendered several times a frame. A texture nobody has wanted for two seconds is released.
+
+A rebuilt layout is **staged**: it replaces the one on screen in the first frame where everything it
+would show is resident, with a half-second backstop, so the frame it takes over in has nothing to
+upload. If a frame is ever drawn before a picture it needs has arrived, the source draws without it and
+logs once that rasterizing fell behind -- the failure mode of drawing on demand, made visible rather
+than silent.
+
+**Layout boxes.** The layout optionally collects the rectangle every section, content area, text
+block, logo and bridge was placed in. They are collected in the measure pass, which each section goes
+through exactly once, so they cannot disagree with what was painted. The designer draws them as its
+overlay and uses them to select the section under a click; the source asks for none of them.
 
 ### Animated logos
 
-A strip is rasterized once and scrolled; an animation is by definition not that. So an animated
-logo is **not painted into the strip at all**. The tile it would have occupied is left empty and
-the artwork is drawn over the strip afterwards, from a texture of its own:
+A picture is rasterized once and moved; an animation is by definition not that. So an animated logo
+is **not painted into the picture it sits in**. The spot it would have occupied is left empty and the
+artwork is drawn over the picture afterwards, from a texture of its own:
 
 ```
-Document ──render()──> Strip { tiles, animatedLogos: [ {rect, animation, playback, shadowFrames} ] }
-                                         │                    │
-                        tiles ───────────┘                    └──> one gs_texture per logo,
-                        (as before)                                re-uploaded on frame change
-                                                                   and drawn after every tile
+RollLayout { layers, animatedLogos: [ {rect, animation, playback, shadowFrames, block} ] }
+                 │                                 │
+   pictures ─────┘                                 └──> one gs_texture per logo, rewritten on
+   (as above)                                           frame change, drawn after its owner
 ```
+
+A logo belongs either to the roll, when it sits in an ordinary section, or to a sticky block, when it
+sits in one of the block's children; `block` says which. A logo in a block is drawn after the block's
+picture, wherever the block is and at the block's opacity, so a card that fades up brings its artwork
+up with it.
 
 **The layout does not move.** An animated logo occupies exactly the box its first frame would
 have occupied as a still, measured through the same `logoDrawSize` as everything else, so
@@ -943,7 +1053,7 @@ swapping a PNG for a GIF of the same artwork changes nothing above or below it. 
 not decode animations at all — it has no cache to decode into and does not need one.
 
 **Placements are collected in the measure pass**, which visits each section exactly once, so a
-logo straddling a tile seam is reported once rather than once per tile. A renderer built without
+logo straddling a chunk boundary is reported once rather than once per chunk. A renderer built without
 an animation cache — the test harness, `measure()` — draws every logo as a still, which is the
 behavior the renderer has always had.
 
@@ -976,12 +1086,13 @@ frame *at rebuild time* on the render thread and carried in the placement, becau
 most expensive thing in this renderer and the compositor is the last place to put one.
 
 **Playback** is per logo: loop or play once, start with the roll or when the logo scrolls into
-frame, and a speed multiplier. Animations advance with the roll rather than with the wall clock
-— a paused roll is a still frame, and a roll parked in manual scroll shows the frame it was
-parked on — and a `rollEpoch` counter, bumped whenever the roll returns to its start, is what
-restarts them on a loop wrap or a restart hotkey. The frame showing at a given point comes from
-`logoFrameAt`, shared by the source and the designer's preview so the two cannot disagree about
-what a speed multiplier or a play-once means.
+frame, and a speed multiplier. How far into its playback a logo is comes from the timeline, in roll
+time: a paused roll is a still frame, a loop starts every animation over with every pass, and a roll
+parked in manual scroll shows the frame its position corresponds to. A logo in the roll stands still
+once the roll has finished, as the roll does; one on a card goes on playing for as long as the card is
+up, which is where a moving logo is meant to be seen. The frame showing at a given point comes from
+`logoFrameAt`, shared by the source and the designer's preview so the two cannot disagree about what a
+speed multiplier or a play-once means.
 
 ### Sticky ending blocks
 
@@ -1017,7 +1128,9 @@ so turning the entrance around moves nothing above or below it.
 "The rest of the roll" means the strip's last *drawn* pixel — `stripHeight` less `leadOut`, because
 lead-out is blank and nobody watching counts it as the roll — and it means the other blocks too: a
 block that waits also waits for any block still on the frame, since back-to-back cards are what the
-entrance is for and one fading up through another on its way out is not that.
+entrance is for and one fading up through another on its way out is not that. Two cards that both
+wait come up one after the other, in order: the first one up is on the frame by the time the second is
+asked.
 
 **What happens at the end of the hold is a setting**, because it answers two independent questions:
 does the block leave, and what does its hold ending mean for the roll. `EndAtHold` stays put and
@@ -1028,25 +1141,28 @@ that fades up behind it. `stickyHoldForever` holds until something else stops th
 designer says as much beside the release rather than leaving a roll with no end to be discovered on
 air.
 
-`advance` keeps its own job. A block that still has something to do sets `stickyPending`, which is
-the whole of what the scroll loop knows about blocks: the strip clearing does not finish a roll
-while it is set, and the block finishes the roll itself through `finishRoll` at the moment its own
-release names. Where a block is *drawn* is decided separately, by `stickyBlockTop`, as the lower of
-its natural position and its pinned one — one expression rather than two branches, which is what
-makes a roll parked in manual scroll show every block where it belongs with none of the timing
-running. A block that waited for the roll has no natural position to travel from and simply sits at
-the pin.
+**The timeline decides all of it.** `RollTimeline` simulates the blocks once per layout, event by
+event -- a block reaching its pin, a fade finishing, a hold running out, a block leaving the frame, the
+roll clearing it, the roll finishing -- and records when each happens. Every frame is then a
+comparison against those times, with nothing carried from one frame to the next. Where a block is
+*drawn* is the lower of its natural position and its pinned one until it is let go -- one expression
+rather than two branches -- and it climbs off at the scroll speed from the moment it is.
+
+The rules: a hold counts down only while the roll runs, so once the roll has finished a block still
+holding holds for good and a card still waiting never comes up; a fade or a climb already under way
+carries on after the finish, because a card frozen half off the top is the one thing worse than one
+that never left; and the roll finishes when a block's release says its hold or its exit is the end, or
+once the strip has traveled all the way with no block still holding it open. A loop never finishes.
 
 **"Off screen" is the picture, not the slot.** The slot is where the block belongs; the picture is
 what is actually on the frame, and it is `margin` taller at each end. A release that waits for the
 block to leave has to wait for the whole picture, or the roll ends over the top of a card still
-showing the last band of its own backdrop — `StickyBlockPlacement::clearedFrame` and `offFrame` are
-where that is decided, so nothing can ask the question of the slot by accident.
+showing the last band of its own backdrop.
 
-**A block on its way out keeps going out**, even once the roll has been called finished. The clock
-`advanceStickyBlocks` runs on (`StickyClock`) tells rolling from coasting from paused from scrubbed:
-coasting starts nothing new but carries a released block the rest of the way off, because a block
-frozen half off the top is the one thing worse than one that never left.
+**Parked is a position, not a history.** Under manual scroll a block is pinned where the position puts
+it, a card that waits is up if the roll has gone by and nothing is in the way, holds never run out and
+fades are always complete -- the same position always shows the same frame, whichever way it was
+dragged to.
 
 **A block's panel is painted into its own picture** rather than drawn as a quad behind it. libobs
 draws solids and textures from different effects, and starting a second one inside the pass that is
@@ -1075,130 +1191,86 @@ preview draws a block back into its slot rather than where it will pin: the pane
 end, and a card floating over an unrelated part of it with a hole left where it belongs would agree
 with nothing else on screen.
 
-**Scrolling.** The strip's top edge sits one canvas-height below the top of the frame at
-offset 0 and travels upward, so the roll enters from the bottom. Total travel is
-`canvasHeight + stripHeight`; `leadIn`/`leadOut` are baked into the strip itself as blank
-space at its top and bottom.
+**Scrolling.** The strip's top edge sits one canvas-height below the top of the frame at roll time
+0 and travels upward at the scroll speed, so the roll enters from the bottom. Total travel is
+`canvasHeight + stripHeight`; `leadIn`/`leadOut` are part of the strip as blank space at its top and
+bottom.
 
-The distance traveled per tick comes from the **video's own frame interval**, not from the
-gap `video_tick` reports. That gap is wall-clock and jitters — a percent or two either side of
-the interval on an idle machine, more when anything else on the system takes a moment — while
-frames are composited on a fixed cadence regardless. Feeding the measured gap straight in moves
-the roll a slightly different distance in each equally-spaced frame, and on a page of type that
-reads as the roll catching: appearing to stall for an instant and then carry on, because the eye
-tracks the text and sees the spacing between successive positions change rather than the clock
-those positions came from. A gap close enough to the interval to be that jitter is therefore
-taken *as* the interval; one well outside the band is a real stall — a dropped frame, a scene
-collection loading — and is used as measured, so the roll keeps its timing over anything long
-enough to be worth keeping it over.
+Roll time advances by the **video's own frame interval**, not by the gap `video_tick` reports. That
+gap is wall-clock and jitters — a percent or two either side of the interval on an idle machine, more
+when anything else on the system takes a moment — while frames are composited on a fixed cadence
+regardless. Feeding the measured gap straight in moves the roll a slightly different distance in each
+equally-spaced frame, and on a page of type that reads as the roll catching. A gap close enough to the
+interval to be that jitter is therefore taken *as* the interval; one well outside the band is a real
+stall — a dropped frame, a scene collection loading — and is used as measured.
 
-**Manual scrolling.** `manualScroll` parks the roll at `scrollPosition` instead of advancing it,
-for looking at a section in the middle of a long roll without waiting for the roll to scroll
-there. `video_tick` scrubs and returns before any of the playback machinery, so nothing moves
-while it is on: the roll cannot reach the finished phase, the ending action cannot fire, and the
-start and pause hotkeys have nothing to act on. The phase itself is left exactly as playback set
-it, so switching the mode back off resumes from a state `update()` already knows how to re-arm.
+**Changing the speed keeps the roll in place.** Speed is a playback setting, so changing it builds a
+new timeline for the same layout rather than a new layout, and roll time is rescaled so the strip is
+where it was. A content edit is different: the position no longer means anything in new content, so a
+running roll starts again.
 
-The position is a **share of the full travel**, not a pixel offset and not a number of seconds.
-Pixels would be re-scaled by every content edit, and OBS cannot re-range a slider without the
-properties window being reopened; seconds would move under a change of scroll speed. A percentage
-of `canvasHeight + stripHeight` means the same thing after either. It is re-applied every tick
-rather than once when the setting changes, because a rebuild finishing or a canvas resize changes
-the travel underneath it, and a roll parked halfway through should stay halfway through.
+**Manual scrolling.** `manualScroll` parks the roll at `scrollPosition` instead of playing it. The
+position is a **share of the full travel**, not a pixel offset and not a number of seconds: pixels
+would be re-scaled by every content edit, and seconds would move under a change of scroll speed. It is
+re-applied every tick, because a rebuild finishing or a canvas resize changes the travel underneath it.
+Nothing advances while it is on, so the roll cannot finish and the ending action cannot fire. It saves
+with the scene collection like every other setting, and the properties window warns beside the slider
+that a roll left parked will not move on air.
 
-It saves with the scene collection like every other setting here, so it is possible to leave it on
-and go live with a roll that never moves. The properties window says so in a warning beside the
-slider, and that is the whole of the guard: turning the setting off at some later moment of the
-plugin's choosing would be its own surprise, and would mean the source watching frontend events it
-otherwise has no use for.
-
-**Rebuilds are gated on content.** Every setting reaches the source through the same `update()`,
-and scrubbing sends one per frame of the drag. `renderKey()` reduces the document to everything
-the strip is rasterized from — by blanking the playback fields rather than by listing the content
-ones, so a field added later counts towards it by default — and a rebuild is queued only when that
-string changes. Wrong in the direction the default takes, that costs a redundant rebuild; wrong
-the other way it would leave a stale strip on screen. The same comparison decides whether a
-running roll restarts, which is what the restart was always for: content moved under the roll, so
-its position no longer means anything. A playback setting changing is not that, and a roll now
-keeps its place when the scroll speed is adjusted under it.
-
-**Layout boxes.** `render()` optionally fills a `LayoutBoxes` with the rectangle every section,
-content area, text block, logo and bridge was placed in, for the designer's layout overlay. They
-are collected in the measure pass, which each section goes through exactly once, so they cannot
-disagree with what was painted and a section straddling a tile seam is reported once rather than
-once per tile. The source passes nothing and pays for none of it.
-
-**Clipping.** Rather than a scissor rect — which lives in screen space and would fight the
-scene item's transform — each tile is drawn as the part of itself that actually falls inside
-the canvas. The background is a solid quad drawn underneath.
-
-That clipped quad is built vertex by vertex rather than through `gs_draw_sprite_subregion`,
-because the scroll position is fractional and that call is not: it takes whole texels, so the
-visible height has to be rounded down and the quad ends up short of the canvas edge by the
-fraction that was dropped. What is left is a sliver along the bottom that never gets painted —
-a pixel or two once bilinear sampling has softened the last row — which content entering from
-below appears to pop through rather than slide into, and which is most obvious on a block of
-solid artwork such as a row of logos. Four vertices carrying the fraction in both the positions
-and the texture coordinates cost nothing per frame and land the edge exactly.
+**Clipping.** Rather than a scissor rect — which lives in screen space and would fight the scene
+item's transform — every draw is cut to the canvas by the compositor and drawn as a quad built vertex
+by vertex. The scroll position is fractional and `gs_draw_sprite_subregion` takes whole texels, so a
+picture cut with it would end short of the canvas edge by the fraction dropped -- a sliver content
+appears to pop through rather than slide into. Four vertices carrying the fraction in both positions
+and texture coordinates land the edge exactly.
 
 ## Threading
 
-Three threads touch the source, and the split is deliberate:
-
-- **Graphics thread** owns `document`, all playback advancement, the GPU textures, and
-  drawing. libobs defers `update()` for video sources to the graphics thread, so the
-  document has exactly one writer.
-- **Render thread** owns rasterization. One thread, shared by every source and every open
-  designer window, running jobs strictly in the order they were posted (`RenderThread.hpp`).
-  Rebuilds coalesce: while one is in flight, further edits set a re-run flag instead of
-  queueing another job, so a long roll cannot accumulate a backlog of stale frames behind
-  the one being waited on. Both the source and the designer do this.
-- **UI thread** owns the widgets. A finished preview comes back to it through
+- **Graphics thread** owns `document`, playback, the timeline, every texture and drawing. libobs
+  defers `update()` for video sources to the graphics thread, so the document has exactly one writer.
+  `video_tick` advances roll time and plans which pictures are wanted; `video_render` uploads them and
+  draws.
+- **Render thread** owns rasterization. One thread, shared by every source and every open designer
+  window, with two lanes: a source's pictures run ahead of layouts, designer work and the library
+  poll, and within a lane jobs run in the order posted. Jobs are small -- one layout, one chunk -- so a
+  live picture never waits behind much. It runs a step below normal priority (below normal on
+  Windows, utility QoS on macOS, nice 5 on Linux), because nothing waits on it frame by frame and the
+  graphics and encoder threads do.
+- **UI thread** owns the widgets. A finished layout or picture comes back to it through
   `QMetaObject::invokeMethod(qApp, …, Qt::QueuedConnection)`.
-- **Either UI or graphics** may touch playback state — hotkeys and proc handlers arrive on
-  the UI thread, `video_tick` on the graphics thread — so phase, offset and the pause flag
-  sit behind `stateMutex`. The finished rendering crosses to the graphics thread through
-  `pendingStrip` under `handoffMutex`.
+- **Any thread** may touch playback state — hotkeys and proc handlers arrive on the UI thread, the
+  websocket vendor on its own, `video_tick` on the graphics thread — so phase, roll time, the pause
+  flag and the finish sit behind `stateMutex`.
 
-Painting off the GUI thread is sound because the paint device is a `QImage`, which is the
-case Qt supports; `QFontMetrics`, `QTextLayout` and `QImageReader` come along with it. What
-would *not* work is painting a `QPixmap` or a widget, and the renderer does neither.
+Painting off the GUI thread is sound because the paint device is a `QImage`, which is the case Qt
+supports; `QFontMetrics`, `QTextLayout` and `QImageReader` come along with it.
 
-**Lifetimes across the handoff.** A rebuild job holds a weak source reference and upgrades
-it before touching anything; a successful upgrade means `destroy()` cannot be running, so
-the source data stays valid for the length of the job. A designer preview job instead holds
-a shared `PreviewSink` whose pointer the dialog's destructor clears, so a strip that lands
-after the window closed is simply dropped. Neither path reads anything from the source
-itself on the render thread — even the source name is copied into the job at queue time.
+**Lifetimes across the handoff.** A layout job holds a weak source reference and upgrades it before
+touching anything; a successful upgrade means `destroy()` cannot be running. A `ChunkPipeline` is held
+by `shared_ptr` and reached from its jobs through a weak one, so a consumer that goes away with work
+still queued simply stops getting answers. A designer job holds a shared `PreviewSink` whose pointer
+the dialog's destructor clears.
 
-Ending actions are decided on the graphics thread but touch the frontend and the scene
-graph, so `EndingActionConfig::execute` always hands the work to the UI queue, holding a
-strong source reference so the source cannot be destroyed underneath it.
+**Cancellation.** Every edit bumps a generation. A layout in flight compares it against the number it
+was started for between sections and gives up on an edit that has been overtaken, and the edit that
+overtook it is laid out next. A picture nobody wants any more is never drawn, because the wanted list
+is replaced rather than appended to.
 
-`LogoCache` and `AnimatedLogoCache` are **not** shared: the source and each designer window own
-one of each. Render jobs run one at a time, which is what makes each cache single-threaded
-without a lock to say so. The designer's are held by `shared_ptr`, because a job in flight
-outlives the window that posted it.
+The caches -- logos, animations, rasterized chunks -- are only ever touched from render jobs, which
+run one at a time, so none of them needs a lock. The source and each designer window own their own.
 
-Decoded animation frames do cross threads — from the render thread that decoded them to the
-graphics thread that uploads them — and they do it as a `shared_ptr<const LogoAnimation>` carried
-in the strip. Const because two threads read it; shared because the artwork outlives the render
-that produced it, and the cache may hand the same decode to the next rebuild while the last one
-is still on screen.
+Decoded animation frames do cross threads -- from the render thread that decoded them to the graphics
+thread that uploads them -- as a `shared_ptr<const LogoAnimation>` carried in the layout. Const because
+two threads read it; shared because the artwork outlives the job that decoded it.
 
-`StyleLibrary` is the one genuinely shared thing, since a machine has one of it. Its own mutex
-covers every accessor, but the render path never touches it: a library change is folded into the
-document by `refreshLinkedPresets()` on the thread that owns the document, and rasterization goes
-on reading the document's own presets.
+`StyleLibrary` is the one genuinely shared thing, since a machine has one of it. Its own mutex covers
+every accessor, and the `stat` its poll makes is taken outside that mutex. The render path never
+touches it: a library change is folded into the document by `refreshLinkedPresets()` on the thread
+that owns the document. The one member read without the mutex is `serial()`, an atomic bumped last by
+whoever changed the library, which is what a source's tick compares once a frame.
 
-The one member read without that mutex is `serial()`, which is an atomic and is what a source's
-tick asks once a frame to find out whether there is anything to do at all. It is bumped last under
-the mutex by whoever changed the library, so a reader that sees the new number is a reader for whom
-the change has already happened — and every one of them goes on to read the contents through the
-accessors, which take the mutex as they always did.
-
-`obs_module_unload` calls `stopRenderThread()`, which discards queued jobs, waits for the
-one running, and joins — nothing is left executing code in a module about to be unmapped.
+`obs_module_unload` calls `stopRenderThread()`, which discards queued jobs, waits for the one running,
+and joins — nothing is left executing code in a module about to be unmapped.
 
 ## Ending actions
 
@@ -1608,7 +1680,7 @@ is what makes each of them a fallback for the one before:
 3. **Whatever is left is reported** — named under the designer's preview, logged once by the
    source.
 
-`render/FontResolution.hpp` is all three, and `StripRenderer::render()` and `measure()` go through
+`render/FontResolution.hpp` is all three, and `RollRenderer::layout()` and `measure()` go through
 it rather than each caller doing so: a roll cannot be rendered in a font the document did not ask
 for by somebody forgetting to resolve it first. The common case — every family present — copies
 nothing and hands the document straight back.
@@ -1660,9 +1732,9 @@ caller with nowhere to write — the bytes go to Qt directly instead.
 
 There are caps, because a scene collection is rewritten on every save and read back on every load,
 so a bundle is paid for over and over rather than once: 8 MB per file, 32 MB per roll. Past them
-the family keeps its name, reports as uncarried, and is left to a stand-in or an install. For the
-same reason `renderKey()` reduces the bundle to its file sizes rather than serializing it — that
-key is built once per frame of a slider drag.
+the family keeps its name, reports as uncarried, and is left to a stand-in or an install. Loading a
+bundle goes through the font store described under *Persistence*, because a document is loaded once
+per frame of a slider drag.
 
 Bundling is on by default and switchable off per roll, which is the setting that makes a
 collection self-contained without anybody having to know fonts are a problem before they hit one.
@@ -1720,12 +1792,9 @@ same reason: reporting it would send the user after a font nothing uses.
    different settings per entry is honored; the editor writes one set of settings to every
    logo in a section, because a loop switch on each of twelve sponsor cells is a column of
    checkboxes nobody wants to fill in.
-7. **A sticky block is one level deep, and its logos do not animate.** A block cannot hold another
-   block. Its children are rasterized into the block's own picture, which is drawn as a single
-   quad, so an animated logo inside one shows its first frame — the strip's hole-and-overlay
-   trick has nowhere to put a second hole. Both are deliberate: pinning something to something
-   already pinned is a second set of rules, and a card that holds still is not where a moving
-   logo is missed.
+7. **A sticky block is one level deep.** A block cannot hold another block: pinning something to
+   something already pinned is a second set of pinning rules, not a rendering problem, and nobody
+   has asked for it.
 8. **A panel's outset is bounded by the roll.** A panel paints outside its own box, but the strip is
    exactly as tall as the layout made it — so an outset on the very first or very last section has
    nothing outside the roll to be drawn into and is cut there. The lead-in, the lead-out and a
@@ -1741,6 +1810,24 @@ same reason: reporting it would send the user after a font nothing uses.
    happens.
 
 ### Addressed since the first cut
+
+- The renderer was rebuilt around a picture per section rather than one picture of the whole roll
+  (see `docs/design/layered-renderer.md`). Editing one section redraws one section; a long roll holds
+  only the part of itself near the frame, on the GPU and in memory; a rebuild keeps every picture it
+  did not change; and the designer rasterizes at its own scale and only what it shows. On a
+  2,000-name roll, showing an edit went from about five seconds of rasterizing to a few milliseconds.
+- Playback is a timeline: where everything is, as a pure function of roll time, tested directly. Two
+  cards that wait for the roll now come up one after the other rather than together, a parked roll
+  shows the same frame however it was dragged there, and the designer shows how long the roll really
+  runs, holds included.
+- A logo inside a sticky block animates, drawn over the block wherever the block goes.
+- The source composites premultiplied pictures in linear light and is sRGB-aware, which removed a
+  dark fringe that moved with the roll and thinner edges wherever the source was filtered or nested.
+- An update -- once per frame of a slider drag, on OBS's compositing thread -- went from about 180 ms
+  to about 11 ms on a long roll carrying fonts: fonts are stored by hash and decoded once, and a
+  change is found by comparison rather than by serializing the document twice.
+- An obs-websocket vendor drives a roll from outside OBS.
+- Clicking a section in the designer's preview selects it.
 
 - Backgrounds: a panel — a color, a gradient or an image, with rounded corners and a border —
   behind a section and behind each of the things it draws, bindable to named presets that publish
@@ -1824,6 +1911,13 @@ same reason: reporting it would send the user after a font nothing uses.
   building one from scratch first.
 
 ## Verifying changes
+
+Two harnesses. The offscreen one (below) answers everything about layout, rasterizing, the timeline
+and persistence in a few seconds. The **live** one, `tests/live`, loads the built plugin into a real
+libobs on a real graphics device and plays rolls -- speed, linear-light output, edits mid-roll, the
+finish, a fast 300-section roll with no empty frame, scrub jumps, the designer's preview -- and is
+what checks the shader, the GPU residency and the source's playback, none of which the offscreen
+harness touches. See `tests/README.md` for running it.
 
 The plugin builds clean against libobs and Qt 6 with `-Wextra -Werror`.
 
@@ -2008,8 +2102,9 @@ keeping ink either side of the seam; and the `obs_data` round trip for all three
 section written before they existed loading with the override off and its bridge style seeded from
 the section's own.
 
-For manual scrolling: that `renderKey()` is unchanged by every one of the playback fields and
-changed by every content one, which is the property the whole rebuild gate rests on; that the
+For manual scrolling: that the rebuild gate (then a JSON key, now `Document::sameContent`) is
+unchanged by every one of the playback fields and changed by every content one, which is the
+property the whole rebuild gate rests on; that the
 parked offset is the right share of the travel at each end and the middle, clamps outside 0–100,
 and re-resolves against a strip that has since been rebuilt taller; and that a hundred and twenty
 ticks in manual mode leave the offset, the phase and the pending action exactly as they were, with

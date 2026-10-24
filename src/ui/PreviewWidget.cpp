@@ -18,11 +18,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "ui/PreviewWidget.hpp"
 
+#include <QCoreApplication>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <vector>
 
 namespace closingtime {
 
@@ -90,6 +94,12 @@ void paintChecker(QPainter &painter, const QRect &rect)
 	}
 }
 
+/* What the pane keeps of pictures that have come back, in bytes, before the oldest go. */
+constexpr qint64 kPreviewPictureBytes = 96LL * 1024 * 1024;
+
+/* What the pane's own raster cache keeps on the render thread's side. */
+constexpr qint64 kPreviewRasterCacheBytes = 64LL * 1024 * 1024;
+
 } // namespace
 
 PreviewWidget::PreviewWidget(QWidget *parent) : QWidget(parent)
@@ -104,6 +114,26 @@ PreviewWidget::PreviewWidget(QWidget *parent) : QWidget(parent)
 	 */
 	animationTimer.setInterval(kAnimationIntervalMs);
 	connect(&animationTimer, &QTimer::timeout, this, qOverload<>(&QWidget::update));
+}
+
+void PreviewWidget::setCaches(std::shared_ptr<LogoCache> logos, std::shared_ptr<AnimatedLogoCache> animations)
+{
+	/*
+	 * Told rather than polled: a picture landing is a reason to repaint, and nothing else in the
+	 * pane changes while one is being drawn. The notice comes from the render thread, so it is
+	 * queued over to this one, and dropped if the pane has gone by the time it arrives.
+	 */
+	QPointer<PreviewWidget> guard(this);
+	pipeline = ChunkPipeline::create(std::move(logos), std::move(animations), kPreviewRasterCacheBytes,
+					 RenderPriority::Normal, [guard] {
+						 QMetaObject::invokeMethod(
+							 qApp,
+							 [guard] {
+								 if (guard)
+									 guard->update();
+							 },
+							 Qt::QueuedConnection);
+					 });
 }
 
 void PreviewWidget::setAnimationPlaying(bool playing)
@@ -123,29 +153,24 @@ void PreviewWidget::setAnimationPlaying(bool playing)
 	update();
 }
 
-void PreviewWidget::setStrip(const Strip &newStrip, int newCanvasWidth, int newCanvasHeight,
-			     const QColor &newBackground)
+void PreviewWidget::setLayout(RollLayoutPtr newLayout, const QColor &newBackground)
 {
-	strip = newStrip;
+	layout = std::move(newLayout);
+	background = newBackground;
+
 	/*
 	 * A rebuild replaces the placements the frames are looked up from, so playback starts again
 	 * from the top rather than from wherever a since-discarded decode had reached.
 	 */
 	if (animationPlaying)
 		animationClock.restart();
-	canvasWidth = std::max(1, newCanvasWidth);
-	canvasHeight = std::max(1, newCanvasHeight);
-	background = newBackground;
 
+	/*
+	 * The pictures already here stay: they are kept by what they show, so every section the edit
+	 * did not change is drawn from what the pane already has while the changed one is redrawn.
+	 */
 	scroll = std::min(scroll, maxScroll());
 	update();
-}
-
-void PreviewWidget::setLayoutBoxes(const LayoutBoxes &boxes)
-{
-	layoutBoxes = boxes;
-	if (layoutBoxesVisible)
-		update();
 }
 
 void PreviewWidget::setLayoutBoxesVisible(bool visible)
@@ -173,6 +198,16 @@ void PreviewWidget::scrollToStripY(int stripY)
 	update();
 }
 
+int PreviewWidget::canvasWidth() const
+{
+	return layout && layout->document ? std::max(1, layout->document->width) : 1920;
+}
+
+int PreviewWidget::canvasHeight() const
+{
+	return layout && layout->document ? std::max(1, layout->document->height) : 1080;
+}
+
 int PreviewWidget::canvasScreenWidth() const
 {
 	return std::max(1, width() - kCanvasInset * 2);
@@ -180,12 +215,17 @@ int PreviewWidget::canvasScreenWidth() const
 
 qreal PreviewWidget::scaleFactor() const
 {
-	return static_cast<qreal>(canvasScreenWidth()) / static_cast<qreal>(canvasWidth);
+	return static_cast<qreal>(canvasScreenWidth()) / static_cast<qreal>(canvasWidth());
+}
+
+qreal PreviewWidget::rasterScale() const
+{
+	return scaleFactor() * devicePixelRatioF();
 }
 
 qreal PreviewWidget::onAirHeight() const
 {
-	return std::min<qreal>(canvasHeight * scaleFactor(), height());
+	return std::min<qreal>(canvasHeight() * scaleFactor(), height());
 }
 
 /*
@@ -200,7 +240,7 @@ qreal PreviewWidget::onAirHeight() const
  */
 int PreviewWidget::maxScroll() const
 {
-	const int scaledHeight = static_cast<int>(strip.height * scaleFactor());
+	const int scaledHeight = layout ? static_cast<int>(layout->height * scaleFactor()) : 0;
 	return std::max(0, scaledHeight - static_cast<int>(onAirHeight()));
 }
 
@@ -226,6 +266,106 @@ void PreviewWidget::wheelEvent(QWheelEvent *event)
 	scroll = std::clamp(scroll - delta, 0, maxScroll());
 	update();
 	event->accept();
+}
+
+/*
+ * A click selects the section under it. The layout already knows where every section is -- the
+ * overlay draws exactly those boxes -- so finding it is a lookup, and a section in a long roll is
+ * picked out of the pane rather than hunted for in the list.
+ */
+void PreviewWidget::mousePressEvent(QMouseEvent *event)
+{
+	if (!layout || event->button() != Qt::LeftButton) {
+		QWidget::mousePressEvent(event);
+		return;
+	}
+
+	const qreal scale = scaleFactor();
+	const QPointF at((event->position().x() - kCanvasInset) / scale, (event->position().y() + scroll) / scale);
+
+	for (const LayoutBox &box : layout->boxes) {
+		if ((box.kind == LayoutBox::Kind::Section || box.kind == LayoutBox::Kind::Sticky) &&
+		    box.rect.contains(at)) {
+			emit sectionClicked(box.section);
+			event->accept();
+			return;
+		}
+	}
+
+	QWidget::mousePressEvent(event);
+}
+
+DrawList PreviewWidget::composeView(double clipBottomPixels) const
+{
+	const qreal dpr = devicePixelRatioF();
+
+	ComposeView view;
+	view.scale = rasterScale();
+	view.stripTop = -scroll * dpr;
+	view.clipTop = 0.0;
+	view.clipBottom = clipBottomPixels * dpr;
+	/* The pane is the roll end to end, so a block is shown in the slot it holds in the running order. */
+	view.blocks = ComposeView::Blocks::InSlots;
+
+	RollFrame frame;
+	const double elapsedMs =
+		animationPlaying && animationClock.isValid() ? static_cast<double>(animationClock.elapsed()) : 0.0;
+	for (const AnimatedLogoPlacement &placement : layout->animatedLogos)
+		frame.logoElapsedMs.append(elapsedMs *
+					   std::clamp(placement.playback.speed, kMinLogoSpeed, kMaxLogoSpeed));
+
+	return composeFrame(*layout, frame, view);
+}
+
+void PreviewWidget::requestPictures(const DrawList &visible, const DrawList &ahead)
+{
+	if (!pipeline)
+		return;
+
+	const qreal scale = rasterScale();
+	std::vector<ChunkRequest> wanted;
+
+	/* What is in the pane first, then a pane's worth below it, which is where a scroll goes next. */
+	const auto want = [&](const DrawList &list, double urgency) {
+		for (const DrawSource &chunk : chunksIn(list)) {
+			const quint64 key = chunkKey(layout->layers.at(chunk.layer), chunk.chunk, scale);
+			if (!pictures.contains(key))
+				wanted.push_back(ChunkRequest{key, layout, chunk.layer, chunk.chunk, scale, urgency});
+		}
+	};
+	want(visible, 0.0);
+	want(ahead, 1.0);
+
+	pipeline->want(std::move(wanted));
+}
+
+void PreviewWidget::collectPictures()
+{
+	if (!pipeline || !pipeline->hasArrived())
+		return;
+
+	for (auto &[key, image] : pipeline->takeArrived()) {
+		if (image.isNull() || pictures.contains(key))
+			continue;
+		pictureBytes += image.sizeInBytes();
+		pictures.insert(key, Picture{std::move(image), paintCount});
+	}
+}
+
+void PreviewWidget::trimPictures()
+{
+	while (pictureBytes > kPreviewPictureBytes && !pictures.isEmpty()) {
+		auto oldest = pictures.begin();
+		for (auto it = pictures.begin(); it != pictures.end(); ++it) {
+			if (it->lastPainted < oldest->lastPainted)
+				oldest = it;
+		}
+		/* Never what is on screen now: that would only be asked for again on the next paint. */
+		if (oldest->lastPainted == paintCount)
+			break;
+		pictureBytes -= oldest->image.sizeInBytes();
+		pictures.erase(oldest);
+	}
 }
 
 /*
@@ -259,20 +399,38 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 			painter.fillRect(canvasColumn, background);
 	}
 
-	painter.setRenderHints(QPainter::SmoothPixmapTransform | QPainter::Antialiasing);
+	if (layout && !layout->isEmpty()) {
+		++paintCount;
+		collectPictures();
 
-	for (const StripTile &tile : strip.tiles) {
-		const qreal top = tile.top * scale - scroll;
-		const qreal tileHeight = tile.image.height() * scale;
+		const DrawList visible = composeView(height());
+		requestPictures(visible, composeView(height() * 2.0));
 
-		if (top + tileHeight < 0 || top > height())
-			continue;
+		const qreal scaleNow = rasterScale();
+		const qreal dpr = devicePixelRatioF();
 
-		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), tileHeight), tile.image);
+		painter.save();
+		painter.setRenderHints(QPainter::SmoothPixmapTransform | QPainter::Antialiasing);
+		/* The draws are in device pixels; the painter is in widget pixels. */
+		painter.scale(1.0 / dpr, 1.0 / dpr);
+		paintDrawList(
+			painter, visible,
+			[&](const DrawSource &source) -> QImage {
+				if (source.kind != DrawSource::Kind::Chunk)
+					return logoImage(*layout, source);
+
+				const auto it = pictures.find(
+					chunkKey(layout->layers.at(source.layer), source.chunk, scaleNow));
+				if (it == pictures.end())
+					return QImage();
+				it->lastPainted = paintCount;
+				return it->image;
+			},
+			QPointF(canvasColumn.left() * dpr, 0.0));
+		painter.restore();
+
+		trimPictures();
 	}
-
-	paintStickyBlocks(painter, canvasColumn, scale);
-	paintAnimatedLogos(painter, canvasColumn, scale);
 
 	const qreal framedHeight = onAirHeight();
 	const QRectF onAir(canvasColumn.left() + 0.5, 0.5, canvasColumn.width() - 1.0, framedHeight - 1.0);
@@ -313,78 +471,9 @@ void PreviewWidget::paintEvent(QPaintEvent *)
  * contents over the top -- so a text column sitting exactly on its section's edge is still
  * visible.
  */
-/*
- * Draws each sticky block back into the slot the strip left empty for it.
- *
- * The pane is the roll end to end rather than a canvas playing, so a block is shown where it sits
- * in the running order -- which is what makes the section list, the preview and the scroll bar
- * agree about where the block is. Where it *pins* is a property of playback, and playback is what
- * the OBS canvas shows; drawing the block halfway up the pane instead would leave a hole in the
- * roll and a card floating over a part of it that has nothing to do with either.
- */
-void PreviewWidget::paintStickyBlocks(QPainter &painter, const QRect &canvasColumn, qreal scale) const
-{
-	for (const StickyBlockPlacement &placement : strip.stickyBlocks) {
-		if (placement.image.isNull())
-			continue;
-
-		/* The picture reaches past the slot by its margin at each end; so does what is drawn. */
-		const qreal top = (placement.rect.top() - placement.margin) * scale - scroll;
-		const qreal blockHeight = placement.image.height() * scale;
-
-		if (top + blockHeight < 0 || top > height())
-			continue;
-
-		painter.drawImage(QRectF(canvasColumn.left(), top, canvasColumn.width(), blockHeight), placement.image);
-	}
-}
-
-void PreviewWidget::paintAnimatedLogos(QPainter &painter, const QRect &canvasColumn, qreal scale) const
-{
-	if (strip.animatedLogos.isEmpty())
-		return;
-
-	const double elapsedMs =
-		animationPlaying && animationClock.isValid() ? static_cast<double>(animationClock.elapsed()) : 0.0;
-
-	for (const AnimatedLogoPlacement &placement : strip.animatedLogos) {
-		if (!placement.animation)
-			continue;
-
-		const QRectF &box = placement.rect;
-		const qreal top = box.top() * scale - scroll;
-		const qreal boxHeight = box.height() * scale;
-
-		if (top + boxHeight < 0 || top > height())
-			continue;
-
-		const double speed = std::clamp(placement.playback.speed, kMinLogoSpeed, kMaxLogoSpeed);
-		const int index = logoFrameAt(*placement.animation, elapsedMs * speed, placement.playback.loop);
-		if (index < 0 || index >= placement.animation->frames.size())
-			continue;
-
-		const QRectF target(canvasColumn.left() + box.left() * scale, top, box.width() * scale, boxHeight);
-
-		/*
-		 * The shadow only arrives frame by frame for a logo that asked for one that follows the
-		 * animation; every other logo already has its shadow painted into the strip behind this
-		 * hole, which is why nothing is drawn for it here.
-		 */
-		if (index < placement.shadowFrames.size()) {
-			const QImage &shadow = placement.shadowFrames.at(index);
-			const QPointF at = box.topLeft() + placement.shadowOffset;
-			painter.drawImage(QRectF(canvasColumn.left() + at.x() * scale, at.y() * scale - scroll,
-						 shadow.width() * scale, shadow.height() * scale),
-					  shadow);
-		}
-
-		painter.drawImage(target, placement.animation->frames.at(index).image);
-	}
-}
-
 void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColumn, qreal scale) const
 {
-	if (layoutBoxes.isEmpty())
+	if (!layout || layout->boxes.isEmpty())
 		return;
 
 	painter.save();
@@ -392,7 +481,7 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 	painter.setBrush(Qt::NoBrush);
 
 	const auto draw = [&](LayoutBox::Kind kind) {
-		for (const LayoutBox &box : layoutBoxes) {
+		for (const LayoutBox &box : layout->boxes) {
 			if (box.kind != kind)
 				continue;
 

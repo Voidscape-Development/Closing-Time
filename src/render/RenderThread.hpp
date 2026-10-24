@@ -37,11 +37,29 @@ namespace closingtime {
  */
 
 /*
+ * Which queue a job waits in.
+ *
+ * One thread still runs everything, one job at a time -- that is what keeps the caches it touches
+ * single-threaded -- but not everything is equally urgent. A picture a source is about to put on
+ * air is late the moment a frame goes out without it, while laying out an edit or rasterizing the
+ * designer's preview can wait a few milliseconds without anybody seeing. Jobs are small (one
+ * section's chunk, one layout) so a live job never waits behind much.
+ */
+enum class RenderPriority {
+	/* A picture a source showing on a canvas is about to need. Runs ahead of everything else. */
+	Live,
+	/* Everything else: layouts, the designer, the style library's poll. In the order posted. */
+	Normal,
+};
+
+/*
  * Queues `job` on the render thread, starting it on first use. Safe to call from any
  * thread, including from inside another job. Jobs posted after stopRenderThread() are
  * dropped.
+ *
+ * Within a priority, jobs run strictly in the order they were posted.
  */
-void postRenderJob(std::function<void()> job);
+void postRenderJob(std::function<void()> job, RenderPriority priority = RenderPriority::Normal);
 
 /*
  * Discards anything still queued, waits for the job in flight, and joins the thread. Called

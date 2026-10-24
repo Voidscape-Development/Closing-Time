@@ -25,10 +25,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QListWidget>
 #include <QVector>
 
+#include <atomic>
 #include <memory>
 
 #include "model/CreditsModel.hpp"
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 
 class QCheckBox;
 class QDialogButtonBox;
@@ -212,7 +213,7 @@ private:
 	 * document the strip was rendered from rather than reading the live one, so the canvas
 	 * outline and the readouts always describe the pixels actually on screen.
 	 */
-	void applyPreview(const Document &rendered, const Strip &strip, const LayoutBoxes &boxes);
+	void applyPreview(const Document &rendered, const RollLayoutPtr &layout);
 
 	/* Commits the editor's current state into `document` at `currentPath`. */
 	void commitCurrentSection();
@@ -292,6 +293,12 @@ private:
 	 */
 	struct PreviewSink {
 		DesignerDialog *dialog = nullptr;
+		/*
+		 * Bumped on every preview request. A layout in flight compares it against the number it
+		 * was started for between sections and abandons an edit that has already been overtaken.
+		 * Atomic because the render thread reads it.
+		 */
+		std::atomic<uint64_t> generation{0};
 	};
 
 	OBSWeakSource weakSource;
@@ -379,6 +386,8 @@ private:
 	 */
 	bool previewInFlight = false;
 	bool previewAgain = false;
+	/* The layout on screen, which the next one takes the keys of its unchanged sections from. */
+	RollLayoutPtr shownLayout;
 
 	QSplitter *splitter = nullptr;
 	SectionListWidget *sectionList = nullptr;

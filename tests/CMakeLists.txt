@@ -19,13 +19,16 @@ target_sources(
     suites/BridgedRows.cpp
     suites/Dividers.cpp
     suites/Fonts.cpp
+    suites/Layers.cpp
     suites/Layout.cpp
     suites/LogoRows.cpp
     suites/Persistence.cpp
     suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp
+    suites/RenderQueue.cpp
     suites/SectionTypes.cpp
     suites/SubtitleHeadings.cpp
+    suites/Timeline.cpp
     ${CLOSING_TIME_CORE_SOURCES}
 )
 
@@ -46,7 +49,7 @@ endif()
 
 set_target_properties(
   closing-time-tests
-  PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+  PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
 )
 
 # One CTest entry for the whole run: the suites share a process and a font database, and the

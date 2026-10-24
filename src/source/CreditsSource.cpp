@@ -24,21 +24,28 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include <QByteArray>
+#include <QHash>
 #include <QSet>
 #include <QString>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "model/CreditsModel.hpp"
 #include "model/StyleLibrary.hpp"
+#include "render/ChunkPipeline.hpp"
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
-#include "render/StripRenderer.hpp"
+#include "render/RollCompositor.hpp"
+#include "render/RollRenderer.hpp"
+#include "render/RollTimeline.hpp"
+#include "source/RollControl.hpp"
 #include "ui/DesignerDialog.hpp"
 
 namespace closingtime {
@@ -54,228 +61,128 @@ namespace {
  */
 constexpr double kLibraryPollSeconds = 1.0;
 
+/*
+ * How much rasterized picture a source keeps on the render thread's side, in bytes.
+ *
+ * What a loop coming back round, a scrub, or a rebuild that changed one section draws from instead
+ * of rasterizing again. A screenful at 1920 wide is about eight megabytes, so this is thirty or so
+ * screens -- a long roll's worth of the pictures most likely to be wanted again -- and nothing like
+ * the whole of a long roll, which is the point.
+ */
+constexpr qint64 kRasterCacheBytes = 256LL * 1024 * 1024;
+
+/*
+ * How far ahead of the frame pictures are asked for, in seconds of travel. Rasterizing a section
+ * is a few milliseconds and the render thread runs a source's requests ahead of everything else,
+ * so this is a wide margin -- the cost of being wrong in the other direction is a section that
+ * arrives on screen a few frames after its own top edge did.
+ */
+constexpr double kLookaheadSeconds = 4.0;
+
+/*
+ * How long a texture may go unwanted before it is let go, in nanoseconds of video time. Long
+ * enough that a scrub back and forth over the same few sections does not upload them on every
+ * pass; short enough that a ten-minute roll holds only the part of itself near the frame.
+ */
+constexpr uint64_t kTextureGraceNs = 2'000'000'000;
+
+/*
+ * How long a rebuilt roll may wait for its pictures before it is put on screen anyway; see
+ * stageLayout. In video time, because a source can be rendered several times a frame.
+ */
+constexpr uint64_t kMaxStagingNs = 500'000'000;
+
 /* Where the roll is in its lifecycle. */
 enum class Phase {
 	/* Parked at the start position, waiting to be armed. */
 	Idle,
 	/* Armed, counting down the configured start delay. */
 	Delaying,
-	/* Scrolling. */
-	Rolling,
-	/* Content has cleared the canvas; the ending action may still be pending. */
-	Finished,
+	/* Under way: roll time runs, unless paused. What "finished" means is the timeline's to say. */
+	Running,
 };
 
-/*
- * One strip tile: where it sits in the roll, the picture it was rasterized as, and the texture
- * that picture has been uploaded into.
- *
- * The picture is kept rather than uploaded and dropped the moment the strip arrives, because a
- * roll is tiled into as many 2048 px slices as it is long and only ever a screenful of them is on
- * display. Creating every one of those textures in the frame a rebuild lands in means tens or
- * hundreds of megabytes of upload inside one `video_render` -- a frame that takes long enough to
- * be seen, which is exactly the hitch this splitting up exists to avoid. A tile is instead put on
- * the GPU when it is about to be drawn, and one further tile is uploaded per frame ahead of that,
- * so the cost is spread over the frames after a rebuild rather than landing in one of them.
- *
- * Nothing about what reaches the screen changes: a tile that is drawn is uploaded first, in the
- * same frame, before the pass that draws it is started. Nor does the memory this costs -- the
- * pictures were all in RAM at once anyway while the old code uploaded them, and here each one is
- * let go of as it is uploaded, so the two together never hold more than that same peak.
- *
- * Graphics-thread state, like the textures it holds.
- */
-struct TileRuntime {
-	/* Y offset of this tile's top edge within the strip, in pixels. */
-	int top = 0;
-	int height = 0;
+/* One chunk of one layer, on the GPU. */
+struct ChunkTexture {
 	gs_texture_t *texture = nullptr;
+	/* The video frame it was last wanted in; see kTextureGraceNs. */
+	uint64_t lastWanted = 0;
 	/*
-	 * The rasterized tile, until it has been uploaded. Null afterwards -- and null with no
-	 * texture beside it means the upload was tried and failed, which is what keeps a roll too
-	 * big for the GPU from logging once a frame for as long as it is on screen.
+	 * Where the texture sits in its chunk's full rectangle: a chunk is cut down to its ink before it
+	 * is uploaded, so the texture is usually a small part of the canvas-wide rows it stands for.
 	 */
-	QImage image;
+	QPoint offset;
 };
 
 /*
- * One animated logo, mid-playback.
- *
- * The strip left a hole where this logo goes (see AnimatedLogoPlacement) and this is what fills
- * it: a single texture, re-uploaded when the frame changes, drawn as its own quad after the
- * tiles. One texture rather than one per frame because a thirty-second animation is thousands of
- * frames and no GPU wants thousands of small textures for one logo; re-uploading a logo-sized
- * image at ten to thirty frames a second is a rounding error beside the strip itself.
- *
- * Graphics-thread state, like the tile textures beside it.
+ * One animated logo's textures: one for its frames and one for its shadow, each rewritten when the
+ * frame changes rather than one per frame -- a thirty-second animation is thousands of frames and no
+ * GPU wants thousands of small textures for one logo.
  */
-struct AnimatedLogoRuntime {
-	AnimatedLogoPlacement placement;
-	gs_texture_t *texture = nullptr;
-	gs_texture_t *shadowTexture = nullptr;
-	/* Which frame the textures currently hold, or -1 when they hold nothing yet. */
-	int uploadedFrame = -1;
-	int frame = 0;
-	/* How far into the animation playback has run, in milliseconds of the animation's own time. */
-	double elapsedMs = 0.0;
-	/* False until the animation is running: what `startOnEnter` holds off. */
-	bool started = false;
-	/* The roll pass this playback belongs to; a new one restarts it. */
-	uint64_t epoch = 0;
+struct LogoTextures {
+	gs_texture_t *frame = nullptr;
+	gs_texture_t *shadow = nullptr;
+	int frameShown = -1;
+	int shadowShown = -1;
 };
 
-/*
- * One sticky block, mid-roll.
- *
- * The strip left a slot where this block goes (see StickyBlockPlacement) and this is what fills
- * it: one texture, drawn as its own quad after the tiles, at a position this decides rather than
- * at the one the slot has scrolled to. That is the whole feature -- the block detaches from the
- * roll it arrived on and the roll carries on past behind it.
- *
- * Graphics-thread state, like the tile textures beside it.
- */
-struct StickyBlockRuntime {
-	StickyBlockPlacement placement;
-	gs_texture_t *texture = nullptr;
-
-	enum class State {
-		/*
-		 * Waiting for the roll to go by before showing itself at all -- the entrance that comes
-		 * after the credits rather than with them. Nothing of the block is drawn in this state.
-		 */
-		Hidden,
-		/* Fading up in place, having waited. */
-		Entering,
-		/* Still traveling with the roll, on its way to the anchor. */
-		Waiting,
-		/* Detached and holding at the anchor. */
-		Pinned,
-		/* Let go and climbing off the top of the frame under its own steam. */
-		Released,
-	};
-
-	State state = State::Waiting;
-	/* Seconds left of the fade. Meaningless outside Entering. */
-	double fadeRemaining = 0.0;
-	/* Seconds left of the hold. Meaningless until the block has pinned. */
-	double holdRemaining = 0.0;
-	/* How far it has traveled since it was released, in pixels. */
-	double releasedTravel = 0.0;
-	/* Set once its hold has had whatever say it has in ending the roll. */
-	bool spent = false;
-	/* Set once its leaving the frame has had whatever say it has in ending the roll. */
-	bool departed = false;
-	/* The roll pass this belongs to; a new one starts it over. */
-	uint64_t epoch = 0;
-
-	/* What the block is drawn at this frame: 1 everywhere but part-way through a fade. */
-	double alpha() const
-	{
-		if (state != State::Entering)
-			return 1.0;
-		if (placement.fadeIn <= 0.0)
-			return 1.0;
-		return std::clamp(1.0 - fadeRemaining / placement.fadeIn, 0.0, 1.0);
-	}
-
-	/* True while the block is somewhere a viewer could see it, whether or not it is moving. */
-	bool showing() const { return state != State::Hidden; }
+/* A layout that has arrived from the render thread but is not on screen yet; see stageLayout. */
+struct StagedLayout {
+	RollLayoutPtr layout;
+	RollTimeline timeline;
+	/* The video frame it arrived in, for kMaxStagingNs. */
+	uint64_t arrived = 0;
 };
-
-/*
- * How the roll is moving this tick, as far as its blocks are concerned.
- *
- *   Rolling  - playing. Blocks pin, fade, hold and leave on their own clock.
- *   Coasting - the roll has been called finished but has not been taken off the screen. Nothing new
- *              starts, but a block already on its way out goes the rest of the way out: a block
- *              frozen half off the top is the one thing worse than one that never left.
- *   Held     - paused. Everything stands exactly where it is.
- *   Scrubbed - parked under manual scroll. There is no clock at all, so each block shows the state
- *              the scroll position alone implies -- pinned where it would be, arrived if the roll
- *              it waits for has gone by, and never part-way through a fade.
- */
-enum class StickyClock { Rolling, Coasting, Held, Scrubbed };
-
-/*
- * Puts a block at the top of its own loop: what a freshly rasterized block starts at, and what a
- * roll going back to its beginning puts every block it carries back to.
- */
-void startStickyBlock(StickyBlockRuntime &runtime)
-{
-	const StickyBlockPlacement &placement = runtime.placement;
-
-	runtime.state = stickyEntranceWaitsForRoll(placement.entrance) ? StickyBlockRuntime::State::Hidden
-								       : StickyBlockRuntime::State::Waiting;
-	runtime.fadeRemaining = std::max(0.0, placement.fadeIn);
-	runtime.holdRemaining = std::max(0.0, placement.hold);
-	runtime.releasedTravel = 0.0;
-	runtime.spent = false;
-	runtime.departed = false;
-}
-
-/*
- * Where a sticky block's slot-top sits in canvas space this frame.
- *
- * Waiting and pinned are one expression rather than two branches: a block travels with the roll
- * until the roll has carried it up to the anchor and stays there afterwards, which is exactly the
- * lower of the two positions. Written that way so a roll parked in manual scroll -- where none of
- * the timing in advanceStickyBlocks runs -- still shows every block where it belongs.
- *
- * A block that waited for the roll to go by never travels: it belongs at the anchor from the moment
- * it shows itself, which is the whole difference between the two entrances.
- */
-double stickyBlockTop(const StickyBlockRuntime &runtime, double stripTop, int canvasHeight)
-{
-	const StickyBlockPlacement &placement = runtime.placement;
-	const double pinnedTop = placement.pinnedTop(canvasHeight);
-
-	if (runtime.state == StickyBlockRuntime::State::Released)
-		return pinnedTop - runtime.releasedTravel;
-
-	if (stickyEntranceWaitsForRoll(placement.entrance))
-		return pinnedTop;
-
-	return std::max(pinnedTop, stripTop + placement.rect.top());
-}
 
 /*
  * Threading:
  *
- *   - `document` is written only by update(), which libobs defers to the graphics thread
- *     for video sources, and by create() before the source is visible to anyone else. The
- *     graphics thread can therefore read it without a lock.
- *   - Playback state is mutated from hotkey and proc-handler callbacks on the UI thread as
- *     well as from video_tick, so it lives behind `stateMutex`.
- *   - The rendered strip crosses from the render thread to the graphics thread through
- *     `pendingStrip` under `handoffMutex`; the GPU textures themselves are only ever
- *     touched by the graphics thread.
+ *   - `document` is written only by update(), which libobs defers to the graphics thread for video
+ *     sources, and by create() before the source is visible to anyone else. The graphics thread can
+ *     therefore read it without a lock.
+ *   - Playback state is mutated from hotkey, proc-handler and websocket callbacks on other threads
+ *     as well as from video_tick, so it lives behind `stateMutex`.
+ *   - A finished layout crosses from the render thread through `pendingLayout` under
+ *     `handoffMutex`, and rasterized chunks through the ChunkPipeline. Everything the GPU
+ *     holds is only ever touched by the graphics thread.
  */
 struct CreditsSourceData {
 	obs_source_t *source = nullptr;
+	/* Copied into every job posted to the render thread, which upgrades it before touching anything. */
+	OBSWeakSource weakSelf;
 
 	Document document;
-	/* What the last rebuild was rasterized from; see renderKey(). Graphics thread only. */
-	QByteArray renderedFrom;
 	/*
-	 * Owned by the render thread: only the rebuild job reads or writes it, and jobs run
-	 * one at a time, so neither of these needs a lock.
+	 * The content of the document the last rebuild was laid out from -- see Document::contentOnly.
+	 * Compared against on every update, which a slider drag sends once a frame: a comparison of two
+	 * documents that share almost all of their data, rather than a serialization of both.
+	 * Graphics thread only.
 	 */
-	LogoCache logos;
-	AnimatedLogoCache animations;
-	/* Families already reported, so a rebuild per keystroke does not spam the log. */
+	Document renderedFrom;
+
+	/*
+	 * Used only on the render thread: only jobs read or write them, and jobs run one at a time, so
+	 * neither needs a lock. Shared with the picture pipeline, which draws from them too.
+	 */
+	std::shared_ptr<LogoCache> logos = std::make_shared<LogoCache>();
+	std::shared_ptr<AnimatedLogoCache> animations = std::make_shared<AnimatedLogoCache>();
+	/* What draws this source's chunks; see planPictures. */
+	std::shared_ptr<ChunkPipeline> pictures;
+	/* Families already reported, so a rebuild per keystroke does not spam the log. Render thread. */
 	QSet<QString> warnedFonts;
 
 	std::mutex handoffMutex;
-	Strip pendingStrip;
-	/*
-	 * Atomic so the graphics thread can find out there is nothing waiting without taking the
-	 * lock: this is asked once per render of the source, and a strip arrives once per rebuild.
-	 * Written under the mutex all the same, beside the strip it describes.
-	 */
-	std::atomic<bool> hasPendingStrip{false};
-	/* Set while a rebuild is in flight so a burst of edits collapses into one re-render. */
+	RollLayoutPtr pendingLayout;
+	/* Asked once per render without the lock; written under it, beside the layout it describes. */
+	std::atomic<bool> hasPendingLayout{false};
+	/* Set while a rebuild is in flight so a burst of edits collapses into one layout. */
 	bool rebuildInFlight = false;
 	bool rebuildAgain = false;
+	/*
+	 * Bumped on every edit worth a rebuild. A layout in flight compares it against the number it was
+	 * started for between sections, and abandons an edit that has already been overtaken.
+	 */
+	std::atomic<uint64_t> generation{0};
 
 	/*
 	 * Set when loading brought the document up to date against the library -- a preset renamed
@@ -287,64 +194,64 @@ struct CreditsSourceData {
 
 	/*
 	 * The library as this roll last saw it, and how long it has been since anybody was asked to
-	 * look at the file.
-	 *
-	 * The look itself is a `stat`, and a `stat` is a blocking call on whatever thread makes it.
-	 * Made from `video_tick` it is one on the thread compositing the whole program -- rare
-	 * enough to be invisible on a warm cache and, on a cold one or behind a filter driver, the
-	 * kind of stall that reads as the roll catching. So the poll is handed to the render thread
-	 * and the tick is left comparing two numbers.
-	 *
-	 * A serial per source rather than the poll's own answer, because the poll has exactly one:
-	 * whichever source's turn came up would consume the change and every other roll on the
-	 * machine would go on rendering the style the library no longer holds.
-	 *
-	 * Graphics-thread state.
+	 * look at the file. A serial per source rather than the poll's own answer, because the poll has
+	 * exactly one: whichever source's turn came up would consume the change and every other roll on
+	 * the machine would go on rendering the style the library no longer holds. Graphics thread.
 	 */
 	quint64 librarySerial = 0;
 	double libraryPollElapsed = 0.0;
 
-	/* Graphics-thread state. */
-	std::vector<TileRuntime> tiles;
+	/* Graphics-thread state from here to the playback state. */
+	RollLayoutPtr live;
+	RollTimeline timeline;
+	std::optional<StagedLayout> staged;
+
+	/* Chunks on the GPU, by chunk key -- shared between layouts, which is what makes a rebuild cheap. */
+	QHash<quint64, ChunkTexture> textures;
+	/* Chunks rasterized and waiting for their upload, by chunk key. */
+	struct ReadyChunk {
+		QImage image;
+		uint64_t lastWanted = 0;
+	};
+	QHash<quint64, ReadyChunk> ready;
+	/* Chunks the renderer could not draw at all, which are not asked for again. */
+	QSet<quint64> failed;
+	/* The live layout's animated logos, in the layout's order. */
+	QVector<LogoTextures> logoTextures;
+
 	/*
-	 * How many of them still hold a picture that has not been to the GPU. Counted rather than
-	 * looked for, so the frames after the last tile has gone up -- which is every frame of a roll
-	 * that has been running for a few seconds -- have nothing to look through.
+	 * The video frame the last large upload was made in. One a frame is the budget, per video frame
+	 * rather than per call to video_render: a source in both panes of Studio Mode, a projector and
+	 * the multiview is rendered several times a frame.
 	 */
-	size_t tilesAwaitingUpload = 0;
-	std::vector<AnimatedLogoRuntime> animatedLogos;
-	std::vector<StickyBlockRuntime> stickyBlocks;
+	uint64_t lastUploadFrame = UINT64_MAX;
+	/* Set once a frame has gone out without a picture it needed, so it is logged once per layout. */
+	bool fellBehind = false;
+	/* The video frame the source was last drawn in, which is how a plan knows it is being looked at. */
+	uint64_t lastRendered = 0;
+
 	/*
-	 * The shader a sticky block fades up through, compiled the first time one is drawn and kept for
-	 * the life of the source. Null when the device would not compile it, which is a fade lost
-	 * rather than a block lost -- see drawStickyBlocks.
-	 *
-	 * Graphics-thread state, like the textures above.
+	 * The one shader the source draws with, compiled the first time it is needed. Null when the
+	 * device would not compile it, which costs the linear blending and the fades and nothing else.
 	 */
-	gs_effect_t *fadeEffect = nullptr;
-	bool fadeEffectTried = false;
-	int stripHeight = 0;
-	/*
-	 * True while a sticky block still has something to do before the roll can be called
-	 * finished -- a hold that has not run out, or a released block still on screen. Written on
-	 * the graphics thread each tick, before `advance` reads it, and both run only there.
-	 */
-	bool stickyPending = false;
+	gs_effect_t *effect = nullptr;
+	bool effectTried = false;
 
 	std::mutex stateMutex;
 	Phase phase = Phase::Idle;
-	double offset = 0.0;
+	/* Seconds of roll time: zero when the roll starts moving, standing still while it is paused. */
+	double rollTime = 0.0;
 	double delayRemaining = 0.0;
-	double actionRemaining = 0.0;
-	bool actionPending = false;
 	bool paused = false;
+	/* Set once the roll has finished and said so; reset when it is armed again. */
+	bool finished = false;
+	bool actionPending = false;
+	double actionRemaining = 0.0;
 	/*
-	 * Bumped whenever the roll goes back to its beginning -- armed, reset, or wrapped by a loop.
-	 * An animation that started with the roll has to start again when the roll does, and the
-	 * offset alone cannot say that happened: it is a number that went down, which is also what a
-	 * scrub does.
+	 * The live timeline's finish time, copied here whenever the timeline changes so that a thread
+	 * other than the graphics thread can report it. Infinite for a loop or a hold that never ends.
 	 */
-	uint64_t rollEpoch = 0;
+	double duration = RollTimeline::kNever;
 
 	obs_hotkey_id startHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id pauseHotkey = OBS_INVALID_HOTKEY_ID;
@@ -352,110 +259,95 @@ struct CreditsSourceData {
 	obs_hotkey_id designerHotkey = OBS_INVALID_HOTKEY_ID;
 };
 
-/* ------------------------------------------------------------------ strip rebuilding */
-
-struct RebuildTask {
-	/*
-	 * The weak reference proves the source is still alive when the task runs; `data` is
-	 * valid for as long as that strong reference is held, because destroy() cannot run
-	 * until the last reference goes away.
-	 */
-	OBSWeakSourceAutoRelease weak;
-	CreditsSourceData *data = nullptr;
-	Document document;
-	/* Copied rather than read back later, so the render thread never touches the source. */
-	QString sourceName;
-};
+/* ------------------------------------------------------------------ timelines */
 
 /*
- * Everything the strip is rasterized from, as a string two documents can be compared by.
+ * The timeline for a layout, played at the document's current playback settings.
  *
- * Playback settings reach the source through the same update() every content edit does, and
- * scrubbing moves a slider that fires one per frame of the drag. Rasterizing a long roll on each
- * of those would keep the render thread busy for the whole gesture and hand back a stream of
- * strips identical to the one already on the GPU, so a rebuild is queued only when this changes.
- *
- * Built by blanking the fields that move the finished strip rather than by listing the ones that
- * make it: a field added later counts towards the key by default, which costs an unnecessary
- * rebuild if it turns out to be a playback setting and never a stale one if it is not. Lead-in
- * and lead-out are deliberately not blanked -- they are baked into the strip as blank space.
- *
- * Compact JSON, as bytes, rather than the pretty string `toJson` hands out. This is built on every
- * update -- which is once per frame of a slider drag -- and neither the indentation nor the
- * conversion of a document-sized string into UTF-16 is any part of telling two documents apart.
+ * The layout carries the document it was laid out from, but scroll speed and looping are playback
+ * settings: changing them does not lay the roll out again, so they are taken from the document as
+ * it is now rather than as it was then.
  */
-QByteArray renderKey(const Document &document)
+RollTimeline timelineFor(const RollLayout &layout, const Document &current)
 {
-	Document content = document;
-
-	content.scrollSpeed = 0.0;
-	content.loop = false;
-	content.startOnShow = false;
-	content.startDelay = 0.0;
-	content.manualScroll = false;
-	content.scrollPosition = 0.0;
-	content.endingAction = EndingActionConfig();
-
-	/*
-	 * The bundled font files are reduced to their sizes rather than carried. This key is built
-	 * on every update -- which is once per frame of a slider drag -- and a font runs to
-	 * megabytes: serializing them here would cost more than the rebuild it exists to avoid.
-	 * What is left still names every family and every file, which is what a bundle changing
-	 * actually looks like.
-	 */
-	for (BundledFont &font : content.bundledFonts)
-		font.data = QByteArray::number(font.data.size());
-
-	OBSDataAutoRelease data = obs_data_create();
-	content.save(data);
-	return QByteArray(obs_data_get_json(data));
+	TimelineInputs inputs = layout.timelineInputs();
+	inputs.scrollSpeed = current.scrollSpeed;
+	inputs.loop = current.loop;
+	return RollTimeline(inputs);
 }
 
-void runRebuild(const std::shared_ptr<RebuildTask> &task);
+/*
+ * The frame to draw from a timeline right now.
+ *
+ * Under manual scroll it is the frame the scroll position implies, which is a share of the full
+ * travel rather than a pixel offset or a number of seconds -- so it means the same thing after the
+ * content is edited or the scroll speed is changed. Otherwise it is the frame at the roll's current
+ * time, which is zero for a roll that is parked or counting down its delay.
+ *
+ * Graphics thread only.
+ */
+RollFrame currentFrame(CreditsSourceData *data, const RollTimeline &timeline)
+{
+	if (data->document.manualScroll) {
+		const TimelineInputs &inputs = timeline.inputs();
+		const double travel = static_cast<double>(inputs.canvasHeight + inputs.stripHeight);
+		return timeline.evaluateScrubbed(travel * std::clamp(data->document.scrollPosition, 0.0, 100.0) /
+						 100.0);
+	}
+
+	double t = 0.0;
+	{
+		std::lock_guard<std::mutex> lock(data->stateMutex);
+		t = data->rollTime;
+	}
+	return timeline.evaluate(t);
+}
+
+/* ------------------------------------------------------------------ strip rebuilding */
+
+void runRebuild(CreditsSourceData *data, const Document &document, const QString &sourceName, uint64_t generation,
+		const RollLayoutPtr &previous);
 
 void queueRebuild(CreditsSourceData *data)
 {
+	const uint64_t generation = ++data->generation;
+
 	{
 		std::lock_guard<std::mutex> lock(data->handoffMutex);
 		if (data->rebuildInFlight) {
+			/* The layout in flight sees the new generation and gives up; this one follows it. */
 			data->rebuildAgain = true;
 			return;
 		}
 		data->rebuildInFlight = true;
 	}
 
-	auto task = std::make_shared<RebuildTask>();
-	task->weak = obs_source_get_weak_source(data->source);
-	task->data = data;
-	task->document = data->document;
-	task->sourceName = QString::fromUtf8(obs_source_get_name(data->source));
-
 	/*
-	 * Rasterization is long enough to be seen if it happens on the thread drawing OBS's
-	 * own window, so it goes to the shared render thread instead. The handoff below is
-	 * unchanged: the graphics thread still picks the finished tiles up in video_render.
+	 * Copied rather than read back later, so the render thread never touches the source's state --
+	 * the layout being replaced included, whose unchanged sections hand their keys straight on.
 	 */
-	postRenderJob([task] { runRebuild(task); });
+	RollLayoutPtr previous = data->staged ? data->staged->layout : data->live;
+	postRenderJob([weak = data->weakSelf, data, document = data->document,
+		       sourceName = QString::fromUtf8(obs_source_get_name(data->source)), generation,
+		       previous = std::move(previous)] {
+		OBSSourceAutoRelease source = obs_weak_source_get_source(weak);
+		if (!source)
+			return;
+		runRebuild(data, document, sourceName, generation, previous);
+	});
 }
 
-void runRebuild(const std::shared_ptr<RebuildTask> &task)
+void runRebuild(CreditsSourceData *data, const Document &document, const QString &sourceName, uint64_t generation,
+		const RollLayoutPtr &previous)
 {
-	OBSSourceAutoRelease source = obs_weak_source_get_source(task->weak);
-	if (!source)
-		return;
-
-	CreditsSourceData *data = task->data;
-
 	/*
-	 * The roll's own font files, registered before anything is measured against them. Doing it
-	 * here rather than at load means it happens on the render thread, which is the one thread
-	 * these documents are laid out on, and it costs a hash lookup on every rebuild after the
-	 * first. The renderer asks for them again itself -- see documentWithFontsResolved -- so this
-	 * is only what makes them reportable in the log.
+	 * The roll's own font files, registered before anything is measured against them. Doing it here
+	 * rather than at load means it happens on the render thread, which is the one thread these
+	 * documents are laid out on.
 	 */
-	for (const QString &family : installDocumentFonts(task->document)) {
+	for (const QString &family : installDocumentFonts(document)) {
 		obs_log(LOG_INFO, "font '%s' is not installed; '%s' is rendering it from its own bundle",
-			family.toUtf8().constData(), task->sourceName.toUtf8().constData());
+			family.toUtf8().constData(), sourceName.toUtf8().constData());
 	}
 
 	/*
@@ -464,65 +356,57 @@ void runRebuild(const std::shared_ptr<RebuildTask> &task)
 	 * recorded for it is called out too, at a lower level: what it renders as is the designer's
 	 * choice rather than Qt's, which makes it worth saying but not worth warning about.
 	 */
-	for (const QString &family : missingFontFamilies(task->document)) {
+	for (const QString &family : missingFontFamilies(document)) {
 		if (data->warnedFonts.contains(family))
 			continue;
 
 		data->warnedFonts.insert(family);
 
-		const QString substitute = task->document.fontSubstitute(family);
+		const QString substitute = document.fontSubstitute(family);
 		if (substitute.isEmpty())
 			obs_log(LOG_WARNING, "font '%s' is not installed; '%s' will render with a substitute",
-				family.toUtf8().constData(), task->sourceName.toUtf8().constData());
+				family.toUtf8().constData(), sourceName.toUtf8().constData());
 		else
 			obs_log(LOG_INFO, "font '%s' is not installed; '%s' will render it as '%s'",
-				family.toUtf8().constData(), task->sourceName.toUtf8().constData(),
+				family.toUtf8().constData(), sourceName.toUtf8().constData(),
 				substitute.toUtf8().constData());
 	}
 
-	StripRenderer renderer(&data->logos, &data->animations);
-	Strip strip = renderer.render(task->document);
+	const RollRenderer renderer(data->logos.get(), data->animations.get());
+	RollLayoutPtr layout = renderer.layout(
+		document, false, [data, generation] { return data->generation.load() != generation; }, previous.get());
 
-	bool again = false;
-	{
-		std::lock_guard<std::mutex> lock(data->handoffMutex);
-		data->pendingStrip = std::move(strip);
-		data->hasPendingStrip.store(true, std::memory_order_release);
-		data->rebuildInFlight = false;
-		again = data->rebuildAgain;
-		data->rebuildAgain = false;
+	/*
+	 * An abandoned layout hands nothing over. Either way an edit that arrived meanwhile is left in
+	 * `rebuildAgain` for the next tick to queue, rather than queued from here: queueing copies the
+	 * document, and the document belongs to the graphics thread.
+	 */
+	std::lock_guard<std::mutex> lock(data->handoffMutex);
+	if (layout) {
+		data->pendingLayout = std::move(layout);
+		data->hasPendingLayout.store(true, std::memory_order_release);
 	}
-
-	if (again)
-		queueRebuild(data);
+	data->rebuildInFlight = false;
 }
 
-/* Graphics thread only. */
-void releaseTextures(CreditsSourceData *data)
+/* ------------------------------------------------------------------ pictures */
+
+/*
+ * Whether this video frame's large upload has already been made, and the call that spends it.
+ *
+ * A chunk that is being drawn this frame is uploaded whatever this says, because what reaches the
+ * frame does not get to depend on the spreading. Everything done ahead of need asks first.
+ *
+ * Graphics thread only.
+ */
+bool uploadSpent(const CreditsSourceData *data)
 {
-	for (TileRuntime &tile : data->tiles) {
-		if (tile.texture)
-			gs_texture_destroy(tile.texture);
-	}
+	return data->lastUploadFrame == obs_get_video_frame_time();
+}
 
-	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
-		if (runtime.texture)
-			gs_texture_destroy(runtime.texture);
-		if (runtime.shadowTexture)
-			gs_texture_destroy(runtime.shadowTexture);
-	}
-
-	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
-		if (runtime.texture)
-			gs_texture_destroy(runtime.texture);
-	}
-
-	data->tiles.clear();
-	data->tilesAwaitingUpload = 0;
-	data->animatedLogos.clear();
-	data->stickyBlocks.clear();
-	data->stripHeight = 0;
-	data->stickyPending = false;
+void spendUpload(CreditsSourceData *data)
+{
+	data->lastUploadFrame = obs_get_video_frame_time();
 }
 
 /*
@@ -530,8 +414,8 @@ void releaseTextures(CreditsSourceData *data)
  *
  * `flags` is GS_DYNAMIC for a texture that will be written again -- an animation's frames go
  * through one texture rather than one apiece -- and nothing at all for a picture that goes up once
- * and is only ever drawn, which is what a strip tile and a sticky block are. Asking for a dynamic
- * texture that is never rewritten buys the driver's upload path for nothing.
+ * and is only ever drawn. Asking for a dynamic texture that is never rewritten buys the driver's
+ * upload path for nothing.
  */
 gs_texture_t *createTexture(const QImage &image, uint32_t flags)
 {
@@ -543,218 +427,379 @@ gs_texture_t *createTexture(const QImage &image, uint32_t flags)
 				 1, &bits, flags);
 }
 
-/*
- * Puts the current frame on the GPU, allocating the texture the first time.
- *
- * The frames of one animation are all the same size -- the decoder guarantees it -- so the
- * texture is allocated once and written over from then on.
- */
-void uploadFrame(AnimatedLogoRuntime &runtime)
+/* Takes whatever the render thread has finished off its hands. Graphics thread only. */
+void receiveChunks(CreditsSourceData *data)
 {
-	if (runtime.uploadedFrame == runtime.frame)
+	if (!data->pictures->hasArrived())
 		return;
 
-	const LogoAnimation &animation = *runtime.placement.animation;
-	if (runtime.frame < 0 || runtime.frame >= animation.frames.size())
-		return;
-
-	const QImage &image = animation.frames.at(runtime.frame).image;
-
-	if (!runtime.texture) {
-		runtime.texture = createTexture(image, GS_DYNAMIC);
-		if (!runtime.texture) {
-			obs_log(LOG_ERROR, "failed to allocate a %dx%d animated logo texture", image.width(),
-				image.height());
-			/* Marked as uploaded so the failure is not retried once a frame for the whole roll. */
-			runtime.uploadedFrame = runtime.frame;
-			return;
-		}
-	} else {
-		gs_texture_set_image(runtime.texture, image.constBits(), static_cast<uint32_t>(image.bytesPerLine()),
-				     false);
+	for (auto &[key, image] : data->pictures->takeArrived()) {
+		if (image.isNull())
+			data->failed.insert(key);
+		else if (!data->textures.contains(key))
+			data->ready.insert(key,
+					   CreditsSourceData::ReadyChunk{std::move(image), obs_get_video_frame_time()});
 	}
-
-	const QVector<QImage> &shadows = runtime.placement.shadowFrames;
-	if (!shadows.isEmpty() && runtime.frame < shadows.size()) {
-		const QImage &shadow = shadows.at(runtime.frame);
-		if (!runtime.shadowTexture)
-			runtime.shadowTexture = createTexture(shadow, GS_DYNAMIC);
-		else
-			gs_texture_set_image(runtime.shadowTexture, shadow.constBits(),
-					     static_cast<uint32_t>(shadow.bytesPerLine()), false);
-	}
-
-	runtime.uploadedFrame = runtime.frame;
 }
 
 /*
- * Puts one tile's picture on the GPU and lets go of the picture.
+ * Puts a chunk that has come back from the render thread on the GPU. A chunk wanted ahead of need
+ * waits for a frame whose upload has not been spent; one being drawn now goes up regardless.
  *
- * Returns false for a tile there is nothing to draw from: one whose texture could not be
- * allocated, which is remembered by the picture having been dropped along with it, so a roll too
- * large for the GPU says so once rather than once a frame for as long as it is on screen.
- *
- * Graphics thread only; requires an active graphics context, and must not be called from inside a
- * technique's pass -- see the ordering in videoRender.
+ * Returns true when the chunk is on the GPU afterwards. Graphics thread only; requires an active
+ * graphics context, and must not be called from inside a technique's pass.
  */
-bool uploadTile(CreditsSourceData *data, size_t index)
+bool uploadChunk(CreditsSourceData *data, quint64 key, bool now)
 {
-	TileRuntime &tile = data->tiles[index];
-
-	if (tile.texture)
+	if (data->textures.contains(key))
 		return true;
-	if (tile.image.isNull())
+
+	const auto it = data->ready.find(key);
+	if (it == data->ready.end())
+		return false;
+	if (!now && uploadSpent(data))
 		return false;
 
-	tile.texture = createTexture(tile.image, 0);
-	if (!tile.texture)
-		obs_log(LOG_ERROR, "failed to allocate a %dx%d credit strip texture", tile.image.width(),
-			tile.image.height());
-
-	/*
-	 * Dropped either way. It has served its purpose on a success, and on a failure it is what
-	 * says the failure has already been reported.
-	 */
-	tile.image = QImage();
-	--data->tilesAwaitingUpload;
-	return tile.texture != nullptr;
-}
-
-/*
- * The run of tiles that falls inside the canvas this frame, as a half-open [first, last).
- *
- * Tiles are held in strip order and each is a slice of the same strip, so the visible ones are a
- * single run and the search for it stops at the first tile past the bottom of the frame. A long
- * roll is a hundred tiles of which two are ever on display, and walking all hundred of them to set
- * a texture parameter and work out that there is nothing to draw is a cost that grows with the
- * length of the roll for no picture.
- */
-struct TileRange {
-	size_t first = 0;
-	size_t last = 0;
-};
-
-TileRange visibleTiles(const CreditsSourceData *data, double stripTop, int canvasHeight)
-{
-	TileRange range;
-	bool started = false;
-
-	for (size_t i = 0; i < data->tiles.size(); ++i) {
-		const TileRuntime &tile = data->tiles[i];
-		const double top = stripTop + tile.top;
-
-		if (top + tile.height <= 0.0)
-			continue;
-		if (top >= canvasHeight)
-			break;
-
-		if (!started) {
-			range.first = i;
-			started = true;
-		}
-		range.last = i + 1;
+	gs_texture_t *texture = createTexture(it->image, 0);
+	if (!texture) {
+		obs_log(LOG_ERROR, "failed to allocate a %dx%d credit roll texture", it->image.width(),
+			it->image.height());
+		/* Not asked for again: a roll too big for the GPU says so once, not once a frame. */
+		data->failed.insert(key);
 	}
 
-	return range;
+	const QPoint pictureOffset = it->image.offset();
+	data->ready.erase(it);
+	spendUpload(data);
+
+	if (!texture)
+		return false;
+
+	data->textures.insert(key, ChunkTexture{texture, obs_get_video_frame_time(), pictureOffset});
+	return true;
+}
+
+/* The chunk key a draw refers to, or 0 for a draw that is not of a chunk. */
+quint64 keyOf(const RollLayout &layout, const DrawSource &source)
+{
+	if (source.kind != DrawSource::Kind::Chunk || source.layer < 0 || source.layer >= layout.layers.size())
+		return 0;
+	return chunkKey(layout.layers.at(source.layer), source.chunk, 1.0);
 }
 
 /*
- * Uploads one tile that is not on screen yet.
- *
- * A tile is put on the GPU when it is about to be drawn, which on its own is enough to keep the
- * picture right: at a couple of tiles a screenful and 2048 pixels a tile, a roll meets a new one
- * every several seconds. This is what keeps the pictures from sitting in RAM in the meantime, and
- * what puts the upload a frame or more before the tile is needed rather than in the frame that
- * needs it. One per frame, because a tile is fifteen megabytes and the whole point is not to do
- * several of them at once.
- *
- * Started from the tile after the visible run and wrapping round, so the roll uploads in the
- * direction it is travelling.
+ * Puts on the GPU whatever a draw list uses that has come back -- every one of them when `now` says
+ * the list is about to be drawn, one at most otherwise -- and returns true when every chunk the list
+ * uses is on the GPU. Asking for what is missing is planPictures' job.
  *
  * Graphics thread only; requires an active graphics context.
  */
-void uploadTileAhead(CreditsSourceData *data, size_t from)
+bool residentFor(CreditsSourceData *data, const RollLayout &layout, const DrawList &list, bool now)
 {
-	if (data->tilesAwaitingUpload == 0)
-		return;
+	const uint64_t frameTime = obs_get_video_frame_time();
+	bool resident = true;
 
-	const size_t count = data->tiles.size();
-
-	for (size_t step = 0; step < count; ++step) {
-		const size_t index = (from + step) % count;
-		if (data->tiles[index].image.isNull())
+	for (const DrawSource &chunk : chunksIn(list)) {
+		const quint64 key = keyOf(layout, chunk);
+		if (!key)
 			continue;
 
-		uploadTile(data, index);
-		return;
+		if (uploadChunk(data, key, now))
+			data->textures[key].lastWanted = frameTime;
+		else
+			resident = false;
 	}
+
+	return resident;
 }
 
 /*
- * Takes the finished strip off the render thread.
+ * Works out which chunks this source wants and does not have, most urgent first, and hands the list
+ * to the render thread.
  *
- * Nothing is uploaded here: the tiles are adopted with their pictures still in hand and go to the
- * GPU as they are reached -- see TileRuntime, which is where the reason for that lives.
+ * In order: what is on the canvas now, for the layout on screen and any layout waiting to replace
+ * it; the strip from a little above the frame to several seconds of travel below it, each chunk as
+ * urgent as it is near; the frame as it will be one, two and four seconds from now, which is what
+ * catches a card about to come up or a block about to be let go; and, for a loop nearing the end of
+ * its pass, the start of the next one.
+ *
+ * Only what is on the canvas now is asked for while nothing is looking at the source -- enough that
+ * the frame it is shown in has its pictures, and no more than that drawn for a scene nobody is in.
+ *
+ * Graphics thread only. Draws nothing and touches no texture beyond marking it wanted, so it is safe
+ * from video_tick.
+ */
+void planPictures(CreditsSourceData *data)
+{
+	if (!data->live && !data->staged)
+		return;
+
+	const uint64_t frameTime = obs_get_video_frame_time();
+	const int canvasHeight = std::max(1, data->document.height);
+	const double speed = std::max(1.0, data->document.scrollSpeed);
+	const bool looking = obs_source_showing(data->source) ||
+			     (data->lastRendered != 0 && frameTime - data->lastRendered < kTextureGraceNs);
+
+	std::vector<ChunkRequest> wanted;
+	QSet<quint64> seen;
+
+	/* Lists are considered most urgent first, so the first to name a chunk decides how urgent it is. */
+	const auto consider = [&](const RollLayoutPtr &layout, const DrawList &list, double urgency, bool byPosition) {
+		for (const DrawItem &item : list) {
+			const quint64 key = keyOf(*layout, item.source);
+			if (!key || seen.contains(key))
+				continue;
+			seen.insert(key);
+
+			if (auto it = data->textures.find(key); it != data->textures.end()) {
+				it->lastWanted = frameTime;
+				continue;
+			}
+			if (auto it = data->ready.find(key); it != data->ready.end()) {
+				it->lastWanted = frameTime;
+				continue;
+			}
+			if (data->failed.contains(key))
+				continue;
+
+			double soon = urgency;
+			if (byPosition)
+				soon = item.target.top() > canvasHeight ? (item.target.top() - canvasHeight) / speed
+									: 0.0;
+
+			wanted.push_back(ChunkRequest{key, layout, item.source.layer, item.source.chunk, 1.0, soon});
+		}
+	};
+
+	if (data->staged) {
+		const RollFrame frame = currentFrame(data, data->staged->timeline);
+		consider(data->staged->layout,
+			 composeFrame(*data->staged->layout, frame, ComposeView::canvas(frame, canvasHeight)), 0.0,
+			 false);
+	}
+
+	if (data->live) {
+		const RollLayoutPtr &layout = data->live;
+		const RollFrame frame = currentFrame(data, data->timeline);
+		consider(layout, composeFrame(*layout, frame, ComposeView::canvas(frame, canvasHeight)), 0.0, false);
+
+		if (looking) {
+			ComposeView ahead = ComposeView::canvas(frame, canvasHeight);
+			ahead.clipTop = -canvasHeight * 0.5;
+			ahead.clipBottom = canvasHeight + std::max<double>(canvasHeight, speed * kLookaheadSeconds);
+			consider(layout, composeFrame(*layout, frame, ahead), 0.0, true);
+
+			double t = 0.0;
+			bool running = false;
+			{
+				std::lock_guard<std::mutex> lock(data->stateMutex);
+				t = data->rollTime;
+				running = data->phase != Phase::Idle && !data->paused;
+			}
+
+			if (running && !data->document.manualScroll) {
+				for (double seconds : {1.0, 2.0, kLookaheadSeconds}) {
+					const RollFrame later = data->timeline.evaluate(t + seconds);
+					consider(layout,
+						 composeFrame(*layout, later, ComposeView::canvas(later, canvasHeight)),
+						 seconds, false);
+				}
+
+				const double travel = data->timeline.travelTime();
+				if (data->document.loop && std::isfinite(travel) && travel > 0.0) {
+					const double left = travel - std::fmod(t, travel);
+					if (left < kLookaheadSeconds) {
+						const RollFrame next = data->timeline.evaluate(t + left);
+						ComposeView opening = ComposeView::canvas(next, canvasHeight);
+						opening.clipBottom =
+							canvasHeight + std::max<double>(canvasHeight, speed);
+						consider(layout, composeFrame(*layout, next, opening), left, false);
+					}
+				}
+			}
+		}
+	}
+
+	data->pictures->want(std::move(wanted));
+}
+
+/*
+ * Puts one chunk that has come back, and is not on the canvas yet, on the GPU -- if this frame's
+ * upload has not been spent on something else.
+ *
+ * Graphics thread only; requires an active graphics context.
+ */
+void uploadAhead(CreditsSourceData *data)
+{
+	if (data->ready.isEmpty() || uploadSpent(data))
+		return;
+
+	uploadChunk(data, data->ready.constBegin().key(), false);
+}
+
+/*
+ * Lets go of every texture nobody has wanted for a while, and every picture that came back for a
+ * chunk nobody wants any more.
+ *
+ * Graphics thread only; requires an active graphics context.
+ */
+void evict(CreditsSourceData *data)
+{
+	const uint64_t now = obs_get_video_frame_time();
+
+	for (auto it = data->textures.begin(); it != data->textures.end();) {
+		if (now - it->lastWanted > kTextureGraceNs) {
+			gs_texture_destroy(it->texture);
+			it = data->textures.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	/* A picture still waiting for its upload once the roll has moved past it was wanted too late. */
+	for (auto it = data->ready.begin(); it != data->ready.end();) {
+		if (now - it->lastWanted > kTextureGraceNs)
+			it = data->ready.erase(it);
+		else
+			++it;
+	}
+}
+
+/* Graphics thread only; requires an active graphics context. */
+void releaseLogoTextures(CreditsSourceData *data)
+{
+	for (LogoTextures &textures : data->logoTextures) {
+		if (textures.frame)
+			gs_texture_destroy(textures.frame);
+		if (textures.shadow)
+			gs_texture_destroy(textures.shadow);
+	}
+	data->logoTextures.clear();
+}
+
+/* Graphics thread only; requires an active graphics context. */
+void releaseTextures(CreditsSourceData *data)
+{
+	for (ChunkTexture &chunk : data->textures)
+		gs_texture_destroy(chunk.texture);
+	data->textures.clear();
+	data->ready.clear();
+	releaseLogoTextures(data);
+}
+
+/*
+ * Puts one frame of an animated logo -- or of its shadow -- on the GPU, allocating the texture the
+ * first time. The frames of one animation are all the same size -- the decoder guarantees it -- so
+ * the texture is allocated once and written over from then on.
+ *
+ * Graphics thread only; requires an active graphics context.
+ */
+void uploadLogo(CreditsSourceData *data, const DrawSource &source)
+{
+	if (source.logo < 0 || source.logo >= data->logoTextures.size())
+		return;
+
+	LogoTextures &textures = data->logoTextures[source.logo];
+	const bool shadow = source.kind == DrawSource::Kind::LogoShadow;
+	gs_texture_t *&texture = shadow ? textures.shadow : textures.frame;
+	int &shown = shadow ? textures.shadowShown : textures.frameShown;
+
+	if (shown == source.frame)
+		return;
+
+	const QImage image = logoImage(*data->live, source);
+	if (image.isNull())
+		return;
+
+	if (!texture) {
+		texture = createTexture(image, GS_DYNAMIC);
+		if (!texture)
+			obs_log(LOG_ERROR, "failed to allocate a %dx%d animated logo texture", image.width(),
+				image.height());
+	} else {
+		gs_texture_set_image(texture, image.constBits(), static_cast<uint32_t>(image.bytesPerLine()), false);
+	}
+
+	/* Marked as shown even on a failure, so it is not retried once a frame for the whole roll. */
+	shown = source.frame;
+}
+
+/*
+ * Takes a finished layout off the render thread and stages it beside the one on screen.
  *
  * Graphics thread only.
  */
-void adoptPendingStrip(CreditsSourceData *data)
+void adoptPendingLayout(CreditsSourceData *data)
 {
 	/* Asked once per render, answered without the lock on every frame but the one that matters. */
-	if (!data->hasPendingStrip.load(std::memory_order_acquire))
+	if (data->hasPendingLayout.load(std::memory_order_acquire)) {
+		RollLayoutPtr layout;
+		{
+			std::lock_guard<std::mutex> lock(data->handoffMutex);
+			layout = std::move(data->pendingLayout);
+			data->pendingLayout.reset();
+			data->hasPendingLayout.store(false, std::memory_order_relaxed);
+		}
+
+		if (layout) {
+			/* A layout arriving while another is still staged replaces it; that one never showed. */
+			StagedLayout staged;
+			staged.timeline = timelineFor(*layout, data->document);
+			staged.layout = std::move(layout);
+			staged.arrived = obs_get_video_frame_time();
+			data->staged = std::move(staged);
+		}
+	}
+}
+
+/* Puts the staged layout on screen. Graphics thread only; requires an active graphics context. */
+void commitStaged(CreditsSourceData *data)
+{
+	StagedLayout staged = std::move(*data->staged);
+	data->staged.reset();
+
+	/*
+	 * The chunk textures stay: they are keyed by what they show, so every section the rebuild did
+	 * not change is already on the GPU for the new layout, and the rest age out as nothing wants
+	 * them. The logo textures belong to the old layout's list of logos and go with it.
+	 */
+	releaseLogoTextures(data);
+
+	data->live = std::move(staged.layout);
+	data->timeline = std::move(staged.timeline);
+	data->logoTextures.resize(data->live->animatedLogos.size());
+	data->fellBehind = false;
+
+	std::lock_guard<std::mutex> lock(data->stateMutex);
+	data->duration = data->timeline.finishTime();
+}
+
+/*
+ * Moves a staged layout one frame closer to the screen, and puts it there once it is ready.
+ *
+ * Ready means every chunk it would show at the roll's current position is on the GPU. Until then it
+ * spends frames' uploads on them and the old layout goes on being drawn, so the frame the new one
+ * takes over in has nothing to upload. Since chunk textures are keyed by content, a rebuild that
+ * changed one section usually finds everything but that section's chunks already there.
+ *
+ * Graphics thread only; requires an active graphics context, and must not be called from inside a
+ * technique's pass.
+ */
+void stageLayout(CreditsSourceData *data)
+{
+	if (!data->staged)
 		return;
 
-	Strip strip;
-	{
-		std::lock_guard<std::mutex> lock(data->handoffMutex);
-		if (!data->hasPendingStrip)
-			return;
+	const StagedLayout &staged = *data->staged;
+	const RollFrame frame = currentFrame(data, staged.timeline);
+	const DrawList list =
+		composeFrame(*staged.layout, frame, ComposeView::canvas(frame, std::max(1, data->document.height)));
 
-		strip = std::move(data->pendingStrip);
-		data->pendingStrip = Strip();
-		data->hasPendingStrip.store(false, std::memory_order_relaxed);
-	}
+	const bool resident = residentFor(data, *staged.layout, list, false);
 
-	releaseTextures(data);
-	data->stripHeight = strip.height;
-
-	data->animatedLogos.reserve(strip.animatedLogos.size());
-	for (AnimatedLogoPlacement &placement : strip.animatedLogos) {
-		AnimatedLogoRuntime runtime;
-		runtime.placement = std::move(placement);
-		/*
-		 * Textures are left unallocated until the logo reaches the frame; see
-		 * prepareAnimatedLogos. A roll may place more animated logos than are ever on screen at
-		 * once, and the ones the viewer scrolls past in the last minute of a ten-minute roll
-		 * have no business holding VRAM from the start.
-		 */
-		data->animatedLogos.push_back(std::move(runtime));
-	}
-
-	data->stickyBlocks.reserve(strip.stickyBlocks.size());
-	for (StickyBlockPlacement &placement : strip.stickyBlocks) {
-		StickyBlockRuntime runtime;
-		runtime.placement = std::move(placement);
-		startStickyBlock(runtime);
-		/*
-		 * The texture is left unallocated until the block is nearly in frame -- see
-		 * prepareStickyBlocks -- for the reason the animated logos' are: a roll may carry a
-		 * block the viewer does not reach for minutes, and a canvas-sized picture is not a small
-		 * thing to hold VRAM for in the meantime.
-		 */
-		data->stickyBlocks.push_back(std::move(runtime));
-	}
-
-	data->tiles.reserve(strip.tiles.size());
-	for (StripTile &tile : strip.tiles) {
-		TileRuntime runtime;
-		runtime.top = tile.top;
-		runtime.height = tile.image.height();
-		runtime.image = std::move(tile.image);
-		data->tiles.push_back(std::move(runtime));
-	}
-
-	data->tilesAwaitingUpload = data->tiles.size();
+	/* With nothing on screen there is nothing for the wait to be smoother than. */
+	if (resident || !data->live || obs_get_video_frame_time() - staged.arrived >= kMaxStagingNs)
+		commitStaged(data);
 }
 
 /* ------------------------------------------------------------------ playback control */
@@ -762,13 +807,13 @@ void adoptPendingStrip(CreditsSourceData *data)
 /* Callers must hold stateMutex. */
 void resetRollLocked(CreditsSourceData *data)
 {
-	++data->rollEpoch;
 	data->phase = Phase::Idle;
-	data->offset = 0.0;
+	data->rollTime = 0.0;
 	data->delayRemaining = 0.0;
-	data->actionRemaining = 0.0;
-	data->actionPending = false;
 	data->paused = false;
+	data->finished = false;
+	data->actionPending = false;
+	data->actionRemaining = 0.0;
 }
 
 /* Callers must hold stateMutex. */
@@ -776,7 +821,7 @@ void armRollLocked(CreditsSourceData *data, double startDelay)
 {
 	resetRollLocked(data);
 	data->delayRemaining = startDelay;
-	data->phase = startDelay > 0.0 ? Phase::Delaying : Phase::Rolling;
+	data->phase = startDelay > 0.0 ? Phase::Delaying : Phase::Running;
 }
 
 void armRoll(CreditsSourceData *data)
@@ -790,35 +835,6 @@ void resetRoll(CreditsSourceData *data)
 {
 	std::lock_guard<std::mutex> lock(data->stateMutex);
 	resetRollLocked(data);
-}
-
-/*
- * The distance the roll travels in full: the strip's own height plus the canvas it enters from
- * below and leaves through the top.
- */
-double rollTravel(const CreditsSourceData *data)
-{
-	return static_cast<double>(std::max(1, data->document.height)) + data->stripHeight;
-}
-
-/*
- * Parks the roll at the scrub position instead of advancing it.
- *
- * The position is a share of the full travel rather than a pixel offset or a number of seconds,
- * so it means the same thing after the content is edited or the scroll speed is changed -- which
- * is the whole point of a control used while the roll is still being written.
- *
- * The phase is deliberately left alone. Nothing advances while this is on, so the roll cannot
- * reach the finished phase and the ending action cannot fire; leaving the phase as playback set
- * it means switching manual scrolling back off resumes from a state update() already knows how
- * to re-arm rather than from one invented here.
- */
-void scrubTo(CreditsSourceData *data, double percent)
-{
-	const double offset = rollTravel(data) * std::clamp(percent, 0.0, 100.0) / 100.0;
-
-	std::lock_guard<std::mutex> lock(data->stateMutex);
-	data->offset = offset;
 }
 
 /*
@@ -849,76 +865,51 @@ double tickSeconds(float seconds)
 	return withinJitter ? interval : static_cast<double>(seconds);
 }
 
+/*
+ * Moves the roll on by one tick and does whatever the roll finishing calls for.
+ *
+ * Where everything *is* is the timeline's business; this only keeps the clock. The roll finishing
+ * is the moment roll time passes the timeline's finish -- the strip clearing with nothing holding
+ * it open, or a sticky block whose release says so -- and from there the signal goes out and the
+ * ending action counts down its delay. That countdown is in real time and runs through a pause, as
+ * it always has: pausing a roll that has already ended is not a reason to hold its ending back.
+ *
+ * Graphics thread only.
+ */
 void advance(CreditsSourceData *data, double seconds)
 {
 	const Document &document = data->document;
+	const double finishTime = data->timeline.finishTime();
 
-	/*
-	 * The strip starts one canvas-height below the top of the frame, so the distance it
-	 * has to travel before the last pixel clears the top is canvas + strip.
-	 */
-	const double travel = rollTravel(data);
-
+	bool finishedNow = false;
 	bool fireAction = false;
-	bool finished = false;
-
 	{
 		std::lock_guard<std::mutex> lock(data->stateMutex);
 
-		switch (data->phase) {
-		case Phase::Idle:
-		case Phase::Finished:
-			break;
-
-		case Phase::Delaying:
+		if (data->phase == Phase::Delaying) {
 			data->delayRemaining -= seconds;
 			if (data->delayRemaining <= 0.0) {
 				data->delayRemaining = 0.0;
-				data->phase = Phase::Rolling;
+				data->phase = Phase::Running;
 			}
-			break;
-
-		case Phase::Rolling:
-			if (data->paused)
-				break;
-
-			data->offset += document.scrollSpeed * seconds;
-			if (data->offset < travel)
-				break;
-
-			if (document.loop) {
-				/*
-				 * Wrapping by subtraction rather than snapping to zero keeps the
-				 * loop seamless: this frame's overshoot carries into the next pass.
-				 */
-				data->offset -= travel;
-				++data->rollEpoch;
-				break;
-			}
-
-			data->offset = travel;
-
-			/*
-			 * The strip has cleared the frame, but a sticky block may not have: one still
-			 * holding at its anchor, or climbing off after being let go, is content that is
-			 * on screen, and a roll is not over while something of it still is. The block
-			 * is what ends the roll in that case -- see advanceStickyBlocks -- so the phase
-			 * is left as it is and the roll simply stops moving.
-			 */
-			if (data->stickyPending)
-				break;
-
-			data->phase = Phase::Finished;
-			finished = true;
-
-			if (document.endingAction.type != EndingActionType::None) {
-				data->actionPending = true;
-				data->actionRemaining = document.endingAction.delay;
-			}
-			break;
+		} else if (data->phase == Phase::Running && !data->paused) {
+			data->rollTime += seconds;
 		}
 
-		if (data->actionPending && !finished) {
+		/* Only a roll that has a layout can be over: before the first one lands there is no roll. */
+		if (data->phase == Phase::Running && !data->finished && data->live && data->rollTime >= finishTime) {
+			data->finished = true;
+			finishedNow = true;
+
+			if (document.endingAction.type != EndingActionType::None) {
+				if (document.endingAction.delay <= 0.0) {
+					fireAction = true;
+				} else {
+					data->actionPending = true;
+					data->actionRemaining = document.endingAction.delay;
+				}
+			}
+		} else if (data->actionPending) {
 			data->actionRemaining -= seconds;
 			if (data->actionRemaining <= 0.0) {
 				data->actionPending = false;
@@ -929,251 +920,13 @@ void advance(CreditsSourceData *data, double seconds)
 	}
 
 	/* Signals and actions run outside the lock so their handlers can call back in. */
-	if (finished) {
+	if (finishedNow) {
 		emitCreditsFinished(data->source);
-
-		if (document.endingAction.type != EndingActionType::None && document.endingAction.delay <= 0.0) {
-			std::lock_guard<std::mutex> lock(data->stateMutex);
-			data->actionPending = false;
-			fireAction = true;
-		}
+		notifyRollFinished(data->source);
 	}
 
 	if (fireAction)
 		document.endingAction.execute(data->source);
-}
-
-/*
- * Ends the roll from outside `advance` -- which today means a sticky block whose hold has run out
- * and whose release says that is the end of it.
- *
- * Everything the natural end does, in the same order: the phase, the ending action's countdown,
- * the signal, and the action itself when there is no delay to wait through. Doing it here rather
- * than teaching `advance` about blocks keeps the scroll loop about scrolling.
- *
- * Graphics thread only, and does nothing for a roll that has already finished or is looping.
- */
-void finishRoll(CreditsSourceData *data)
-{
-	const Document &document = data->document;
-	if (document.loop)
-		return;
-
-	bool fireAction = false;
-	{
-		std::lock_guard<std::mutex> lock(data->stateMutex);
-		if (data->phase == Phase::Finished || data->phase == Phase::Idle)
-			return;
-
-		data->phase = Phase::Finished;
-
-		if (document.endingAction.type != EndingActionType::None) {
-			data->actionPending = true;
-			data->actionRemaining = document.endingAction.delay;
-
-			if (document.endingAction.delay <= 0.0) {
-				data->actionPending = false;
-				fireAction = true;
-			}
-		}
-	}
-
-	/* Outside the lock, so a handler can call straight back in. */
-	emitCreditsFinished(data->source);
-
-	if (fireAction)
-		document.endingAction.execute(data->source);
-}
-
-/*
- * Advances every sticky block by one tick, and reports whether any of them is still to have its
- * say about the roll being over.
- *
- * A block either travels with the roll until its slot reaches the anchor, or waits off screen for
- * the roll to go by and then fades up in place. Either way it holds at the anchor while whatever is
- * left of the roll scrolls on behind it. What happens when the hold runs out is the block's own
- * setting: it stays where it is and ends the roll, it carries on up and off the top, it does both,
- * or it leaves and ends nothing so that another block can follow it.
- *
- * Where the block is *drawn* is not decided here -- see stickyBlockTop, which reads the state this
- * leaves behind. That split is what lets a roll parked in manual scroll show its blocks pinned
- * without any of the timing below running at all.
- *
- * Graphics thread only.
- */
-void advanceStickyBlocks(CreditsSourceData *data, double seconds, StickyClock clock)
-{
-	/* A roll with no blocks in it has nothing here to hold it open, and nothing to advance. */
-	if (data->stickyBlocks.empty()) {
-		data->stickyPending = false;
-		return;
-	}
-
-	const Document &document = data->document;
-	const int canvasHeight = std::max(1, document.height);
-
-	double offset = 0.0;
-	uint64_t epoch = 0;
-	{
-		std::lock_guard<std::mutex> lock(data->stateMutex);
-		offset = data->offset;
-		epoch = data->rollEpoch;
-	}
-
-	const bool rolling = clock == StickyClock::Rolling;
-	const bool scrubbed = clock == StickyClock::Scrubbed;
-	/*
-	 * Rolling and coasting both carry a block that is already on its way out the rest of the way
-	 * out; paused and scrubbed stand still. A block frozen half off the top of the frame is what
-	 * the coasting case exists to prevent -- the roll being called finished is not a reason for the
-	 * last thing on screen to stop where it is.
-	 */
-	const bool moving = rolling || clock == StickyClock::Coasting;
-
-	/* The roll has gone as far as it goes; nothing below can still be on its way to an anchor. */
-	const bool traveled = offset >= rollTravel(data) - 0.5;
-	const double stripTop = canvasHeight - offset;
-
-	/*
-	 * Where the last pixel the strip actually draws is this frame. Everything past it is lead-out:
-	 * blank, and no part of what anybody watching would call the roll, so a block waiting for the
-	 * roll to go by has no business waiting through it.
-	 */
-	const double rollBottom = stripTop + std::max(0, data->stripHeight - document.leadOut);
-	const bool rollCleared = rollBottom <= 0.0;
-
-	/* A new pass of the roll is a new pass for its blocks: back to the top of the loop. */
-	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
-		if (runtime.epoch == epoch)
-			continue;
-
-		runtime.epoch = epoch;
-		startStickyBlock(runtime);
-	}
-
-	/*
-	 * Whether anything a viewer can see is on the frame, counted before any of it is advanced.
-	 * A block whose entrance comes after the roll waits for the other blocks as well as for the
-	 * credits: back-to-back cards are the reason that entrance exists, and one fading up through
-	 * another still on its way out is not that.
-	 */
-	bool blockOnFrame = false;
-	for (const StickyBlockRuntime &runtime : data->stickyBlocks) {
-		if (runtime.showing() &&
-		    !runtime.placement.offFrame(stickyBlockTop(runtime, stripTop, canvasHeight), canvasHeight))
-			blockOnFrame = true;
-	}
-
-	bool pending = false;
-	bool endNow = false;
-
-	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
-		const StickyBlockPlacement &placement = runtime.placement;
-		const double pinnedTop = placement.pinnedTop(canvasHeight);
-
-		switch (runtime.state) {
-		case StickyBlockRuntime::State::Hidden:
-			/*
-			 * Nothing of the roll left to see, and no other block in the way: the card can
-			 * come up. Scrubbing arrives here too, which is what makes the entrance something
-			 * the designer's scroll position can be dragged into rather than only played into.
-			 */
-			if (!rollCleared || blockOnFrame)
-				break;
-			if (!rolling && !scrubbed)
-				break;
-
-			runtime.state = StickyBlockRuntime::State::Entering;
-			runtime.fadeRemaining = scrubbed ? 0.0 : std::max(0.0, placement.fadeIn);
-			[[fallthrough]];
-
-		case StickyBlockRuntime::State::Entering:
-			/* Parked rather than played: a scrubbed block is shown arrived, never mid-fade. */
-			if (scrubbed)
-				runtime.fadeRemaining = 0.0;
-			else if (moving)
-				runtime.fadeRemaining -= seconds;
-
-			if (runtime.fadeRemaining > 0.0)
-				break;
-
-			/* The hold starts once the card is all the way up, not while it is arriving. */
-			runtime.fadeRemaining = 0.0;
-			runtime.state = StickyBlockRuntime::State::Pinned;
-			break;
-
-		case StickyBlockRuntime::State::Waiting: {
-			/*
-			 * Pinned once the slot has carried it up to the anchor -- or once the roll has
-			 * finished traveling, which catches a pin the roll would never otherwise reach
-			 * (a negative offset on a short roll) rather than leaving the roll waiting on a
-			 * block that can never arrive.
-			 */
-			const double naturalTop = stripTop + placement.rect.top();
-			if (rolling && (naturalTop <= pinnedTop || traveled))
-				runtime.state = StickyBlockRuntime::State::Pinned;
-			break;
-		}
-
-		case StickyBlockRuntime::State::Pinned:
-			if (!rolling || placement.holdForever)
-				break;
-
-			runtime.holdRemaining -= seconds;
-			if (runtime.holdRemaining > 0.0)
-				break;
-
-			runtime.holdRemaining = 0.0;
-			if (stickyReleaseEndsAtHold(placement.release) && !runtime.spent)
-				endNow = true;
-
-			runtime.spent = true;
-			if (stickyReleaseResumes(placement.release))
-				runtime.state = StickyBlockRuntime::State::Released;
-			break;
-
-		case StickyBlockRuntime::State::Released:
-			if (moving)
-				runtime.releasedTravel += document.scrollSpeed * seconds;
-			break;
-		}
-
-		/*
-		 * "Off screen" is the picture, not the slot: the block's backdrop and whatever its
-		 * children paint outside their own boxes reach past the slot at both ends, and a release
-		 * that waits for the block to leave has to wait for the last of that to go too.
-		 */
-		const bool onFrame = runtime.showing() &&
-				     !placement.clearedFrame(stickyBlockTop(runtime, stripTop, canvasHeight));
-
-		/* A block that has left, under a release that says its leaving is the end of the roll. */
-		if (runtime.state == StickyBlockRuntime::State::Released && !onFrame && !runtime.departed) {
-			runtime.departed = true;
-			if (stickyReleaseEndsAtExit(placement.release))
-				endNow = true;
-		}
-
-		/*
-		 * What still has to happen before the roll is over. A block yet to arrive holds it open
-		 * until it has; one that ends the roll itself holds it open until it has; one that only
-		 * leaves holds it open until it has left. A block that ends nothing holds it open while it
-		 * is on screen and then stands aside, so that the rest of the roll decides.
-		 */
-		if (!runtime.showing() || runtime.state == StickyBlockRuntime::State::Entering) {
-			pending = true;
-		} else if (stickyReleaseEndsAtHold(placement.release)) {
-			pending = pending || !runtime.spent;
-		} else if (stickyReleaseEndsAtExit(placement.release)) {
-			pending = pending || !runtime.departed;
-		} else {
-			pending = pending || onFrame;
-		}
-	}
-
-	data->stickyPending = pending;
-
-	if (endNow)
-		finishRoll(data);
 }
 
 /* ------------------------------------------------------------------------- callbacks */
@@ -1205,13 +958,16 @@ void writeDocumentBack(CreditsSourceData *data)
 
 	data->document.save(settings);
 	/* Kept in step first: the update() this schedules must not read as a content change. */
-	data->renderedFrom = renderKey(data->document);
+	data->renderedFrom = data->document.contentOnly();
 	obs_source_update(data->source, settings);
 }
 
 void update(void *raw, obs_data_t *settings)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
+
+	const double previousSpeed = data->document.scrollSpeed;
+	const bool previousLoop = data->document.loop;
 
 	/*
 	 * `load` brings the document up to date against the library, which can rename a preset and
@@ -1225,43 +981,53 @@ void update(void *raw, obs_data_t *settings)
 		data->settingsNeedWriteBack = true;
 
 	/*
-	 * Only a change to what the strip is made of is worth rasterizing again -- see renderKey().
-	 * Everything else here arrives through the same call: a scrub sends one per frame of the
-	 * drag, and rebuilding for those would keep the render thread busy producing strips
-	 * identical to the one already uploaded.
+	 * Only a change to what the roll is made of is worth laying out again. Everything else arrives
+	 * through the same call: a scrub sends one per frame of the drag.
 	 */
-	const QByteArray key = renderKey(data->document);
-	const bool contentChanged = key != data->renderedFrom;
+	Document content = data->document.contentOnly();
+	const bool contentChanged = !(content == data->renderedFrom);
 	if (contentChanged) {
-		data->renderedFrom = key;
+		data->renderedFrom = std::move(content);
 		queueRebuild(data);
 	}
 
 	/*
-	 * Geometry and content edits invalidate the current scroll position, so a roll that is
-	 * already running restarts instead of jumping to a stale offset in new content. A playback
-	 * setting changing is not that: a roll keeps its position when the scroll speed is adjusted
-	 * under it, and dragging the scrub slider does not re-arm the roll once per frame.
+	 * A new speed or a loop switched is a new timeline for the same layout, not a new layout. The
+	 * roll's time is carried across so the strip stays where it is -- a roll keeps its place when
+	 * its speed is adjusted under it.
+	 */
+	if (!contentChanged && data->live &&
+	    (data->document.scrollSpeed != previousSpeed || data->document.loop != previousLoop)) {
+		RollTimeline next = timelineFor(*data->live, data->document);
+		{
+			std::lock_guard<std::mutex> lock(data->stateMutex);
+			data->rollTime = data->timeline.rebase(data->rollTime, next);
+			data->duration = next.finishTime();
+		}
+		data->timeline = std::move(next);
+		if (data->staged)
+			data->staged->timeline = timelineFor(*data->staged->layout, data->document);
+	}
+
+	/*
+	 * Content edits invalidate the current position, so a roll that is already running restarts
+	 * instead of jumping to a stale time in new content. A playback setting changing is not that,
+	 * and dragging the scrub slider does not re-arm the roll once per frame.
 	 */
 	std::lock_guard<std::mutex> lock(data->stateMutex);
-	if (data->phase == Phase::Idle) {
-		/*
-		 * An idle roll draws at whatever offset it is holding, and scrubbing leaves one
-		 * there. Without this, turning manual scrolling off on a source that is hidden -- or
-		 * that does not start on show -- would leave the roll frozen wherever the slider was
-		 * rather than parked at its start, waiting to run from a position nothing chose.
-		 */
-		if (!data->document.manualScroll)
-			data->offset = 0.0;
-	} else if (contentChanged) {
+	if (data->phase != Phase::Idle && contentChanged)
 		armRollLocked(data, data->document.startDelay);
-	}
 }
 
 void *create(obs_data_t *settings, obs_source_t *source)
 {
 	auto *data = new CreditsSourceData();
 	data->source = source;
+	data->pictures = ChunkPipeline::create(data->logos, data->animations, kRasterCacheBytes, RenderPriority::Live);
+	{
+		OBSWeakSourceAutoRelease weak = obs_source_get_weak_source(source);
+		data->weakSelf = weak.Get();
+	}
 
 	signal_handler_add(obs_source_get_signal_handler(source), "void credits_finished(ptr source)");
 
@@ -1269,6 +1035,18 @@ void *create(obs_data_t *settings, obs_source_t *source)
 	proc_handler_add(
 		procs, "void restart()",
 		[](void *param, calldata_t *) { armRoll(static_cast<CreditsSourceData *>(param)); }, data);
+	/* What the Start hotkey does: arm a roll that is parked or over, carry on with one that is paused. */
+	proc_handler_add(
+		procs, "void start()",
+		[](void *param, calldata_t *) {
+			auto *self = static_cast<CreditsSourceData *>(param);
+			std::lock_guard<std::mutex> lock(self->stateMutex);
+			if (self->phase == Phase::Idle || self->finished)
+				armRollLocked(self, self->document.startDelay);
+			else
+				self->paused = false;
+		},
+		data);
 	proc_handler_add(
 		procs, "void pause()",
 		[](void *param, calldata_t *) {
@@ -1285,6 +1063,24 @@ void *create(obs_data_t *settings, obs_source_t *source)
 			self->paused = false;
 		},
 		data);
+	/* What the websocket vendor's GetState reports; see RollControl. */
+	proc_handler_add(
+		procs,
+		"void get_state(out string phase, out float time, out float duration, out bool finished, out bool paused)",
+		[](void *param, calldata_t *call) {
+			auto *self = static_cast<CreditsSourceData *>(param);
+			std::lock_guard<std::mutex> lock(self->stateMutex);
+			const char *phase = self->phase == Phase::Idle       ? "idle"
+					    : self->phase == Phase::Delaying ? "delaying"
+					    : self->finished                 ? "finished"
+									     : "running";
+			calldata_set_string(call, "phase", phase);
+			calldata_set_float(call, "time", self->rollTime);
+			calldata_set_float(call, "duration", self->duration);
+			calldata_set_bool(call, "finished", self->finished);
+			calldata_set_bool(call, "paused", self->paused);
+		},
+		data);
 
 	data->startHotkey = obs_hotkey_register_source(
 		source, "ClosingTime.Start", obs_module_text("Hotkey.Start"),
@@ -1294,7 +1090,7 @@ void *create(obs_data_t *settings, obs_source_t *source)
 
 			auto *self = static_cast<CreditsSourceData *>(param);
 			std::unique_lock<std::mutex> lock(self->stateMutex);
-			if (self->phase == Phase::Idle || self->phase == Phase::Finished)
+			if (self->phase == Phase::Idle || self->finished)
 				armRollLocked(self, self->document.startDelay);
 			else
 				self->paused = false;
@@ -1358,8 +1154,8 @@ void destroy(void *raw)
 
 	obs_enter_graphics();
 	releaseTextures(data);
-	if (data->fadeEffect)
-		gs_effect_destroy(data->fadeEffect);
+	if (data->effect)
+		gs_effect_destroy(data->effect);
 	obs_leave_graphics();
 
 	delete data;
@@ -1389,68 +1185,6 @@ void onHide(void *raw)
 		resetRoll(data);
 }
 
-/*
- * Advances every animated logo by one tick.
- *
- * Animations move with the roll rather than with the wall clock: a paused roll is a still frame,
- * and a roll parked in manual scroll shows the frame it was parked on. A credit roll is a
- * composed picture, and having its logos carry on jigging about while the thing they belong to is
- * held still is the kind of motion that reads as a bug.
- *
- * Graphics thread only.
- */
-void advanceAnimatedLogos(CreditsSourceData *data, double seconds, bool rolling)
-{
-	if (data->animatedLogos.empty())
-		return;
-
-	double offset = 0.0;
-	uint64_t epoch = 0;
-	{
-		std::lock_guard<std::mutex> lock(data->stateMutex);
-		offset = data->offset;
-		epoch = data->rollEpoch;
-	}
-
-	const double canvasHeight = std::max(1, data->document.height);
-	const double stripTop = canvasHeight - offset;
-
-	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
-		if (!runtime.placement.animation)
-			continue;
-
-		/* A roll that went back to its beginning plays its animations from theirs. */
-		if (runtime.epoch != epoch) {
-			runtime.epoch = epoch;
-			runtime.started = false;
-			runtime.frame = 0;
-			runtime.elapsedMs = 0.0;
-		}
-
-		const double top = stripTop + runtime.placement.rect.top();
-		const bool entered = top < canvasHeight;
-
-		if (!runtime.started) {
-			/*
-			 * A play-once sting bound to a logo two thirds of the way down a long roll
-			 * would otherwise have finished several minutes before anyone could see it.
-			 */
-			if (runtime.placement.playback.startOnEnter && !entered)
-				continue;
-
-			runtime.started = true;
-		}
-
-		if (!rolling)
-			continue;
-
-		const double speed = std::clamp(runtime.placement.playback.speed, kMinLogoSpeed, kMaxLogoSpeed);
-		runtime.elapsedMs += seconds * 1000.0 * speed;
-		runtime.frame =
-			logoFrameAt(*runtime.placement.animation, runtime.elapsedMs, runtime.placement.playback.loop);
-	}
-}
-
 void videoTick(void *raw, float seconds)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
@@ -1460,20 +1194,43 @@ void videoTick(void *raw, float seconds)
 		writeDocumentBack(data);
 	}
 
+	/* An edit that arrived while a layout was in flight; see runRebuild. */
+	{
+		bool again = false;
+		{
+			std::lock_guard<std::mutex> lock(data->handoffMutex);
+			again = data->rebuildAgain && !data->rebuildInFlight;
+			if (again)
+				data->rebuildAgain = false;
+		}
+		if (again)
+			queueRebuild(data);
+	}
+
 	/*
 	 * A style the library changed underneath this roll -- edited in another OBS window, imported,
 	 * or hand-edited -- is pulled in here. Before the manual-scroll branch below, because a roll
 	 * parked for editing is exactly the one somebody is restyling.
 	 *
 	 * Asking the file whether it moved is a `stat`, so it is asked for on the render thread and
-	 * this tick only compares the library's serial against the one this roll last saw. What that
-	 * costs here is an atomic read and an addition; what it saves is a blocking call on the thread
-	 * compositing the program, once a second, for every roll on the machine.
+	 * this tick only compares the library's serial against the one this roll last saw.
 	 */
 	data->libraryPollElapsed += seconds;
 	if (data->libraryPollElapsed >= kLibraryPollSeconds) {
 		data->libraryPollElapsed = 0.0;
-		postRenderJob([] { StyleLibrary::instance().pollForChanges(); });
+
+		/*
+		 * One poll in the queue at a time for the whole machine. Every roll asks once a second,
+		 * and the render thread can be busy for a while: without this the asks pile up behind it
+		 * and are answered back to back, all of them the same answer.
+		 */
+		static std::atomic<bool> pollQueued{false};
+		if (!pollQueued.exchange(true, std::memory_order_acq_rel)) {
+			postRenderJob([] {
+				pollQueued.store(false, std::memory_order_release);
+				StyleLibrary::instance().pollForChanges();
+			});
+		}
 	}
 
 	if (const quint64 serial = StyleLibrary::instance().serial(); serial != data->librarySerial) {
@@ -1485,197 +1242,42 @@ void videoTick(void *raw, float seconds)
 			/*
 			 * Saved as well as redrawn. The refreshed copy is this roll's fallback on a
 			 * machine without the library, and a rename it just followed has to survive a
-			 * restart -- both of which mean the settings, not just the strip.
+			 * restart -- both of which mean the settings, not just the pictures.
 			 */
 			writeDocumentBack(data);
 		}
 	}
 
 	/*
-	 * Re-applied every tick rather than once when the setting changes, because the position it
-	 * resolves to depends on the strip: a rebuild finishing, or a canvas resize, changes the
-	 * travel underneath it, and a roll parked halfway through should stay halfway through.
+	 * Nothing moves while the roll is parked under manual scroll: the roll cannot finish and the
+	 * ending action cannot fire. The phase is left exactly as playback set it, so switching the
+	 * mode back off resumes from a state update() already knows how to re-arm.
 	 */
-	if (data->document.manualScroll) {
-		scrubTo(data, data->document.scrollPosition);
-		/*
-		 * The blocks are still asked where they are, with no time to advance: parked is a state
-		 * they have an answer for, and it is the one that puts a card whose entrance waits for
-		 * the roll on screen when the scroll position is dragged past the end of it.
-		 */
-		advanceStickyBlocks(data, 0.0, StickyClock::Scrubbed);
-		advanceAnimatedLogos(data, 0.0, false);
-		return;
-	}
+	if (!data->document.manualScroll)
+		advance(data, tickSeconds(seconds));
 
-	const double delta = tickSeconds(seconds);
-	advance(data, delta);
-
-	bool rolling = false;
-	StickyClock clock = StickyClock::Held;
-	{
-		std::lock_guard<std::mutex> lock(data->stateMutex);
-		rolling = data->phase == Phase::Rolling && !data->paused;
-
-		if (rolling)
-			clock = StickyClock::Rolling;
-		else if (!data->paused && data->phase != Phase::Idle)
-			clock = StickyClock::Coasting;
-	}
-
-	/*
-	 * Before the animated logos and after the scroll, because a block's own timing is measured
-	 * against the offset this tick just left behind.
-	 */
-	advanceStickyBlocks(data, delta, clock);
-	advanceAnimatedLogos(data, delta, rolling);
+	/* After the clock has moved, so the plan is for the frame about to be drawn. */
+	planPictures(data);
 }
 
-void drawBackground(const QColor &color, int width, int height)
-{
-	if (color.alpha() <= 0)
-		return;
-
-	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
-	gs_eparam_t *colorParam = gs_effect_get_param_by_name(solid, "color");
-
-	struct vec4 value;
-	vec4_set(&value, static_cast<float>(color.redF()), static_cast<float>(color.greenF()),
-		 static_cast<float>(color.blueF()), static_cast<float>(color.alphaF()));
-	gs_effect_set_vec4(colorParam, &value);
-
-	while (gs_effect_loop(solid, "Solid"))
-		gs_draw_sprite(nullptr, 0, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-}
+/* ------------------------------------------------------------------------- drawing */
 
 /*
- * Draws one strip tile, clipped to the canvas.
+ * The one shader the source draws with: a premultiplied texture, blended in linear light, at an
+ * opacity.
  *
- * `top` is where the tile's own top edge lands in canvas space, and it is fractional: the roll
- * advances by whatever part of a pixel the scroll speed and the frame rate work out to, and that
- * fraction is what makes the movement read as smooth rather than as a step every few frames.
+ * The pictures are drawn by QPainter, premultiplied, in sRGB -- the gamma-encoded values a screen
+ * shows. The source is sRGB-aware, so OBS composites what it draws in linear light the way it does
+ * its own sources, and onto an HDR canvas correctly. So each texel is unpremultiplied, decoded to
+ * linear, premultiplied again and scaled by the draw's opacity; the framebuffer encodes it back on
+ * the way out. The opacity scales all four channels because the colors are premultiplied: scaling
+ * the alpha alone would leave the color at full strength on top of a background the blend no longer
+ * takes away, which glows rather than fades.
  *
- * Clipping through gs_draw_sprite_subregion cannot carry it. That call takes whole texels, so
- * the visible height has to be rounded down to the previous whole pixel, and the quad ends up
- * short of the canvas edge by the fraction that was dropped -- a sliver along the bottom that
- * never gets painted, which content entering from below appears to pop through rather than slide
- * into. Building the quad here puts the fraction into both the geometry and the texture
- * coordinates instead, so the tile meets the edge it is clipped against exactly.
- */
-void drawClipped(double left, double top, double width, double height, int canvasHeight)
-{
-	if (width <= 0.0 || height <= 0.0)
-		return;
-
-	const double visibleTop = std::max(top, 0.0);
-	const double visibleBottom = std::min(top + height, static_cast<double>(canvasHeight));
-	if (visibleBottom <= visibleTop)
-		return;
-
-	const auto x0 = static_cast<float>(left);
-	const auto x1 = static_cast<float>(left + width);
-	const auto y0 = static_cast<float>(visibleTop);
-	const auto y1 = static_cast<float>(visibleBottom);
-	const auto v0 = static_cast<float>((visibleTop - top) / height);
-	const auto v1 = static_cast<float>((visibleBottom - top) / height);
-
-	/* Vertices in the order libobs builds its own sprites for a triangle strip: tl, tr, bl, br. */
-	gs_render_start(false);
-	gs_texcoord(0.0f, v0, 0);
-	gs_vertex2f(x0, y0);
-	gs_texcoord(1.0f, v0, 0);
-	gs_vertex2f(x1, y0);
-	gs_texcoord(0.0f, v1, 0);
-	gs_vertex2f(x0, y1);
-	gs_texcoord(1.0f, v1, 0);
-	gs_vertex2f(x1, y1);
-	gs_render_stop(GS_TRISTRIP);
-}
-
-/*
- * Draws one strip tile at its own size, clipped to the canvas.
- *
- * The tile is the full width of the strip and starts at its left edge; everything interesting
- * about the clipping is in drawClipped.
- */
-void drawTile(gs_texture_t *texture, double top, int canvasHeight)
-{
-	drawClipped(0.0, top, static_cast<double>(gs_texture_get_width(texture)),
-		    static_cast<double>(gs_texture_get_height(texture)), canvasHeight);
-}
-
-/*
- * Puts this frame of every animated logo that is on screen on the GPU.
- *
- * Nothing is uploaded for a logo that is not: a roll may place more animated logos than are ever
- * visible at once, and the ones the viewer reaches in the last minute of a ten-minute roll have no
- * business holding VRAM from the start.
- *
- * Graphics thread only; requires an active graphics context, and must not be called from inside a
- * technique's pass -- see the ordering in videoRender.
- */
-void prepareAnimatedLogos(CreditsSourceData *data, double stripTop, int canvasHeight)
-{
-	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
-		if (!runtime.placement.animation)
-			continue;
-
-		const QRectF &rect = runtime.placement.rect;
-		const double top = stripTop + rect.top();
-		if (top >= canvasHeight || top + rect.height() <= 0.0)
-			continue;
-
-		uploadFrame(runtime);
-	}
-}
-
-/*
- * Draws the animated logos over the strip.
- *
- * Each one goes where the layout put it, offset by however far the roll has traveled, into the
- * hole the strip left for it -- so an animated logo scrolls with the text beside it rather than
- * following it a frame later, because both are placed from the same offset in the same frame.
- *
- * Drawn after every tile rather than interleaved with them, which is what keeps a logo whose box
- * straddles a tile seam from being cut in half by the tile that comes after it.
- */
-void drawAnimatedLogos(CreditsSourceData *data, gs_eparam_t *imageParam, double stripTop, int canvasHeight)
-{
-	for (AnimatedLogoRuntime &runtime : data->animatedLogos) {
-		/* Uploaded before the pass this is drawn in; see prepareAnimatedLogos. */
-		if (!runtime.texture)
-			continue;
-
-		const QRectF &rect = runtime.placement.rect;
-		const double top = stripTop + rect.top();
-		if (top >= canvasHeight || top + rect.height() <= 0.0)
-			continue;
-
-		if (runtime.shadowTexture) {
-			const QPointF at = rect.topLeft() + runtime.placement.shadowOffset;
-			gs_effect_set_texture(imageParam, runtime.shadowTexture);
-			drawClipped(at.x(), stripTop + at.y(),
-				    static_cast<double>(gs_texture_get_width(runtime.shadowTexture)),
-				    static_cast<double>(gs_texture_get_height(runtime.shadowTexture)), canvasHeight);
-		}
-
-		gs_effect_set_texture(imageParam, runtime.texture);
-		drawClipped(rect.left(), top, rect.width(), rect.height(), canvasHeight);
-	}
-}
-
-/*
- * The one shader in the plugin: libobs' own textured quad with an opacity on it.
- *
- * A sticky block whose entrance waits for the roll fades up in place, and the base effect draws a
- * texture exactly as it is. Multiplying the alpha rather than the whole color is what makes the
- * fade a fade rather than a fade to black: the pictures are straight alpha, blended the same way
- * the tiles are, so scaling the channel the blend reads is the whole of the change.
- *
- * Written out here rather than shipped as a .effect file because it is thirty lines and because a
+ * Written out here rather than shipped as a .effect file because it is forty lines and because a
  * data file is one more thing that has to be found at runtime on three platforms.
  */
-const char *const kFadeEffectSource = R"(
+const char *const kRollEffectSource = R"(
 uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform float alpha;
@@ -1699,11 +1301,18 @@ VertData VSDefault(VertData vert_in)
 	return vert_out;
 }
 
-float4 PSFade(VertData vert_in) : TARGET
+float srgb_to_linear_channel(float u)
+{
+	return (u <= 0.04045) ? (u / 12.92) : pow((u + 0.055) / 1.055, 2.4);
+}
+
+float4 PSDraw(VertData vert_in) : TARGET
 {
 	float4 rgba = image.Sample(textureSampler, vert_in.uv);
-	rgba.a *= alpha;
-	return rgba;
+	float3 straight = rgba.rgb / max(rgba.a, 0.0001);
+	float3 linear_rgb = float3(srgb_to_linear_channel(straight.r), srgb_to_linear_channel(straight.g),
+				   srgb_to_linear_channel(straight.b));
+	return float4(linear_rgb * rgba.a, rgba.a) * alpha;
 }
 
 technique Draw
@@ -1711,208 +1320,233 @@ technique Draw
 	pass
 	{
 		vertex_shader = VSDefault(vert_in);
-		pixel_shader  = PSFade(vert_in);
+		pixel_shader  = PSDraw(vert_in);
 	}
 }
 )";
 
 /*
- * The fade shader, compiled on first use. Returns null when the device would not compile it, and
- * only tries once: a shader that failed to compile will not compile on the next frame either, and a
+ * The shader, compiled on first use. Returns null when the device would not compile it, and only
+ * tries once: a shader that failed to compile will not compile on the next frame either, and a
  * compiler error logged sixty times a second is a log nobody can read.
  *
  * Graphics thread only; requires an active graphics context.
  */
-gs_effect_t *stickyFadeEffect(CreditsSourceData *data)
+gs_effect_t *rollEffect(CreditsSourceData *data)
 {
-	if (data->fadeEffectTried)
-		return data->fadeEffect;
+	if (data->effectTried)
+		return data->effect;
 
-	data->fadeEffectTried = true;
+	data->effectTried = true;
 
 	char *errors = nullptr;
-	data->fadeEffect = gs_effect_create(kFadeEffectSource, "closing-time-sticky-fade.effect", &errors);
-	if (!data->fadeEffect)
-		obs_log(LOG_ERROR, "could not compile the sticky block fade shader: %s",
+	data->effect = gs_effect_create(kRollEffectSource, "closing-time-roll.effect", &errors);
+	if (!data->effect)
+		obs_log(LOG_ERROR, "could not compile the credit roll shader: %s",
 			errors ? errors : "no error reported");
 
 	bfree(errors);
-	return data->fadeEffect;
+	return data->effect;
 }
 
-/*
- * Puts a sticky block on the GPU before the frame it is wanted in.
- *
- * A block's picture is the canvas over, and allocating it in the frame it first becomes visible
- * puts several megabytes of upload into exactly the moment a closing card is arriving on screen --
- * the one place in the roll where a dropped frame is most likely to be noticed. So the upload
- * happens while the block is still a screenful below the frame, and the frame it arrives in has
- * nothing to do but draw it.
- *
- * A block is still uploaded on the spot if it turns up already on screen, which is what a scrub or
- * a canvas resize does; the lookahead is an optimization rather than a precondition of drawing.
- *
- * Graphics thread only; requires an active graphics context, and must not be called from inside a
- * technique's pass -- see the ordering in videoRender.
- */
-void prepareStickyBlocks(CreditsSourceData *data, double stripTop, int canvasHeight)
+double srgbToLinear(double u)
 {
-	for (StickyBlockRuntime &runtime : data->stickyBlocks) {
-		if (runtime.texture || runtime.placement.image.isNull())
-			continue;
-
-		const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
-		if (runtime.placement.pictureTop(top) >= canvasHeight * 2.0 || runtime.placement.clearedFrame(top))
-			continue;
-
-		runtime.texture = createTexture(runtime.placement.image, 0);
-		if (!runtime.texture)
-			obs_log(LOG_ERROR, "failed to allocate a %dx%d sticky block texture",
-				runtime.placement.image.width(), runtime.placement.image.height());
-
-		/*
-		 * Dropped either way, for the reason a tile's is: it is on the GPU, or it is what says
-		 * the failure has already been reported.
-		 */
-		runtime.placement.image = QImage();
-	}
+	return u <= 0.04045 ? u / 12.92 : std::pow((u + 0.055) / 1.055, 2.4);
 }
 
-/*
- * Draws one sticky block's picture where the block currently is.
- *
- * The picture reaches past the slot by its margin at each end -- the backdrop's padding and whatever
- * the children paint outside their own boxes -- so it is drawn from there rather than from the slot.
- */
-void drawStickyBlock(const StickyBlockRuntime &runtime, double top, int canvasHeight)
+void drawBackground(const QColor &color, int width, int height, bool linear)
 {
-	drawClipped(0.0, top - runtime.placement.margin, static_cast<double>(gs_texture_get_width(runtime.texture)),
-		    static_cast<double>(gs_texture_get_height(runtime.texture)), canvasHeight);
-}
-
-/*
- * Draws the sticky blocks over the strip.
- *
- * After the tiles and after the animated logos, because a pinned block is the thing the roll is
- * running behind: it is on top of everything else by construction, which is what makes a closing
- * card readable while the last of the credits goes past underneath it.
- *
- * In a pass of its own rather than in the one the tiles are drawn from, because a block can be
- * part-way through fading up and the base effect has no opacity to set. The fade shader is asked
- * for once here; if the graphics device would not compile it the base effect is used instead and
- * every block is drawn solid, which loses the fade and nothing else.
- */
-void drawStickyBlocks(CreditsSourceData *data, double stripTop, int canvasHeight)
-{
-	if (data->stickyBlocks.empty())
+	if (color.alpha() <= 0)
 		return;
 
-	gs_effect_t *fade = stickyFadeEffect(data);
-	gs_effect_t *effect = fade ? fade : obs_get_base_effect(OBS_EFFECT_DEFAULT);
-	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
-	gs_eparam_t *alphaParam = fade ? gs_effect_get_param_by_name(effect, "alpha") : nullptr;
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *colorParam = gs_effect_get_param_by_name(solid, "color");
 
-	while (gs_effect_loop(effect, "Draw")) {
-		for (const StickyBlockRuntime &runtime : data->stickyBlocks) {
-			/* Uploaded before the pass this is drawn in; see prepareStickyBlocks. */
-			if (!runtime.texture || !runtime.showing())
-				continue;
+	/* The color is chosen in sRGB; drawn into a linear framebuffer, it has to arrive linear. */
+	const auto channel = [linear](double value) {
+		return static_cast<float>(linear ? srgbToLinear(value) : value);
+	};
 
-			const double top = stickyBlockTop(runtime, stripTop, canvasHeight);
-			if (runtime.placement.offFrame(top, canvasHeight))
-				continue;
+	struct vec4 value;
+	vec4_set(&value, channel(color.redF()), channel(color.greenF()), channel(color.blueF()),
+		 static_cast<float>(color.alphaF()));
+	gs_effect_set_vec4(colorParam, &value);
 
-			const double alpha = runtime.alpha();
-			/* Nothing to draw and nothing to blend: the first frame of a fade from nothing. */
-			if (alpha <= 0.0)
-				continue;
+	while (gs_effect_loop(solid, "Solid"))
+		gs_draw_sprite(nullptr, 0, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+}
 
-			gs_effect_set_texture(imageParam, runtime.texture);
-			if (alphaParam)
-				gs_effect_set_float(alphaParam, static_cast<float>(alpha));
+/*
+ * Draws one textured quad: `target` in canvas pixels, `source` in the texture's own.
+ *
+ * Built vertex by vertex rather than through gs_draw_sprite_subregion, because the scroll position
+ * is fractional and that call is not: it takes whole texels, so a picture cut at the canvas's edge
+ * would end short of it by the fraction that was dropped -- a sliver along the bottom that content
+ * entering from below appears to pop through rather than slide into. Four vertices carrying the
+ * fraction in both the positions and the texture coordinates cost nothing per frame and land the
+ * edge exactly.
+ */
+void drawQuad(gs_texture_t *texture, const QRectF &target, const QRectF &source)
+{
+	const double width = gs_texture_get_width(texture);
+	const double height = gs_texture_get_height(texture);
+	if (width <= 0.0 || height <= 0.0 || target.isEmpty())
+		return;
 
-			drawStickyBlock(runtime, top, canvasHeight);
-		}
+	const auto x0 = static_cast<float>(target.left());
+	const auto x1 = static_cast<float>(target.right());
+	const auto y0 = static_cast<float>(target.top());
+	const auto y1 = static_cast<float>(target.bottom());
+	const auto u0 = static_cast<float>(source.left() / width);
+	const auto u1 = static_cast<float>(source.right() / width);
+	const auto v0 = static_cast<float>(source.top() / height);
+	const auto v1 = static_cast<float>(source.bottom() / height);
+
+	/* Vertices in the order libobs builds its own sprites for a triangle strip: tl, tr, bl, br. */
+	gs_render_start(false);
+	gs_texcoord(u0, v0, 0);
+	gs_vertex2f(x0, y0);
+	gs_texcoord(u1, v0, 0);
+	gs_vertex2f(x1, y0);
+	gs_texcoord(u0, v1, 0);
+	gs_vertex2f(x0, y1);
+	gs_texcoord(u1, v1, 0);
+	gs_vertex2f(x1, y1);
+	gs_render_stop(GS_TRISTRIP);
+}
+
+/*
+ * The texture a draw takes its pixels from, or null when it is not on the GPU. `offset`, for a
+ * chunk, comes back as where the texture sits in the chunk's full rectangle.
+ */
+gs_texture_t *textureFor(CreditsSourceData *data, const DrawSource &source, QPoint *offset)
+{
+	*offset = QPoint();
+
+	if (source.kind == DrawSource::Kind::Chunk) {
+		const auto it = data->textures.constFind(keyOf(*data->live, source));
+		if (it == data->textures.constEnd())
+			return nullptr;
+		*offset = it->offset;
+		return it->texture;
 	}
+
+	if (source.logo < 0 || source.logo >= data->logoTextures.size())
+		return nullptr;
+
+	const LogoTextures &textures = data->logoTextures.at(source.logo);
+	if (source.kind == DrawSource::Kind::LogoShadow)
+		return textures.shadowShown == source.frame ? textures.shadow : nullptr;
+	return textures.frameShown == source.frame ? textures.frame : nullptr;
 }
 
 void videoRender(void *raw, gs_effect_t *)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
 
-	adoptPendingStrip(data);
+	adoptPendingLayout(data);
+	receiveChunks(data);
+
+	/*
+	 * Everything this frame draws goes on the GPU before the pass that draws it is started, rather
+	 * than being allocated part-way through one: a technique's pass is a poor place to create a
+	 * resource, and gs_effect_loop may run its body more than once. A rebuilt roll is staged first,
+	 * so that the frame it takes over in draws it rather than the one it replaced.
+	 */
+	stageLayout(data);
 
 	const int canvasWidth = std::max(1, data->document.width);
 	const int canvasHeight = std::max(1, data->document.height);
 
-	drawBackground(data->document.background, canvasWidth, canvasHeight);
+	gs_effect_t *effect = rollEffect(data);
+	/* Without the shader there is no linear decode, so the framebuffer is left as it was. */
+	const bool linear = effect != nullptr;
+	const bool previousSrgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(linear);
 
-	if (data->tiles.empty())
+	drawBackground(data->document.background, canvasWidth, canvasHeight, linear);
+
+	if (!data->live || data->live->isEmpty()) {
+		gs_enable_framebuffer_srgb(previousSrgb);
 		return;
-
-	double offset = 0.0;
-	{
-		std::lock_guard<std::mutex> lock(data->stateMutex);
-		offset = data->offset;
 	}
 
-	/*
-	 * The strip's top edge sits one canvas-height below the top of the frame at offset 0
-	 * and travels upward, so the start of the roll enters from the bottom of the canvas.
-	 */
-	const double stripTop = canvasHeight - offset;
+	const RollFrame frame = currentFrame(data, data->timeline);
+	const DrawList list = composeFrame(*data->live, frame, ComposeView::canvas(frame, canvasHeight));
 
 	/*
-	 * Everything this frame draws goes on the GPU before the pass that draws it is started,
-	 * rather than being allocated part-way through one: a technique's pass is a poor place to
-	 * create a resource, and gs_effect_loop may run its body more than once.
+	 * What is on the canvas now goes up now, whatever the budget says. A picture that is not back
+	 * yet is simply not drawn this frame -- which, for a roll that is playing, is a section arriving
+	 * a few frames after its own top edge, and worth a line in the log. A roll parked or scrubbed
+	 * to somewhere new is expected to wait for its pictures, and says nothing.
 	 */
-	const TileRange visible = visibleTiles(data, stripTop, canvasHeight);
-	bool uploaded = false;
-	for (size_t i = visible.first; i < visible.last; ++i) {
-		uploaded = uploaded || !data->tiles[i].image.isNull();
-		uploadTile(data, i);
+	data->lastRendered = obs_get_video_frame_time();
+	const bool resident = residentFor(data, *data->live, list, true);
+	/* The plan from this frame's tick may predate a layout committed just now; make sure it is asked for. */
+	if (!resident)
+		planPictures(data);
+	if (!resident && !data->fellBehind) {
+		bool playing = false;
+		{
+			std::lock_guard<std::mutex> lock(data->stateMutex);
+			playing = data->phase == Phase::Running && !data->paused && !data->document.manualScroll;
+		}
+		if (playing) {
+			data->fellBehind = true;
+			obs_log(LOG_WARNING,
+				"'%s' drew a frame before all of its pictures were ready; rasterizing is behind",
+				obs_source_get_name(data->source));
+		}
 	}
 
-	/*
-	 * One tile a frame between the two of them. A tile that had to go up this frame because it is
-	 * being drawn has already had the frame's share of the upload, and putting a second one up
-	 * behind it would be doing exactly what spreading them out is for avoiding.
-	 */
-	if (!uploaded)
-		uploadTileAhead(data, visible.last);
+	uploadAhead(data);
+	evict(data);
 
-	prepareAnimatedLogos(data, stripTop, canvasHeight);
-	prepareStickyBlocks(data, stripTop, canvasHeight);
+	for (const DrawItem &item : list) {
+		if (item.source.kind != DrawSource::Kind::Chunk)
+			uploadLogo(data, item.source);
+	}
 
-	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	if (!effect)
+		effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
+	gs_eparam_t *alphaParam = gs_effect_get_param_by_name(effect, "alpha");
 
+	/*
+	 * Premultiplied, because the pictures are -- see RollRenderer::rasterize. It is also what OBS
+	 * itself expects of a source: a straight-alpha blend applied to the alpha channel as well writes
+	 * alpha squared into any texture the source is first drawn into -- a filter, a nested scene, a
+	 * transition -- and every antialiased edge comes out thinner there.
+	 */
 	gs_blend_state_push();
-	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
 	while (gs_effect_loop(effect, "Draw")) {
-		for (size_t i = visible.first; i < visible.last; ++i) {
-			gs_texture_t *texture = data->tiles[i].texture;
+		for (const DrawItem &item : list) {
+			QPoint offset;
+			gs_texture_t *texture = textureFor(data, item.source, &offset);
 			if (!texture)
 				continue;
 
-			/*
-			 * Rather than clipping with a scissor rect, which lives in screen space and
-			 * would fight the scene item's transform, each tile is drawn as the part of
-			 * itself that actually falls inside the canvas.
-			 */
-			gs_effect_set_texture(imageParam, texture);
-			drawTile(texture, stripTop + data->tiles[i].top, canvasHeight);
-		}
+			/* A chunk's texture is its ink alone; the draw is fitted to the part of the chunk it covers. */
+			QRectF target = item.target;
+			QRectF source = item.sourceRect;
+			if (item.source.kind == DrawSource::Kind::Chunk &&
+			    !fitToPicture(item, offset,
+					  QSize(static_cast<int>(gs_texture_get_width(texture)),
+						static_cast<int>(gs_texture_get_height(texture))),
+					  &target, &source))
+				continue;
 
-		drawAnimatedLogos(data, imageParam, stripTop, canvasHeight);
+			gs_effect_set_texture(imageParam, texture);
+			if (alphaParam)
+				gs_effect_set_float(alphaParam, static_cast<float>(item.alpha));
+			drawQuad(texture, target, source);
+		}
 	}
 
-	/* After the loop above rather than inside it: the blocks are drawn through a pass of their own. */
-	drawStickyBlocks(data, stripTop, canvasHeight);
-
 	gs_blend_state_pop();
+	gs_enable_framebuffer_srgb(previousSrgb);
 }
 
 /* ------------------------------------------------------------------------ properties */
@@ -2131,7 +1765,11 @@ void registerCreditsSource()
 {
 	creditsSourceInfo.id = kCreditsSourceId;
 	creditsSourceInfo.type = OBS_SOURCE_TYPE_INPUT;
-	creditsSourceInfo.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW;
+	/*
+	 * sRGB-aware: the source blends in linear light, the way OBS's own sources do, which is also what
+	 * lets OBS put it on an HDR canvas correctly. See kRollEffectSource.
+	 */
+	creditsSourceInfo.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_SRGB;
 	creditsSourceInfo.icon_type = OBS_ICON_TYPE_TEXT;
 	creditsSourceInfo.get_name = getName;
 	creditsSourceInfo.create = create;

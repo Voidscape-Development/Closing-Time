@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cmath>
 
 #include "plugin-support.h"
+#include "render/FileDependencies.hpp"
 
 namespace closingtime {
 
@@ -64,11 +65,11 @@ QImage prepareFrame(const QImage &source, int maxHeight, const QSize &fixed)
 	}
 
 	/*
-	 * Straight alpha, matching the strip tiles: these frames are uploaded as GPU textures for
-	 * the source and composited by QPainter for the preview, and OBS composites with straight
-	 * alpha. Converting once here is cheaper than correcting per frame in either consumer.
+	 * Premultiplied, matching the strip tiles: these frames are uploaded as GPU textures for
+	 * the source, which blends them premultiplied, and composited by QPainter for the preview,
+	 * whose fast path is this format. Converting once here is cheaper than in either consumer.
 	 */
-	return image.convertToFormat(QImage::Format_ARGB32);
+	return image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
 /* True once the decode has taken all it is allowed to. */
@@ -195,6 +196,9 @@ LogoAnimationPtr AnimatedLogoCache::get(const QString &path, int maxHeight)
 
 	const int height = std::max(1, maxHeight);
 	const QString key = QStringLiteral("%1|%2").arg(path).arg(height);
+
+	/* Reported on a cache hit too: what the caller's picture depends on is the file, not the decode. */
+	noteFileRead(path);
 
 	const QFileInfo info(path);
 	const qint64 fileSize = info.size();

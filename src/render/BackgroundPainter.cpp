@@ -18,7 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "render/BackgroundPainter.hpp"
 
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 
 #include <QLinearGradient>
 #include <QPainter>

@@ -74,8 +74,22 @@ struct BundledFont {
 
 	bool isEmpty() const { return data.isEmpty(); }
 
+	/*
+	 * Same family, faces, file and bytes. The bytes are compared last and, when both sides hold the
+	 * same decoded copy -- which they do whenever both were loaded through the font store -- by
+	 * pointer, so comparing two documents that carry a 20 MB font costs nothing.
+	 */
+	bool operator==(const BundledFont &other) const;
+
+	/*
+	 * Written compressed, with its hash beside it. Read either that or the plain base64 a version 1
+	 * document carries, through the process-wide store of decoded fonts: a hash already held hands
+	 * back the bytes without decoding anything, which is what makes loading the same document again
+	 * -- once a frame, during a slider drag -- cheap. `legacy`, when given, comes back true for a
+	 * font written the old way, so the caller knows the settings are worth writing back.
+	 */
 	void save(obs_data_t *data) const;
-	void load(obs_data_t *data);
+	void load(obs_data_t *data, bool *legacy = nullptr);
 
 private:
 	mutable QString cachedHash;
@@ -151,5 +165,12 @@ QVector<BundledFont> collectBundledFonts(const QVector<FontUse> &fonts, QStringL
 
 /* Total size of the files in a bundle, in bytes. */
 qint64 fontBundleBytes(const QVector<BundledFont> &fonts);
+
+/*
+ * How many decoded fonts the process-wide store is holding, and how many times it has had to
+ * decode one. For the harness, which checks that loading a document twice decodes its fonts once.
+ */
+int fontStoreSize();
+int fontStoreDecodes();
 
 } // namespace closingtime

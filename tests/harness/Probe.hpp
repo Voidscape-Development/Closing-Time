@@ -27,7 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <initializer_list>
 
 #include "model/CreditsModel.hpp"
-#include "render/StripRenderer.hpp"
+#include "render/RollRenderer.hpp"
 
 /*
  * Everything a check needs to ask about a rendered document.
