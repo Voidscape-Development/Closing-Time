@@ -16,7 +16,11 @@ file(
 # The preview widget is the one piece of the designer worth driving here, and the only one with a moc.
 target_sources(
   closing-time-live-tests
-  PRIVATE LiveHost.cpp ${_live_core_sources} "${CMAKE_SOURCE_DIR}/src/ui/PreviewWidget.cpp" "${CMAKE_SOURCE_DIR}/src/ui/PreviewWidget.hpp"
+  PRIVATE
+    LiveHost.cpp
+    ${_live_core_sources}
+    "${CMAKE_SOURCE_DIR}/src/ui/PreviewWidget.cpp"
+    "${CMAKE_SOURCE_DIR}/src/ui/PreviewWidget.hpp"
 )
 
 target_include_directories(closing-time-live-tests PRIVATE "${CMAKE_SOURCE_DIR}/src")

@@ -1,8 +1,8 @@
 # Design: the layered renderer
 
-Status: implemented on `ccr-3bd1792c-e0qzso` (PR #26). `ARCHITECTURE.md` describes the result; this
-document records why the renderer was rebuilt, what it was rebuilt into, and the calls made along
-the way, including the places where the build departs from the first proposal.
+Status: implemented (PR #26). `ARCHITECTURE.md` describes the result; this document records why the
+renderer was rebuilt, what it was rebuilt into, the calls made along the way -- including where the
+build departs from the first proposal -- and what it measured afterwards.
 
 ## Why
 
@@ -129,7 +129,7 @@ Behavior changes this brings, all deliberate:
 4. **The designer shows the roll's true running time**, including holds, or says that it loops or
    holds forever.
 5. **Changing scroll speed mid-roll keeps the strip's position.** Roll time is rescaled to the new
-   speed. A block in the middle of a hold keeps the share of its hold already served.
+   speed, so the strip stays where it was; a block's pin and hold are rescaled along with it.
 
 ### The source: residency and swaps
 
@@ -159,10 +159,11 @@ be noticed if it does.
 ### The render queue
 
 One thread, as before, but with two **priority lanes**. Rasters a live source has requested go
-ahead of everything else; layout jobs and the designer's work wait behind them. Every job carries
-the generation it was posted for, and a job whose generation has been superseded returns without
-doing anything. A layout pass also checks between sections and abandons a stale layout part-way
-through.
+ahead of everything else; layout jobs and the designer's work wait behind them. Each consumer's
+chunks are drawn from a ranked list it replaces as often as it likes (`ChunkPipeline`), one chunk per
+job, so a chunk nobody wants any more is never drawn and an urgent one never waits behind a backlog.
+Layouts carry the generation of the edit they were started for and check it between sections, so an
+edit that has been overtaken is abandoned part-way through.
 
 ### The compositor
 
@@ -236,6 +237,29 @@ The plugin registers a vendor, `closing-time`, when obs-websocket is present:
 - **C++20.** It is needed for defaulted comparisons. The OBS plugin template already handles it on
   all three platforms.
 
+## Results
+
+On the same 2,000-name roll, offscreen:
+
+| Operation | Before | After |
+|---|---|---|
+| An edit, until the frame can show it | ~5 s (rasterize the roll) | ~100 ms layout + ~3 ms per section on screen |
+| `update()` on the graphics thread | ~180 ms | ~11 ms (most of it parsing 2,000 entries out of `obs_data`) |
+| GPU memory held | the whole roll | what is within a few seconds of the frame |
+
+In a real libobs (the live harness, on Mesa's software renderer under Xvfb): a 300-section roll at
+3,000 px/s shows no empty frame, a jump across a parked long roll fills in within one frame, an
+edit mid-roll never shows a blank frame, and the roll moves exactly its scroll speed per second.
+
+Two things the build turned up that the design did not anticipate:
+
+- **One request per chunk was the wrong shape.** The first version posted a render job per chunk;
+  under load, a chunk needed on screen now waited behind a long tail of prefetch. Replacing a ranked
+  list of wanted chunks and drawing the front of it one job at a time (`ChunkPipeline`) is what made a
+  fast roll and a scrub jump reliable.
+- **Qt draws a run of glyphs slightly differently the first time it meets them.** The layered and
+  one-picture renders agree exactly once that is warmed up; the harness's equivalence check says so.
+
 ## Verification
 
 - The timeline is tested directly: every entrance against every release, holds, holds forever,
@@ -249,6 +273,7 @@ The plugin registers a vendor, `closing-time`, when obs-websocket is present:
 - Persistence: version 1 documents load unchanged; fonts round-trip through compression; the
   decode store hands back the same bytes; structural equality ignores playback fields and sees
   every content field.
-- The source and the websocket vendor are not in the harness, because they need a running OBS. The
-  plugin is built clean with `-Werror` on all three CI platforms, and both need checking in a live
-  instance.
+- The source, the GPU path and the designer's preview are checked by the live harness (`tests/live`):
+  libobs on a real graphics device, the plugin module loaded, frames read back. The websocket
+  vendor's requests go through the same proc handlers the harness drives; the vendor registration
+  itself needs obs-websocket installed and has only been exercised as far as its absence.
