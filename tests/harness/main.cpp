@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "harness/Fixtures.hpp"
 #include "harness/Harness.hpp"
 #include "harness/Probe.hpp"
+#include "render/RenderThread.hpp"
 
 using namespace closingtime::test;
 
@@ -70,6 +71,9 @@ int main(int argc, char **argv)
 		for (const Scene &scene : scenes())
 			saveArtifact(scene.name, scene.document);
 	}
+
+	/* A suite may have started the render thread; it has to be joined before the statics go. */
+	closingtime::stopRenderThread();
 
 	return code;
 }

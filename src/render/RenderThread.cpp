@@ -75,6 +75,7 @@ void lowerThreadPriority()
 struct RenderQueue {
 	std::mutex mutex;
 	std::condition_variable wake;
+	std::deque<std::function<void()>> live;
 	std::deque<std::function<void()>> jobs;
 	bool stopping = false;
 	/*
@@ -104,13 +105,16 @@ void runQueuedJobs()
 		std::function<void()> job;
 		{
 			std::unique_lock<std::mutex> lock(queue.mutex);
-			queue.wake.wait(lock, [&queue] { return queue.stopping || !queue.jobs.empty(); });
+			queue.wake.wait(lock, [&queue] {
+				return queue.stopping || !queue.live.empty() || !queue.jobs.empty();
+			});
 
 			if (queue.stopping)
 				return;
 
-			job = std::move(queue.jobs.front());
-			queue.jobs.pop_front();
+			std::deque<std::function<void()>> &from = queue.live.empty() ? queue.jobs : queue.live;
+			job = std::move(from.front());
+			from.pop_front();
 		}
 
 		/* Run outside the lock: a job is allowed to queue its own follow-up. */
@@ -120,7 +124,7 @@ void runQueuedJobs()
 
 } // namespace
 
-void postRenderJob(std::function<void()> job)
+void postRenderJob(std::function<void()> job, RenderPriority priority)
 {
 	RenderQueue &queue = renderQueue();
 
@@ -131,7 +135,7 @@ void postRenderJob(std::function<void()> job)
 	if (!queue.thread.joinable())
 		queue.thread = std::thread(runQueuedJobs);
 
-	queue.jobs.push_back(std::move(job));
+	(priority == RenderPriority::Live ? queue.live : queue.jobs).push_back(std::move(job));
 	queue.wake.notify_one();
 }
 
@@ -149,6 +153,7 @@ void stopRenderThread()
 		 * Queued jobs are dropped rather than drained: by the time the module unloads,
 		 * their results have nowhere left to go.
 		 */
+		queue.live.clear();
 		queue.jobs.clear();
 	}
 	queue.wake.notify_all();

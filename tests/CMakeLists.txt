@@ -25,6 +25,7 @@ target_sources(
     suites/Persistence.cpp
     suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp
+    suites/RenderQueue.cpp
     suites/SectionTypes.cpp
     suites/SubtitleHeadings.cpp
     suites/Timeline.cpp
