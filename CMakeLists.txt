@@ -96,6 +96,9 @@ target_sources(
     src/plugin-main.cpp
     src/source/CreditsSource.cpp
     src/source/CreditsSource.hpp
+    src/source/RollControl.cpp
+    src/source/RollControl.hpp
+    src/third-party/obs-websocket-api.h
     src/ui/BackgroundControls.cpp
     src/ui/BackgroundControls.hpp
     src/ui/CollapsibleGroup.cpp
@@ -127,6 +130,13 @@ option(ENABLE_TESTS "Build the offscreen test harness" OFF)
 if(ENABLE_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# The plugin loaded into a real libobs on a graphics device; Linux only. See tests/live/LiveHost.cpp.
+option(ENABLE_LIVE_TESTS "Build the live libobs harness" OFF)
+
+if(ENABLE_LIVE_TESTS)
+  add_subdirectory(tests/live)
 endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

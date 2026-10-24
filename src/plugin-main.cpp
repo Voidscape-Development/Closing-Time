@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
 #include "source/CreditsSource.hpp"
+#include "source/RollControl.hpp"
 #include "ui/DesignerDialog.hpp"
 
 OBS_DECLARE_MODULE()
@@ -82,6 +83,12 @@ bool obs_module_load(void)
 
 	obs_log(LOG_INFO, "Closing Time loaded (version %s)", PLUGIN_VERSION);
 	return true;
+}
+
+void obs_module_post_load(void)
+{
+	/* obs-websocket accepts vendors only once every module has loaded, itself included. */
+	closingtime::registerRollControl();
 }
 
 void obs_module_unload(void)

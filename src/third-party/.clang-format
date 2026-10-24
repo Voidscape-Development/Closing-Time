@@ -1,0 +1,3 @@
+# Vendored as published upstream; formatting it would only make the next update harder to diff.
+DisableFormat: true
+SortIncludes: Never
