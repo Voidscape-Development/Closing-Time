@@ -26,6 +26,7 @@ target_sources(
     suites/StyleLibrary.cpp
     suites/SectionTypes.cpp
     suites/SubtitleHeadings.cpp
+    suites/Timeline.cpp
     ${CLOSING_TIME_CORE_SOURCES}
 )
 

@@ -73,6 +73,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollTimeline.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollTimeline.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/StripRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/StripRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.cpp"
