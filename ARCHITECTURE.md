@@ -941,6 +941,20 @@ else works in: what is rasterized, cached, uploaded and evicted. A list of four 
 section and far too tall to be one texture or one upload. At a fractional scale every chunk boundary is
 rounded down, so the chunks of a picture meet exactly whatever the scale.
 
+**A chunk is cut down to its ink.** A chunk is the canvas wide and a credit roll is mostly empty canvas
+-- a centered name is a few hundred pixels of ink in a row nineteen hundred wide -- and everything a
+chunk costs after it is drawn is paid for its width. So `rasterize` crops each chunk to the box of its
+non-transparent pixels, keeping one transparent pixel round it so bilinear sampling fades out at the
+edge rather than repeating the last row of ink, and records where it sits in `QImage::offset()`. Every
+consumer fits its draws to that (`fitToPicture`). On a typical roll it is an order of magnitude less
+memory and upload, for about a millisecond per chunk on the render thread.
+
+**A long list paints only the rows a chunk shows.** Painting every row of a four-hundred-name list into
+every one of its chunks, and letting the clip discard nearly all of it, made the list cost its length
+squared. The layout pass records each row's height (`RowLedger`), and painting a chunk skips the rows
+that cannot reach it by those heights -- grown by everything the section paints outside a row -- and
+paints only the rest. Rows are still placed from exact heights, so nothing below a skipped row moves.
+
 **Two-pass layout, kept.** `layoutSection()` takes an optional `QPainter`; with a null painter it
 measures, with a painter it draws. Both passes run the identical code, so measurement and painting
 cannot drift apart. The split into layout and painting is made at the section boundary -- the layout
@@ -954,6 +968,11 @@ changes the key of exactly the sections bound to it), the canvas width, the font
 the stand-ins it names, the picture's bounds, whether animated logos are holes, and a version for the
 renderer itself. Two layers with the same key draw the same pixels, which is what lets a rebuilt roll
 keep every picture it did not change -- on the render thread and on the GPU both.
+
+Hashing is most of what a layout of a long roll costs, so a layout is handed the one it replaces and
+a section it holds unchanged -- equal by `operator==`, at the same picture bounds, under the same
+presets, fonts, width and animation choice -- keeps the key it had. Sections are matched in order with
+a short look-ahead, so an insertion above does not cost every key below it.
 
 Files on disk are tracked by **recording** them rather than by listing them. Every loader -- the logo
 cache, the animation cache, the SVG cache -- reports the path it reads while a picture is being drawn,

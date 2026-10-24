@@ -243,9 +243,12 @@ On the same 2,000-name roll, offscreen:
 
 | Operation | Before | After |
 |---|---|---|
-| An edit, until the frame can show it | ~5 s (rasterize the roll) | ~100 ms layout + ~3 ms per section on screen |
+| An edit, until the frame can show it | ~5 s (rasterize the roll) | ~14 ms layout (keys reused) + ~1 ms per section on screen |
+| A first layout of the roll | -- | ~100 ms |
 | `update()` on the graphics thread | ~180 ms | ~11 ms (most of it parsing 2,000 entries out of `obs_data`) |
-| GPU memory held | the whole roll | what is within a few seconds of the frame |
+| GPU memory held | the whole roll, ~830 MB | what is within a few seconds of the frame, cut to its ink |
+| 40 sections' pictures | -- | 168 MB at canvas width, 13 MB cut to ink |
+| A 400-name list as one section (19 chunks) | -- | 130 ms and 138 MB to rasterize, 40 ms and 20 MB with rows culled and chunks cut to ink |
 
 In a real libobs (the live harness, on Mesa's software renderer under Xvfb): a 300-section roll at
 3,000 px/s shows no empty frame, a jump across a parked long roll fills in within one frame, an
@@ -259,6 +262,10 @@ Two things the build turned up that the design did not anticipate:
   fast roll and a scrub jump reliable.
 - **Qt draws a run of glyphs slightly differently the first time it meets them.** The layered and
   one-picture renders agree exactly once that is warmed up; the harness's equivalence check says so.
+- **Three costs survived the first build and were taken out after it:** pictures the canvas wide
+  when their ink was a fraction of it (now cropped), a long list painting every row into every chunk
+  (now culled by recorded row heights), and every section rehashed on every layout (now reused from
+  the previous layout when unchanged). Each has a harness suite that a broken version fails.
 
 ## Verification
 
