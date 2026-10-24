@@ -32,7 +32,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <atomic>
 #include <cmath>
 #include <cstring>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -40,6 +39,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/CreditsModel.hpp"
 #include "model/StyleLibrary.hpp"
+#include "render/ChunkPipeline.hpp"
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
 #include "render/RollCompositor.hpp"
@@ -121,16 +121,6 @@ struct LogoTextures {
 	int shadowShown = -1;
 };
 
-/* One chunk the source would like drawn, and how soon it will be drawn. */
-struct WantedChunk {
-	quint64 key = 0;
-	RollLayoutPtr layout;
-	int layer = -1;
-	int chunk = -1;
-	/* Seconds until it is on the canvas: 0 for one that is there now. */
-	double urgency = 0.0;
-};
-
 /* A layout that has arrived from the render thread but is not on screen yet; see stageLayout. */
 struct StagedLayout {
 	RollLayoutPtr layout;
@@ -148,7 +138,7 @@ struct StagedLayout {
  *   - Playback state is mutated from hotkey, proc-handler and websocket callbacks on other threads
  *     as well as from video_tick, so it lives behind `stateMutex`.
  *   - A finished layout crosses from the render thread through `pendingLayout` under
- *     `handoffMutex`, and rasterized chunks through `inbox` under `inboxMutex`. Everything the GPU
+ *     `handoffMutex`, and rasterized chunks through the ChunkPipeline. Everything the GPU
  *     holds is only ever touched by the graphics thread.
  */
 struct CreditsSourceData {
@@ -161,13 +151,14 @@ struct CreditsSourceData {
 	QByteArray renderedFrom;
 
 	/*
-	 * Owned by the render thread: only jobs read or write them, and jobs run one at a time, so none
-	 * of these needs a lock.
+	 * Used only on the render thread: only jobs read or write them, and jobs run one at a time, so
+	 * neither needs a lock. Shared with the picture pipeline, which draws from them too.
 	 */
-	LogoCache logos;
-	AnimatedLogoCache animations;
-	RasterCache rasters{kRasterCacheBytes};
-	/* Families already reported, so a rebuild per keystroke does not spam the log. */
+	std::shared_ptr<LogoCache> logos = std::make_shared<LogoCache>();
+	std::shared_ptr<AnimatedLogoCache> animations = std::make_shared<AnimatedLogoCache>();
+	/* What draws this source's chunks; see planPictures. */
+	std::shared_ptr<ChunkPipeline> pictures;
+	/* Families already reported, so a rebuild per keystroke does not spam the log. Render thread. */
 	QSet<QString> warnedFonts;
 
 	std::mutex handoffMutex;
@@ -182,24 +173,6 @@ struct CreditsSourceData {
 	 * started for between sections, and abandons an edit that has already been overtaken.
 	 */
 	std::atomic<uint64_t> generation{0};
-
-	std::mutex inboxMutex;
-	QVector<QPair<quint64, QImage>> inbox;
-	std::atomic<bool> hasInbox{false};
-
-	/*
-	 * The chunks this source wants drawn and does not have, most urgent first, replaced whole by the
-	 * graphics thread every tick and consumed from the front by the render thread one chunk per job
-	 * -- see planPictures and drainWanted. Replacing it whole is what lets urgency be decided afresh
-	 * every frame: a chunk scrubbed onto the canvas goes to the front at once rather than waiting
-	 * behind everything asked for before it, and one nobody wants any more simply drops out.
-	 */
-	std::mutex wantMutex;
-	std::deque<WantedChunk> wants;
-	/* Set while a drain job is queued or running, so there is never more than one. */
-	bool drainPosted = false;
-	/* The chunk a drain job is drawing right now, which the next plan leaves out. */
-	quint64 drawing = 0;
 
 	/*
 	 * Set when loading brought the document up to date against the library -- a preset renamed
@@ -420,7 +393,7 @@ void runRebuild(CreditsSourceData *data, const Document &document, const QString
 				substitute.toUtf8().constData());
 	}
 
-	const RollRenderer renderer(&data->logos, &data->animations);
+	const RollRenderer renderer(data->logos.get(), data->animations.get());
 	RollLayoutPtr layout =
 		renderer.layout(document, false, [data, generation] { return data->generation.load() != generation; });
 
@@ -475,73 +448,13 @@ gs_texture_t *createTexture(const QImage &image, uint32_t flags)
 				 1, &bits, flags);
 }
 
-void postDrain(CreditsSourceData *data);
-
-/*
- * Draws the most urgent chunk this source wants and hands it to the graphics thread.
- *
- * One chunk per job, re-posted after itself, so that every source on the machine gets a turn in the
- * live lane rather than one long roll's whole lookahead going ahead of another roll's next frame.
- * The source's raster cache answers first, so a chunk this source has drawn before -- a loop coming
- * round, a scrub back, a section a rebuild did not change -- costs a lookup.
- *
- * Render thread only.
- */
-void drainWanted(CreditsSourceData *data)
-{
-	WantedChunk next;
-	{
-		std::lock_guard<std::mutex> lock(data->wantMutex);
-		if (data->wants.empty()) {
-			data->drainPosted = false;
-			return;
-		}
-		next = std::move(data->wants.front());
-		data->wants.pop_front();
-		data->drawing = next.key;
-	}
-
-	const RollRenderer renderer(&data->logos, &data->animations);
-	QImage image = data->rasters.chunk(renderer, *next.layout, next.layer, next.chunk, 1.0);
-
-	{
-		std::lock_guard<std::mutex> lock(data->inboxMutex);
-		data->inbox.append({next.key, std::move(image)});
-		data->hasInbox.store(true, std::memory_order_release);
-	}
-
-	{
-		std::lock_guard<std::mutex> lock(data->wantMutex);
-		data->drawing = 0;
-	}
-	postDrain(data);
-}
-
-void postDrain(CreditsSourceData *data)
-{
-	postRenderJob(
-		[weak = data->weakSelf, data] {
-			OBSSourceAutoRelease source = obs_weak_source_get_source(weak);
-			if (source)
-				drainWanted(data);
-		},
-		RenderPriority::Live);
-}
-
 /* Takes whatever the render thread has finished off its hands. Graphics thread only. */
 void receiveChunks(CreditsSourceData *data)
 {
-	if (!data->hasInbox.load(std::memory_order_acquire))
+	if (!data->pictures->hasArrived())
 		return;
 
-	QVector<QPair<quint64, QImage>> arrived;
-	{
-		std::lock_guard<std::mutex> lock(data->inboxMutex);
-		arrived.swap(data->inbox);
-		data->hasInbox.store(false, std::memory_order_relaxed);
-	}
-
-	for (auto &[key, image] : arrived) {
+	for (auto &[key, image] : data->pictures->takeArrived()) {
 		if (image.isNull())
 			data->failed.insert(key);
 		else if (!data->textures.contains(key))
@@ -647,7 +560,7 @@ void planPictures(CreditsSourceData *data)
 	const bool looking = obs_source_showing(data->source) ||
 			     (data->lastRendered != 0 && frameTime - data->lastRendered < kTextureGraceNs);
 
-	std::vector<WantedChunk> wanted;
+	std::vector<ChunkRequest> wanted;
 	QSet<quint64> seen;
 
 	/* Lists are considered most urgent first, so the first to name a chunk decides how urgent it is. */
@@ -674,7 +587,7 @@ void planPictures(CreditsSourceData *data)
 				soon = item.target.top() > canvasHeight ? (item.target.top() - canvasHeight) / speed
 									: 0.0;
 
-			wanted.push_back(WantedChunk{key, layout, item.source.layer, item.source.chunk, soon});
+			wanted.push_back(ChunkRequest{key, layout, item.source.layer, item.source.chunk, 1.0, soon});
 		}
 	};
 
@@ -727,20 +640,7 @@ void planPictures(CreditsSourceData *data)
 		}
 	}
 
-	std::stable_sort(wanted.begin(), wanted.end(),
-			 [](const WantedChunk &a, const WantedChunk &b) { return a.urgency < b.urgency; });
-
-	std::lock_guard<std::mutex> lock(data->wantMutex);
-	data->wants.clear();
-	for (WantedChunk &chunk : wanted) {
-		if (chunk.key != data->drawing)
-			data->wants.push_back(std::move(chunk));
-	}
-
-	if (!data->wants.empty() && !data->drainPosted) {
-		data->drainPosted = true;
-		postDrain(data);
-	}
+	data->pictures->want(std::move(wanted));
 }
 
 /*
@@ -1143,6 +1043,7 @@ void *create(obs_data_t *settings, obs_source_t *source)
 {
 	auto *data = new CreditsSourceData();
 	data->source = source;
+	data->pictures = ChunkPipeline::create(data->logos, data->animations, kRasterCacheBytes, RenderPriority::Live);
 	{
 		OBSWeakSourceAutoRelease weak = obs_source_get_weak_source(source);
 		data->weakSelf = weak.Get();

@@ -49,6 +49,13 @@ int XCloseDisplay(Display *);
 }
 
 #include "model/CreditsModel.hpp"
+#include "render/RollRenderer.hpp"
+#include "ui/PreviewWidget.hpp"
+
+#include <QMouseEvent>
+#include <QSignalSpy>
+
+#include "render/RenderThread.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -70,6 +77,18 @@ static void check(bool ok, const char *what)
 	} else {
 		std::printf("  ok    %s\n", what);
 	}
+}
+
+/* Where to write PNGs of what was drawn, from CLOSING_TIME_LIVE_ARTIFACTS; empty writes none. */
+static QString artifactDir()
+{
+	return QString::fromLocal8Bit(qgetenv("CLOSING_TIME_LIVE_ARTIFACTS"));
+}
+
+static void saveArtifact(const char *name, const QImage &image)
+{
+	if (!artifactDir().isEmpty() && !image.isNull())
+		image.save(QStringLiteral("%1/%2.png").arg(artifactDir(), QString::fromLatin1(name)));
 }
 
 static std::vector<std::string> warnings;
@@ -212,6 +231,75 @@ int main(int argc, char **argv)
 
 	base_set_log_handler(logHandler, nullptr);
 
+	/*
+	 * The designer's preview first, which needs no libobs at all: it draws from a layout, asks the
+	 * render thread for the pictures it shows at its own scale, and repaints as they come back.
+	 */
+	{
+		using namespace closingtime;
+		std::printf("-- the designer's preview\n");
+
+		Document document;
+		document.width = 1920;
+		document.height = 1080;
+		for (int i = 0; i < 40; ++i) {
+			Section title = Section::makeDefault(SectionType::Title);
+			title.text = QStringLiteral("Preview line %1").arg(i);
+			title.style.pixelSize = 64;
+			document.sections.append(title);
+		}
+
+		auto logos = std::make_shared<LogoCache>();
+		auto animations = std::make_shared<AnimatedLogoCache>();
+		const RollLayoutPtr layout = RollRenderer(logos.get(), animations.get()).layout(document, true);
+
+		PreviewWidget preview;
+		preview.setCaches(logos, animations);
+		preview.resize(500, 700);
+		preview.setLayout(layout, QColor(0, 0, 0, 255));
+		preview.show();
+
+		/* Ink in the pane: bright pixels inside the canvas column. */
+		const auto paneInk = [&preview] {
+			const QImage shot = preview.grab().toImage();
+			int pixels = 0;
+			for (int y = 0; y < shot.height(); ++y)
+				for (int x = 12; x < shot.width() - 12; ++x)
+					if (qRed(shot.pixel(x, y)) > 120)
+						++pixels;
+			return pixels;
+		};
+
+		const int before = paneInk();
+		int after = 0;
+		for (int i = 0; i < 100 && after == 0; ++i) {
+			sleepMs(20);
+			after = paneInk();
+		}
+		check(before == 0 || after > 0, "the pane fills in as its pictures come back");
+		check(after > 200, "with the roll drawn in it");
+		saveArtifact("preview", preview.grab().toImage());
+
+		/* Clicking on the fourth title selects the fourth section. */
+		QSignalSpy clicked(&preview, &PreviewWidget::sectionClicked);
+		QRectF fourth;
+		for (const LayoutBox &box : layout->boxes)
+			if (box.kind == LayoutBox::Kind::Section && box.section == 3)
+				fourth = box.rect;
+		const qreal scale = (500 - 20) / 1920.0;
+		const QPoint at(250, static_cast<int>(fourth.center().y() * scale));
+		QMouseEvent press(QEvent::MouseButtonPress, QPointF(at), preview.mapToGlobal(QPointF(at)),
+				  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+		QCoreApplication::sendEvent(&preview, &press);
+		check(clicked.count() == 1 && clicked.at(0).at(0).toInt() == 3, "a click selects the section under it");
+
+		/* An edit keeps every unchanged section's picture: the pane is never blank while it redraws. */
+		document.sections[1].text = QStringLiteral("Preview line one, edited");
+		preview.setLayout(RollRenderer(logos.get(), animations.get()).layout(document, true),
+				  QColor(0, 0, 0, 255));
+		check(paneInk() > 200, "an edit redraws only what changed, and the rest stays up");
+	}
+
 	Display *display = XOpenDisplay(nullptr);
 	if (!display) {
 		std::fprintf(stderr, "no X display\n");
@@ -307,6 +395,7 @@ int main(int argc, char **argv)
 	sleepMs(200);
 	State s2 = stateOf(source);
 	QImage b = renderSource(source, W, H);
+	saveArtifact("source-rolling", b);
 	check(s1.phase == "running" && s2.time > s1.time, "roll time runs once started");
 
 	// Ink: anything brighter than the background.
@@ -373,6 +462,7 @@ int main(int argc, char **argv)
 	sleepMs(std::max(0, waitMs));
 	State after = stateOf(source);
 	QImage ended = renderSource(source, W, H);
+	saveArtifact("source-ended", ended);
 	const Ink endInk = textInk(ended);
 	std::printf("     phase %s finished %d time %.3f, ink rows %d..%d\n", after.phase.c_str(), after.finished,
 		    after.time, endInk.top, endInk.bottom);
@@ -540,8 +630,9 @@ int main(int argc, char **argv)
 	sleepMs(200);
 	std::printf("\n%d checks, %d failures\n", checks, failures);
 
-	// Shutting libobs down fully needs the module unloaded first.
 	obs_shutdown();
+	/* The preview's pictures were drawn on this program's own render thread, which has to be joined. */
+	closingtime::stopRenderThread();
 	XCloseDisplay(display);
 	return failures == 0 ? 0 : 1;
 }

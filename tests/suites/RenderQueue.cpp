@@ -23,7 +23,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <mutex>
 #include <vector>
 
+#include <thread>
+
 #include "harness/Harness.hpp"
+#include "render/ChunkPipeline.hpp"
 #include "render/RenderThread.hpp"
 
 using namespace closingtime;
@@ -68,5 +71,57 @@ CT_SUITE(render_queue_priority, "A live job runs ahead of everything already wai
 		checkEq(order.at(1), QStringLiteral("first"), "then the rest in the order they were posted");
 		checkEq(order.at(2), QStringLiteral("second"), "in order");
 		checkEq(order.at(3), QStringLiteral("last"), "to the last");
+	}
+}
+
+CT_SUITE(chunk_pipeline, "A consumer's chunks are drawn most urgent first, and only while wanted")
+{
+	Document document;
+	document.width = 640;
+	for (const char *text : {"Alpha", "Bravo", "Charlie"}) {
+		Section section = Section::makeDefault(SectionType::Title);
+		section.text = QString::fromLatin1(text);
+		document.sections.append(section);
+	}
+
+	auto logos = std::make_shared<LogoCache>();
+	const RollLayoutPtr layout = RollRenderer(logos.get()).layout(document);
+	if (layout->layers.size() < 3) {
+		fail(QStringLiteral("three layers to ask for"));
+		return;
+	}
+
+	const auto request = [&](int layer, double urgency) {
+		return ChunkRequest{chunkKey(layout->layers.at(layer), 0, 1.0), layout, layer, 0, 1.0, urgency};
+	};
+
+	std::promise<void> gate;
+	std::shared_future<void> opened = gate.get_future().share();
+	postRenderJob([opened] { opened.wait(); });
+
+	const auto pipeline = ChunkPipeline::create(logos, nullptr, 64LL * 1024 * 1024, RenderPriority::Normal);
+	/* Asked for in one order, then changed its mind before anything was drawn. */
+	pipeline->want({request(0, 2.0), request(1, 0.0), request(2, 1.0)});
+	pipeline->want({request(2, 1.0), request(1, 0.0)});
+	checkEq(pipeline->waiting(), 2, "the second list replaces the first");
+
+	gate.set_value();
+
+	QVector<QPair<quint64, QImage>> arrived;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (arrived.size() < 2 && std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		arrived += pipeline->takeArrived();
+	}
+
+	/* Give a stray third chunk the chance to turn up, if it was ever going to. */
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	arrived += pipeline->takeArrived();
+
+	checkEq(static_cast<long long>(arrived.size()), 2, "exactly the two still wanted are drawn");
+	if (arrived.size() == 2) {
+		check(arrived.at(0).first == request(1, 0).key, "the most urgent first");
+		check(arrived.at(1).first == request(2, 0).key, "then the next");
+		check(!arrived.at(0).second.isNull() && !arrived.at(1).second.isNull(), "and both are pictures");
 	}
 }

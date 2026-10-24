@@ -64,6 +64,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BackgroundPainter.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ChunkPipeline.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ChunkPipeline.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/BridgeArtRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/DividerArtRenderer.hpp"
