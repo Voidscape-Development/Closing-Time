@@ -23,6 +23,7 @@ target_sources(
     suites/Layers.cpp
     suites/Layout.cpp
     suites/LogoRows.cpp
+    suites/NaturalOrder.cpp
     suites/Persistence.cpp
     suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp

@@ -89,6 +89,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/FontFiles.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/FontFiles.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/NaturalOrder.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/NaturalOrder.hpp"
 )
 
 target_sources(

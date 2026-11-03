@@ -60,6 +60,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ui/SectionEditor.hpp"
 #include "ui/StyleLibraryDialog.hpp"
 #include "ui/ToolButtons.hpp"
+#include "util/NaturalOrder.hpp"
 
 namespace closingtime {
 
@@ -172,10 +173,12 @@ QVector<MenuEntry> sourcesOfType(const QByteArray &sourceId)
 		},
 		&collector);
 
-	/* Listed by name: libobs hands them over in creation order, which reads as no order at all. */
-	std::sort(collector.entries.begin(), collector.entries.end(), [](const MenuEntry &a, const MenuEntry &b) {
-		return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
-	});
+	/*
+	 * Listed by name, in natural order: libobs hands them over in creation order, which reads as no
+	 * order at all, and a plain string sort puts "Credits 10" before "Credits 2".
+	 */
+	std::sort(collector.entries.begin(), collector.entries.end(),
+		  [](const MenuEntry &a, const MenuEntry &b) { return naturalLess(a.name, b.name); });
 
 	return collector.entries;
 }

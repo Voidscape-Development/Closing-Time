@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPair>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 
 #include <algorithm>
 #include <atomic>
@@ -47,6 +48,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "render/RollRenderer.hpp"
 #include "render/RollTimeline.hpp"
 #include "source/RollControl.hpp"
+#include "util/NaturalOrder.hpp"
 #include "ui/DesignerDialog.hpp"
 
 namespace closingtime {
@@ -1709,16 +1711,52 @@ bool onEndingActionChanged(obs_properties_t *props, obs_property_t *, obs_data_t
 	return true;
 }
 
+/* Adds every name to the list, in natural order -- "Scene 2" before "Scene 10". */
+void addNamesInOrder(obs_property_t *list, QStringList names)
+{
+	naturalSort(names);
+	for (const QString &name : names) {
+		const QByteArray utf8 = name.toUtf8();
+		obs_property_list_add_string(list, utf8.constData(), utf8.constData());
+	}
+}
+
 void fillSceneList(obs_property_t *list)
 {
 	char **names = obs_frontend_get_scene_names();
 	if (!names)
 		return;
 
+	QStringList scenes;
 	for (char **name = names; *name; ++name)
-		obs_property_list_add_string(list, *name, *name);
-
+		scenes.append(QString::fromUtf8(*name));
 	bfree(names);
+
+	addNamesInOrder(list, std::move(scenes));
+}
+
+/*
+ * The names of the sources `accept` takes, from `obs_enum_all_sources` -- scenes included, which
+ * `obs_enum_sources` leaves out.
+ */
+QStringList sourceNames(bool (*accept)(obs_source_t *))
+{
+	struct Walk {
+		bool (*accept)(obs_source_t *);
+		QStringList names;
+	} walk{accept, {}};
+
+	obs_enum_all_sources(
+		[](void *param, obs_source_t *source) {
+			auto *state = static_cast<Walk *>(param);
+			const char *name = obs_source_get_name(source);
+			if (name && *name && state->accept(source))
+				state->names.append(QString::fromUtf8(name));
+			return true;
+		},
+		&walk);
+
+	return walk.names;
 }
 
 void fillFilterList(obs_property_t *list, const char *sourceName)
@@ -1838,13 +1876,10 @@ obs_properties_t *getProperties(void *raw)
 							       obs_module_text("EndingAction.FilterSource"),
 							       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(filterSource, "", "");
-	obs_enum_sources(
-		[](void *param, obs_source_t *source) {
-			if (const char *name = obs_source_get_name(source))
-				obs_property_list_add_string(static_cast<obs_property_t *>(param), name, name);
-			return true;
-		},
-		filterSource);
+	/* Inputs only, as it always has been: what `obs_enum_sources` walks. */
+	addNamesInOrder(filterSource, sourceNames([](obs_source_t *source) {
+				return obs_source_get_type(source) == OBS_SOURCE_TYPE_INPUT;
+			}));
 	obs_property_set_modified_callback(filterSource, onFilterSourceChanged);
 
 	obs_properties_add_list(ending, "ea_filter_name", obs_module_text("EndingAction.Filter"), OBS_COMBO_TYPE_LIST,
@@ -1872,17 +1907,11 @@ obs_properties_t *getProperties(void *raw)
 							     obs_module_text("EndingAction.ItemSource"),
 							     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(itemSource, "", "");
-	obs_enum_all_sources(
-		[](void *param, obs_source_t *source) {
-			/* Anything a scene item can be backed by: inputs, and scenes nested in other scenes. */
-			const obs_source_type type = obs_source_get_type(source);
-			if (type != OBS_SOURCE_TYPE_INPUT && type != OBS_SOURCE_TYPE_SCENE)
-				return true;
-			if (const char *name = obs_source_get_name(source))
-				obs_property_list_add_string(static_cast<obs_property_t *>(param), name, name);
-			return true;
-		},
-		itemSource);
+	/* Anything a scene item can be backed by: inputs, and scenes nested in other scenes. */
+	addNamesInOrder(itemSource, sourceNames([](obs_source_t *source) {
+				const obs_source_type type = obs_source_get_type(source);
+				return type == OBS_SOURCE_TYPE_INPUT || type == OBS_SOURCE_TYPE_SCENE;
+			}));
 
 	obs_property_t *itemMode = obs_properties_add_list(ending, "ea_item_mode",
 							   obs_module_text("EndingAction.ItemMode"),

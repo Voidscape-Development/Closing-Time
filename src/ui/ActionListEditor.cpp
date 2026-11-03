@@ -30,10 +30,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QSignalBlocker>
+#include <QStringList>
 #include <QToolButton>
 #include <QVBoxLayout>
 
 #include "ui/ToolButtons.hpp"
+#include "util/NaturalOrder.hpp"
 
 namespace closingtime {
 
@@ -224,20 +226,27 @@ void ActionListEditor::refreshChoices()
 	itemScene->clear();
 	itemScene->addItem(moduleText("EndingAction.ItemScene.All"), QString());
 
+	/* Every list here is in natural order -- "Scene 2" before "Scene 10" -- whatever OBS hands over. */
+	QStringList scenes;
 	if (char **names = obs_frontend_get_scene_names()) {
-		for (char **name = names; *name; ++name) {
-			const QString text = QString::fromUtf8(*name);
-			scene->addItem(text, text);
-			itemScene->addItem(text, text);
-		}
+		for (char **name = names; *name; ++name)
+			scenes.append(QString::fromUtf8(*name));
 		bfree(names);
 	}
+	naturalSort(scenes);
+	for (const QString &text : scenes) {
+		scene->addItem(text, text);
+		itemScene->addItem(text, text);
+	}
 
-	itemSource->clear();
-	filterSource->clear();
+	struct Names {
+		QStringList items;
+		QStringList filterable;
+	} names;
+
 	obs_enum_all_sources(
 		[](void *param, obs_source_t *source) {
-			auto *self = static_cast<ActionListEditor *>(param);
+			auto *found = static_cast<Names *>(param);
 			const char *name = obs_source_get_name(source);
 			if (!name || !*name)
 				return true;
@@ -246,13 +255,24 @@ void ActionListEditor::refreshChoices()
 			const obs_source_type kind = obs_source_get_type(source);
 			/* Anything a scene item can be backed by: inputs, and scenes nested in other scenes. */
 			if (kind == OBS_SOURCE_TYPE_INPUT || kind == OBS_SOURCE_TYPE_SCENE)
-				self->itemSource->addItem(text, text);
+				found->items.append(text);
 			/* Anything that can carry filters. */
 			if (kind != OBS_SOURCE_TYPE_FILTER && kind != OBS_SOURCE_TYPE_TRANSITION)
-				self->filterSource->addItem(text, text);
+				found->filterable.append(text);
 			return true;
 		},
-		this);
+		&names);
+
+	naturalSort(names.items);
+	naturalSort(names.filterable);
+
+	itemSource->clear();
+	for (const QString &text : names.items)
+		itemSource->addItem(text, text);
+
+	filterSource->clear();
+	for (const QString &text : names.filterable)
+		filterSource->addItem(text, text);
 
 	hotkey->clear();
 	hotkey->addItem(QString(), QString());
