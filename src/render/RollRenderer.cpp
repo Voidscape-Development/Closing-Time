@@ -1939,6 +1939,10 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		y += section.spacerHeight;
 		break;
 
+	/* Never reached: an Action section returns before anything is measured, at the top of this call. */
+	case SectionType::Action:
+		break;
+
 	case SectionType::StickyBlock: {
 		/*
 		 * The block takes up its slot in the roll exactly as its content would have inline, so
