@@ -685,6 +685,32 @@ struct StickyCollector {
 	}
 };
 
+/*
+ * Collects the Action sections' markers, the way StickyCollector collects blocks. `block` is the
+ * block the markers being collected travel with, or -1 for the roll.
+ */
+struct CueCollector {
+	QVector<ActionCuePlacement> *placements = nullptr;
+	int section = -1;
+	int block = -1;
+	/* The slot's top edge, for markers in a block, which are placed relative to it. */
+	int origin = 0;
+
+	void add(const Section &marker, int top)
+	{
+		if (!placements)
+			return;
+
+		ActionCuePlacement placement;
+		placement.top = top - origin;
+		placement.block = block;
+		placement.line = std::clamp(marker.actionLine, 0.0, 1.0);
+		placement.actions = marker.actions;
+		placement.section = section;
+		placements->append(std::move(placement));
+	}
+};
+
 struct AnimatedCollector {
 	QVector<AnimatedLogoPlacement> *placements = nullptr;
 	int section = -1;
@@ -1791,7 +1817,7 @@ RowCull rowCull(QPainter *painter, const Document &document, const Section &sect
 int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
 		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes = nullptr,
 		  AnimatedCollector *animated = nullptr, StickyCollector *sticky = nullptr,
-		  const RowLedger &ledger = RowLedger());
+		  const RowLedger &ledger = RowLedger(), CueCollector *cues = nullptr);
 
 /*
  * Lays a sticky block's children out, one under the next, and returns the height they come to.
@@ -1803,14 +1829,15 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
  */
 int layoutStickyChildren(QPainter *painter, const Section &block, const Document &document, const LogoSource &logos,
 			 BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes,
-			 AnimatedCollector *animated)
+			 AnimatedCollector *animated, CueCollector *cues = nullptr)
 {
 	int y = top;
 	for (const Section &child : block.children) {
 		if (!child.visible)
 			continue;
 
-		y += layoutSection(painter, child, document, logos, bridges, dividers, y, boxes, animated);
+		y += layoutSection(painter, child, document, logos, bridges, dividers, y, boxes, animated, nullptr,
+				   RowLedger(), cues);
 	}
 
 	return y - top;
@@ -1818,8 +1845,21 @@ int layoutStickyChildren(QPainter *painter, const Section &block, const Document
 
 int layoutSection(QPainter *painter, const Section &section, const Document &document, const LogoSource &logos,
 		  BridgeArtCache *bridges, DividerArtCache *dividers, int top, BoxCollector *boxes,
-		  AnimatedCollector *animated, StickyCollector *sticky, const RowLedger &ledger)
+		  AnimatedCollector *animated, StickyCollector *sticky, const RowLedger &ledger, CueCollector *cues)
 {
+	/*
+	 * An Action section is a marker and nothing else: no height, no padding, no panel, no picture.
+	 * Reported before anything below can measure it, so that it cannot take up room by accident.
+	 */
+	if (section.type == SectionType::Action) {
+		if (boxes && boxes->boxes)
+			boxes->boxes->append(
+				LayoutBox{LayoutBox::Kind::Action, boxes->section, QRectF(0, top, document.width, 0)});
+		if (cues)
+			cues->add(section, top);
+		return 0;
+	}
+
 	/* Reads as one call at every site whether or not anyone is collecting. */
 	const auto record = [boxes](LayoutBox::Kind kind, const QRectF &rect) {
 		if (boxes)
@@ -1899,6 +1939,10 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		y += section.spacerHeight;
 		break;
 
+	/* Never reached: an Action section returns before anything is measured, at the top of this call. */
+	case SectionType::Action:
+		break;
+
 	case SectionType::StickyBlock: {
 		/*
 		 * The block takes up its slot in the roll exactly as its content would have inline, so
@@ -1918,8 +1962,30 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			childLogos = &blockLogos;
 		}
 
+		/* Markers inside a block travel with the block, measured from its slot like its logos. */
+		CueCollector blockCues;
+		CueCollector *childCues = nullptr;
+		if (cues && sticky && sticky->placements) {
+			blockCues = CueCollector{cues->placements, cues->section,
+						 static_cast<int>(sticky->placements->size()), y};
+			childCues = &blockCues;
+		}
+
+		const int cuesBefore = childCues ? static_cast<int>(childCues->placements->size()) : 0;
 		const int height = layoutStickyChildren(nullptr, section, document, logos, bridges, dividers, y, boxes,
-							childLogos);
+							childLogos, childCues);
+
+		/*
+		 * A block that holds nothing but markers has no slot and is never placed, so there is no
+		 * block for them to travel with: they go with the roll instead, from where the block was.
+		 */
+		if (childCues && height <= 0) {
+			for (int i = cuesBefore; i < childCues->placements->size(); ++i) {
+				ActionCuePlacement &cue = (*childCues->placements)[i];
+				cue.block = -1;
+				cue.top += y;
+			}
+		}
 		record(LayoutBox::Kind::Sticky, QRectF(0, y, document.width, height));
 
 		if (sticky && height > 0) {
@@ -2612,7 +2678,8 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 				     DividerArtCache *dividers, int *totalHeight, LayoutBoxes *boxes = nullptr,
 				     QVector<AnimatedLogoPlacement> *animated = nullptr,
 				     QVector<StickyBlockPlacement> *sticky = nullptr,
-				     const std::function<bool()> *cancelled = nullptr, bool *abandoned = nullptr)
+				     const std::function<bool()> *cancelled = nullptr, bool *abandoned = nullptr,
+				     QVector<ActionCuePlacement> *cues = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
@@ -2620,6 +2687,7 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 	BoxCollector collector{boxes, -1};
 	AnimatedCollector animatedCollector{animated, -1};
 	StickyCollector stickyCollector{sticky, -1};
+	CueCollector cueCollector{cues, -1};
 
 	int y = document.leadIn;
 	for (int index = 0; index < document.sections.size(); ++index) {
@@ -2636,10 +2704,12 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 		collector.section = index;
 		animatedCollector.section = index;
 		stickyCollector.section = index;
+		cueCollector.section = index;
 		QVector<int> rows;
 		const int height = layoutSection(nullptr, section, document, logos, bridges, dividers, y,
 						 boxes ? &collector : nullptr, animated ? &animatedCollector : nullptr,
-						 sticky ? &stickyCollector : nullptr, RowLedger{&rows, nullptr});
+						 sticky ? &stickyCollector : nullptr, RowLedger{&rows, nullptr},
+						 cues ? &cueCollector : nullptr);
 		placed.append(PlacedSection{&section, index, y, height, std::move(rows)});
 		y += height;
 
@@ -2993,6 +3063,15 @@ TimelineInputs RollLayout::timelineInputs() const
 		in.logos.append(logo);
 	}
 
+	in.cues.reserve(cues.size());
+	for (const ActionCuePlacement &placement : cues) {
+		TimelineCue cue;
+		cue.top = placement.top;
+		cue.block = placement.block;
+		cue.line = placement.line * in.canvasHeight;
+		in.cues.append(cue);
+	}
+
 	return in;
 }
 
@@ -3044,9 +3123,10 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 	int total = 0;
 	bool abandoned = false;
 	const LogoSource art{logos, animations};
-	const QVector<PlacedSection> placed =
-		placeSections(document, art, &bridges, &dividers, &total, boxes ? &layout->boxes : nullptr,
-			      &layout->animatedLogos, &layout->blocks, cancelled ? &cancelled : nullptr, &abandoned);
+	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total,
+							    boxes ? &layout->boxes : nullptr, &layout->animatedLogos,
+							    &layout->blocks, cancelled ? &cancelled : nullptr,
+							    &abandoned, &layout->cues);
 	if (abandoned)
 		return nullptr;
 
@@ -3055,6 +3135,7 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 		/* Nothing is drawn over a roll that is not drawn. */
 		layout->animatedLogos.clear();
 		layout->blocks.clear();
+		layout->cues.clear();
 		return layout;
 	}
 
@@ -3118,8 +3199,12 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 	};
 
 	for (const PlacedSection &entry : placed) {
-		/* A block's slot draws nothing into the roll; the block is a layer of its own, below. */
-		if (entry.section->type == SectionType::StickyBlock)
+		/*
+		 * A block's slot draws nothing into the roll; the block is a layer of its own, below. An
+		 * Action section draws nothing anywhere, and a picture of nothing is still a picture to
+		 * rasterize, cache and upload.
+		 */
+		if (entry.section->type == SectionType::StickyBlock || entry.section->type == SectionType::Action)
 			continue;
 
 		const int margin = pictureMargin(document, *entry.section);

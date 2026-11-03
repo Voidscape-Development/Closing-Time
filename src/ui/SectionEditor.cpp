@@ -53,6 +53,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "render/AnimatedLogo.hpp"
 #include "ui/CsvImportDialog.hpp"
 #include "ui/FontPickerDialog.hpp"
+#include "ui/ActionListEditor.hpp"
 #include "ui/ToolButtons.hpp"
 
 namespace closingtime {
@@ -246,7 +247,7 @@ const QVector<SectionType> &baseSectionTypes()
 {
 	static const QVector<SectionType> types = {
 		SectionType::Title,  SectionType::Header,         SectionType::TextList,    SectionType::Bridged,
-		SectionType::Spacer, SectionType::SectionDivider, SectionType::StickyBlock,
+		SectionType::Spacer, SectionType::SectionDivider, SectionType::StickyBlock, SectionType::Action,
 	};
 	return types;
 }
@@ -1145,6 +1146,17 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	spacerHeight->setSuffix(QStringLiteral(" px"));
 	addRow(moduleText("Designer.SpacerHeight"), spacerHeight);
 
+	/*
+	 * Where down the frame an Action section fires: a share of the canvas height, like a sticky
+	 * block's pin, so it means the same place after a resize. 100 % is the bottom edge, which is the
+	 * moment the marker comes into frame.
+	 */
+	actionLine = new QSpinBox(this);
+	actionLine->setRange(0, 100);
+	actionLine->setSuffix(QStringLiteral(" %"));
+	actionLine->setToolTip(moduleText("Designer.ActionLine.Tip"));
+	addRow(moduleText("Designer.ActionLine"), actionLine);
+
 	/* Where the section sits on the canvas, which is the same set of questions for every type. */
 	placementGroup = new CollapsibleGroup(moduleText("Designer.Group.Placement"), this);
 	form = new QFormLayout();
@@ -1417,6 +1429,18 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	tabLayout(EditorTab::Content)->addWidget(dividerPiecesGroup, 1);
 
 	/*
+	 * What an Action section runs. It has nothing else to show, so this is its Content tab, the way
+	 * the piece stacks are a divider's.
+	 */
+	actionsGroup = new QGroupBox(moduleText("Designer.Actions"), this);
+	actionsGroup->setToolTip(moduleText("Designer.Actions.Tip"));
+	auto *actionsLayout = new QVBoxLayout(actionsGroup);
+	actionList = new ActionListEditor(actionsGroup);
+	actionsLayout->addWidget(actionList);
+	tabLayout(EditorTab::Content)->addWidget(actionsGroup);
+	connect(actionList, &ActionListEditor::changed, this, [this] { emitChanged(); });
+
+	/*
 	 * Whatever height is left over when a page is shorter than the tab it sits in. A QVBoxLayout
 	 * with nothing to give the slack to shares it out between the items it has, so without this a
 	 * type carrying few fields -- Title especially -- has its handful of rows spread down the page
@@ -1530,6 +1554,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(subtitleGap, &QSpinBox::valueChanged, this, notify);
 	connect(subtitleOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(spacerHeight, &QSpinBox::valueChanged, this, notify);
+	connect(actionLine, &QSpinBox::valueChanged, this, notify);
 	connect(paddingTop, &QSpinBox::valueChanged, this, notify);
 	connect(paddingBottom, &QSpinBox::valueChanged, this, notify);
 	connect(marginX, &QSpinBox::valueChanged, this, notify);
@@ -1675,6 +1700,8 @@ void SectionEditor::setSection(const Section &source)
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
 	spacerHeight->setValue(source.spacerHeight);
+	actionLine->setValue(qRound(source.actionLine * 100.0));
+	actionList->setActions(source.actions);
 	selectByData(stickyEntrance, static_cast<int>(source.stickyEntrance));
 	stickyFadeIn->setValue(source.stickyFadeIn);
 	selectByData(stickyAnchor, static_cast<int>(source.stickyAnchor));
@@ -1786,6 +1813,8 @@ Section SectionEditor::section() const
 	result.subtitleGap = subtitleGap->value();
 	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
+	result.actionLine = actionLine->value() / 100.0;
+	result.actions = actionList->actions();
 	result.stickyEntrance = static_cast<StickyEntrance>(stickyEntrance->currentData().toInt());
 	result.stickyFadeIn = stickyFadeIn->value();
 	result.stickyAnchor = static_cast<StickyAnchor>(stickyAnchor->currentData().toInt());
@@ -2235,7 +2264,17 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * three settings that would narrow it say nothing here -- see the layout, which ignores them
 	 * for this type rather than leaving two nested shares of the width to argue about.
 	 */
-	const bool placeable = type != SectionType::StickyBlock;
+	/*
+	 * An Action section is a marker with no size at all, so nothing about a box -- its width, its
+	 * margins, its padding -- has anything to act on.
+	 */
+	const bool marker = type == SectionType::Action;
+	setRowVisible(actionLine, marker);
+	actionsGroup->setVisible(marker);
+	setRowVisible(paddingTop, !marker);
+	setRowVisible(paddingBottom, !marker);
+
+	const bool placeable = type != SectionType::StickyBlock && !marker;
 	setRowVisible(marginX, placeable);
 	/* A spacer draws nothing, so there is nothing of it to nudge sideways. */
 	setRowVisible(contentOffsetX, placeable && type != SectionType::Spacer);

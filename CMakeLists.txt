@@ -89,6 +89,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/FontFiles.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/FontFiles.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/NaturalOrder.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/util/NaturalOrder.hpp"
 )
 
 target_sources(
@@ -101,6 +103,8 @@ target_sources(
     src/source/RollControl.cpp
     src/source/RollControl.hpp
     src/third-party/obs-websocket-api.h
+    src/ui/ActionListEditor.cpp
+    src/ui/ActionListEditor.hpp
     src/ui/BackgroundControls.cpp
     src/ui/BackgroundControls.hpp
     src/ui/CollapsibleGroup.cpp

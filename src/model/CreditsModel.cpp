@@ -89,6 +89,8 @@ const SectionTypeInfo kSectionTypes[] = {
 	 * itself, so a block claiming to carry text or a list would be claiming its children's.
 	 */
 	{SectionType::StickyBlock, "sticky_block", "Sticky Ending Block", false, false, false, false, false},
+	/* A marker with no content at all: it is the actions it runs. */
+	{SectionType::Action, "action", "Action", false, false, false, false, false},
 };
 
 /* Listed in the order the divider's center-piece picker presents them. */
@@ -239,6 +241,10 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 	 */
 	if (type == SectionType::StickyBlock)
 		return used;
+
+	/* An Action section has no height, so there is nothing for any panel to be the size of. */
+	if (type == SectionType::Action)
+		return {};
 
 	if (type == SectionType::SectionDivider)
 		used.append(BackgroundSlot::Divider);
@@ -1037,6 +1043,16 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "sticky_hold", stickyHold);
 	obs_data_set_bool(data, "sticky_hold_forever", stickyHoldForever);
 	obs_data_set_string(data, "sticky_release", stickyReleaseId(stickyRelease));
+	obs_data_set_double(data, "action_line", actionLine);
+	/* Written only when there are any, for the same reason a block's children are. */
+	if (!actions.isEmpty()) {
+		saveArray(
+			data, "actions", actions.size(),
+			[](obs_data_t *item, int index, const void *context) {
+				static_cast<const QVector<EndingActionConfig> *>(context)->at(index).save(item, "");
+			},
+			&actions);
+	}
 	obs_data_set_bool(data, "visible", visible);
 	obs_data_set_bool(data, "use_secondary_style", useSecondaryStyle);
 	obs_data_set_bool(data, "use_bridge_style", useBridgeStyle);
@@ -1277,6 +1293,19 @@ void Section::load(obs_data_t *data)
 	stickyHold = std::max(0.0, stickyHold);
 	stickyHoldForever = obs_data_get_bool(data, "sticky_hold_forever");
 	stickyRelease = stickyReleaseFromId(obs_data_get_string(data, "sticky_release"), StickyRelease::EndAtHold);
+	actionLine = obs_data_has_user_value(data, "action_line") ? obs_data_get_double(data, "action_line") : 1.0;
+	actionLine = std::clamp(actionLine, 0.0, 1.0);
+	actions.clear();
+	{
+		OBSDataArrayAutoRelease actionArray = obs_data_get_array(data, "actions");
+		const size_t count = actionArray ? obs_data_array_count(actionArray) : 0;
+		for (size_t i = 0; i < count; ++i) {
+			OBSDataAutoRelease item = obs_data_array_item(actionArray, i);
+			EndingActionConfig action;
+			action.load(item, "");
+			actions.append(action);
+		}
+	}
 	visible = obs_data_get_bool(data, "visible");
 	useSecondaryStyle = obs_data_get_bool(data, "use_secondary_style");
 	/* Absent in every document written before the bridge had ink of its own, all of which took the row's. */
@@ -1635,6 +1664,18 @@ Section Section::makeDefault(SectionType type)
 		section.paddingBottom = 0;
 		break;
 
+	case SectionType::Action:
+		/*
+		 * No padding, though nothing would read it: the type is a marker, and a section that saved
+		 * padding it never uses would show it the moment its type was changed to anything else.
+		 * Starts with one action to fill in, since an Action section with none does nothing.
+		 */
+		section.paddingTop = 0;
+		section.paddingBottom = 0;
+		section.actions.append(EndingActionConfig{});
+		section.actions.front().type = EndingActionType::SetSourceVisible;
+		break;
+
 	case SectionType::StickyBlock:
 		/*
 		 * A closing card to start from, because an empty block is invisible in the preview and
@@ -1732,6 +1773,16 @@ QString Section::displayLabel() const
 
 	case SectionType::Spacer:
 		return QStringLiteral("%1 (%2 px)").arg(QString::fromUtf8(sectionTypeName(type))).arg(spacerHeight);
+
+	case SectionType::Action: {
+		/* Named by what it does, since that is the only thing about it there is to tell apart. */
+		const QString name = QString::fromUtf8(sectionTypeName(type));
+		if (actions.isEmpty())
+			return QStringLiteral("%1 (none)").arg(name);
+		if (actions.size() == 1)
+			return QStringLiteral("%1: %2").arg(name, actions.front().summary());
+		return QStringLiteral("%1: %2 +%3").arg(name, actions.front().summary()).arg(actions.size() - 1);
+	}
 
 	case SectionType::StickyBlock:
 		/*

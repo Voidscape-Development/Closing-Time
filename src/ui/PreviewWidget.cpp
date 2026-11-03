@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ui/PreviewWidget.hpp"
 
 #include <QCoreApplication>
+#include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPointer>
@@ -26,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace closingtime {
@@ -72,6 +74,8 @@ QColor layoutBoxColor(LayoutBox::Kind kind)
 		return QColor(180, 140, 255);
 	case LayoutBox::Kind::Sticky:
 		return QColor(255, 90, 90);
+	case LayoutBox::Kind::Action:
+		return QColor(80, 230, 230);
 	case LayoutBox::Kind::Text:
 	default:
 		return QColor(255, 120, 200);
@@ -283,6 +287,19 @@ void PreviewWidget::mousePressEvent(QMouseEvent *event)
 	const qreal scale = scaleFactor();
 	const QPointF at((event->position().x() - kCanvasInset) / scale, (event->position().y() + scroll) / scale);
 
+	/*
+	 * A marker has no height to click inside, so a click a few pixels either side of its line picks
+	 * it -- ahead of the sections, since it always sits on the edge of one of them.
+	 */
+	constexpr qreal kMarkerReach = 5.0;
+	for (const ActionCuePlacement &cue : layout->cues) {
+		if (std::abs((markerTop(cue) - at.y()) * scale) <= kMarkerReach) {
+			emit sectionClicked(cue.section);
+			event->accept();
+			return;
+		}
+	}
+
 	for (const LayoutBox &box : layout->boxes) {
 		if ((box.kind == LayoutBox::Kind::Section || box.kind == LayoutBox::Kind::Sticky) &&
 		    box.rect.contains(at)) {
@@ -444,6 +461,7 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 	/* Under the canvas frame, which has to stay readable over whatever the overlay draws. */
 	if (layoutBoxesVisible)
 		paintLayoutBoxes(painter, canvasColumn, scale);
+	paintActionMarkers(painter, canvasColumn, scale);
 
 	painter.setBrush(Qt::NoBrush);
 
@@ -519,6 +537,68 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 	draw(LayoutBox::Kind::Bridge);
 	draw(LayoutBox::Kind::Divider);
 	draw(LayoutBox::Kind::Sticky);
+
+	painter.restore();
+}
+
+double PreviewWidget::markerTop(const ActionCuePlacement &cue) const
+{
+	if (layout && cue.block >= 0 && cue.block < layout->blocks.size())
+		return layout->blocks.at(cue.block).rect.top() + cue.top;
+	return cue.top;
+}
+
+/*
+ * Draws every Action section as a dashed line across the canvas, labeled with what it does.
+ *
+ * Drawn whether or not the layout overlay is on: a marker draws nothing into the roll, so without
+ * this the only sign of one in the preview would be the absence of anything at all, and an action
+ * nobody can see is one nobody can place. The line is where the marker is in the roll, not the line
+ * it fires on -- that one is a place on the frame, and the preview is the whole roll end to end.
+ */
+void PreviewWidget::paintActionMarkers(QPainter &painter, const QRect &canvasColumn, qreal scale) const
+{
+	if (!layout || layout->cues.isEmpty())
+		return;
+
+	painter.save();
+	painter.setRenderHint(QPainter::Antialiasing, false);
+
+	QFont font = painter.font();
+	font.setPointSizeF(std::max(7.0, font.pointSizeF() * 0.85));
+	painter.setFont(font);
+	const QFontMetrics metrics(font);
+
+	for (const ActionCuePlacement &cue : layout->cues) {
+		const qreal y = std::round(markerTop(cue) * scale - scroll) + 0.5;
+		if (y < -metrics.height() || y > height() + metrics.height())
+			continue;
+
+		const bool dim = highlightedSection >= 0 && cue.section != highlightedSection;
+		QColor color = layoutBoxColor(LayoutBox::Kind::Action);
+		color.setAlpha(dim ? 110 : 255);
+
+		QPen pen(color, 1);
+		pen.setStyle(Qt::DashLine);
+		painter.setPen(pen);
+		painter.drawLine(QPointF(canvasColumn.left(), y), QPointF(canvasColumn.right(), y));
+
+		QString label = QStringLiteral("▶ ");
+		if (cue.actions.isEmpty())
+			label += QString::fromUtf8(sectionTypeName(SectionType::Action));
+		else if (cue.actions.size() == 1)
+			label += cue.actions.front().summary();
+		else
+			label +=
+				QStringLiteral("%1 +%2").arg(cue.actions.front().summary()).arg(cue.actions.size() - 1);
+
+		const QString text = metrics.elidedText(label, Qt::ElideRight, std::max(40, canvasColumn.width() - 12));
+		const QRectF tag(canvasColumn.left() + 4, y - metrics.height() - 2, metrics.horizontalAdvance(text) + 8,
+				 metrics.height() + 2);
+		painter.fillRect(tag, QColor(0, 0, 0, dim ? 110 : 180));
+		painter.setPen(color);
+		painter.drawText(tag.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
+	}
 
 	painter.restore();
 }

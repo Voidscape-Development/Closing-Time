@@ -110,6 +110,27 @@ Section distinctive(SectionType type)
 	section.stickyHoldForever = true;
 	section.stickyRelease = StickyRelease::ResumeEndAtHold;
 
+	section.actionLine = 0.35;
+	section.actions.clear();
+	{
+		EndingActionConfig show;
+		show.type = EndingActionType::SetSourceVisible;
+		show.delay = 1.5;
+		show.itemSceneName = QStringLiteral("Main");
+		show.itemSourceName = QStringLiteral("Backdrop");
+		show.itemMode = FilterToggleMode::Toggle;
+		section.actions.append(show);
+
+		EndingActionConfig filter;
+		filter.type = EndingActionType::SetFilterEnabled;
+		filter.filterSourceName = QStringLiteral("Camera");
+		filter.filterName = QStringLiteral("Blur");
+		filter.filterMode = FilterToggleMode::Disable;
+		filter.hotkeyName = QStringLiteral("name");
+		filter.hotkeyPartner = QStringLiteral("partner");
+		section.actions.append(filter);
+	}
+
 	/*
 	 * Two slots rather than one, and one of them bound to a preset: the pair is what catches a
 	 * loader that reads the panels but flattens them onto a single slot, and a binding that is
@@ -227,6 +248,8 @@ void compare(const Section &loaded, const Section &original)
 	checkNear(loaded.stickyHold, original.stickyHold, 0.001, "stickyHold");
 	check(loaded.stickyHoldForever == original.stickyHoldForever, "stickyHoldForever");
 	check(loaded.stickyRelease == original.stickyRelease, "stickyRelease");
+	checkNear(loaded.actionLine, original.actionLine, 0.001, "actionLine");
+	check(loaded.actions == original.actions, "actions");
 
 	checkEq(loaded.backgrounds.size(), original.backgrounds.size(), "background slot count");
 	for (const BackgroundSlot slot : allBackgroundSlots()) {

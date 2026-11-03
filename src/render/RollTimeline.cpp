@@ -60,6 +60,10 @@ RollTimeline::RollTimeline(const TimelineInputs &inputs) : in(inputs)
 	logoStarts.resize(in.logos.size());
 	for (int i = 0; i < in.logos.size(); ++i)
 		logoStarts[i] = logoStart(i);
+
+	cueTime.resize(in.cues.size());
+	for (int i = 0; i < in.cues.size(); ++i)
+		cueTime[i] = cueCrossing(i);
 }
 
 double RollTimeline::stripOffsetAt(double t) const
@@ -363,6 +367,49 @@ double RollTimeline::logoStart(int index) const
 	return std::max(0.0, logo.top / speed);
 }
 
+/*
+ * When a marker first reaches its line, coming up from below.
+ *
+ * In the roll that is a straight line in time: the marker comes in at the bottom of the frame and
+ * climbs at the scroll speed until the strip stops. In a block it climbs with the block until the
+ * block pins, sits there for the hold, and climbs again once the block is let go -- so a marker the
+ * pin leaves short of its line crosses it on the way out, or never, for a card that never leaves.
+ */
+double RollTimeline::cueCrossing(int index) const
+{
+	const TimelineCue &cue = in.cues.at(index);
+	if (speed <= 0.0)
+		return kNever;
+
+	const double stops = std::min(travel, finish);
+
+	if (cue.block < 0 || cue.block >= in.blocks.size()) {
+		const double at = std::max(0.0, (in.canvasHeight + cue.top - cue.line) / speed);
+		return at <= stops ? at : kNever;
+	}
+
+	const TimelineBlock &block = in.blocks.at(cue.block);
+	const BlockSchedule &times = schedule.at(cue.block);
+	const double pinned = block.pinnedTop + cue.top;
+
+	if (!stickyEntranceWaitsForRoll(block.entrance)) {
+		/* Traveling with the roll, it crosses on the way up if the pin is past the line. */
+		const double rising = std::max(0.0, (in.canvasHeight + block.slotTop + cue.top - cue.line) / speed);
+		if (pinned <= cue.line && rising <= stops)
+			return rising;
+	} else if (times.enter != kNever && pinned <= cue.line) {
+		/* A card that comes up already past the line crosses it as it comes up. */
+		return times.enter;
+	}
+
+	if (times.release == kNever)
+		return kNever;
+
+	/* Let go: it climbs from wherever it was at the release. */
+	const double from = blockTopAt(cue.block, times.release) + cue.top;
+	return times.release + std::max(0.0, from - cue.line) / speed;
+}
+
 BlockFrame RollTimeline::blockAt(int index, double t) const
 {
 	const TimelineBlock &block = in.blocks.at(index);
@@ -473,6 +520,49 @@ RollFrame RollTimeline::evaluateScrubbed(double offset) const
 	}
 
 	return frame;
+}
+
+CueSweep RollTimeline::sweep(const QVector<double> &times, double from, double to) const
+{
+	CueSweep result;
+	if (to < from)
+		return result;
+
+	const auto collect = [&times](QVector<int> *into, double after, double upTo) {
+		for (int i = 0; i < times.size(); ++i) {
+			const double at = times.at(i);
+			if (at == kNever || !std::isfinite(at))
+				continue;
+			if (at > after && at <= upTo)
+				into->append(i);
+		}
+	};
+
+	const bool looping = in.loop && travel > 0.0 && travel != kNever;
+	if (!looping) {
+		collect(&result.before, from < 0.0 ? -kNever : from, to);
+		return result;
+	}
+
+	const double fromPass = from < 0.0 ? 0.0 : std::floor(from / travel);
+	const double toPass = std::floor(std::max(0.0, to) / travel);
+	const double fromLocal = from < 0.0 ? -kNever : from - fromPass * travel;
+	const double toLocal = std::max(0.0, to) - toPass * travel;
+
+	if (toPass == fromPass) {
+		collect(&result.before, fromLocal, toLocal);
+		return result;
+	}
+
+	/*
+	 * Gone round. Everything left in the pass that ended -- past the end of it too, for a delay that
+	 * outlasts the roll -- and then the new pass from its start. A stall long enough to skip whole
+	 * passes is counted as one wrap: nobody watched the ones in between.
+	 */
+	collect(&result.before, fromLocal, kNever);
+	result.wrapped = true;
+	collect(&result.after, -kNever, toLocal);
+	return result;
 }
 
 double RollTimeline::rebase(double t, const RollTimeline &next) const

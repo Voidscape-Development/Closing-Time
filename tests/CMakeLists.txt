@@ -14,6 +14,7 @@ target_sources(
     harness/Probe.cpp
     harness/Probe.hpp
     harness/main.cpp
+    suites/Actions.cpp
     suites/AnimatedLogos.cpp
     suites/Backgrounds.cpp
     suites/BridgedRows.cpp
@@ -22,6 +23,7 @@ target_sources(
     suites/Layers.cpp
     suites/Layout.cpp
     suites/LogoRows.cpp
+    suites/NaturalOrder.cpp
     suites/Persistence.cpp
     suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp

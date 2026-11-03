@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <cstring>
 #include <iterator>
+#include <string>
 
 namespace closingtime {
 
@@ -45,6 +46,7 @@ const IdName kEndingActions[] = {
 	{EndingActionType::RestartRoll, "restart", "Restart The Roll"},
 	{EndingActionType::FireHotkey, "fire_hotkey", "Trigger A Hotkey"},
 	{EndingActionType::SetFilterEnabled, "set_filter_enabled", "Toggle A Filter"},
+	{EndingActionType::SetSourceVisible, "set_source_visible", "Show/Hide A Source"},
 };
 
 /*
@@ -54,7 +56,22 @@ const IdName kEndingActions[] = {
 struct DeferredAction {
 	EndingActionConfig config;
 	OBSSourceAutoRelease self;
+	/* Null for an ending action, which nothing ever puts back. */
+	std::shared_ptr<ActionJournal> journal;
 };
+
+bool applyMode(FilterToggleMode mode, bool current)
+{
+	switch (mode) {
+	case FilterToggleMode::Enable:
+		return true;
+	case FilterToggleMode::Disable:
+		return false;
+	case FilterToggleMode::Toggle:
+	default:
+		return !current;
+	}
+}
 
 bool hideMatchingItems(obs_scene_t * /*scene*/, obs_sceneitem_t *item, void *param)
 {
@@ -95,43 +112,118 @@ void switchScene(const QString &sceneName)
 
 	OBSSourceAutoRelease scene = obs_get_source_by_name(sceneName.toUtf8().constData());
 	if (!scene) {
-		obs_log(LOG_WARNING, "ending action: scene '%s' not found", sceneName.toUtf8().constData());
+		obs_log(LOG_WARNING, "action: scene '%s' not found", sceneName.toUtf8().constData());
 		return;
 	}
 
 	obs_frontend_set_current_scene(scene);
 }
 
-void setFilterEnabled(const EndingActionConfig &config)
+void setFilterEnabled(const EndingActionConfig &config, ActionJournal *journal)
 {
 	if (config.filterSourceName.isEmpty() || config.filterName.isEmpty())
 		return;
 
 	OBSSourceAutoRelease target = obs_get_source_by_name(config.filterSourceName.toUtf8().constData());
 	if (!target) {
-		obs_log(LOG_WARNING, "ending action: source '%s' not found",
-			config.filterSourceName.toUtf8().constData());
+		obs_log(LOG_WARNING, "action: source '%s' not found", config.filterSourceName.toUtf8().constData());
 		return;
 	}
 
 	OBSSourceAutoRelease filter = obs_source_get_filter_by_name(target, config.filterName.toUtf8().constData());
 	if (!filter) {
-		obs_log(LOG_WARNING, "ending action: filter '%s' not found on '%s'",
-			config.filterName.toUtf8().constData(), config.filterSourceName.toUtf8().constData());
+		obs_log(LOG_WARNING, "action: filter '%s' not found on '%s'", config.filterName.toUtf8().constData(),
+			config.filterSourceName.toUtf8().constData());
 		return;
 	}
 
-	switch (config.filterMode) {
-	case FilterToggleMode::Enable:
-		obs_source_set_enabled(filter, true);
-		break;
-	case FilterToggleMode::Disable:
-		obs_source_set_enabled(filter, false);
-		break;
-	case FilterToggleMode::Toggle:
-		obs_source_set_enabled(filter, !obs_source_enabled(filter));
-		break;
+	const bool before = obs_source_enabled(filter);
+	const bool after = applyMode(config.filterMode, before);
+	if (after == before)
+		return;
+
+	if (journal)
+		journal->record(ActionJournal::Entry::Kind::Filter, filter, 0, before);
+	obs_source_set_enabled(filter, after);
+}
+
+struct VisibilityChange {
+	obs_source_t *target;
+	FilterToggleMode mode;
+	ActionJournal *journal;
+	int matched;
+};
+
+bool setMatchingItemsVisible(obs_scene_t *scene, obs_sceneitem_t *item, void *param)
+{
+	auto *change = static_cast<VisibilityChange *>(param);
+
+	if (obs_sceneitem_is_group(item))
+		obs_sceneitem_group_enum_items(item, setMatchingItemsVisible, param);
+
+	if (obs_sceneitem_get_source(item) != change->target)
+		return true;
+
+	++change->matched;
+	const bool before = obs_sceneitem_visible(item);
+	const bool after = applyMode(change->mode, before);
+	if (after == before)
+		return true;
+
+	/*
+	 * Recorded against the scene the item actually sits in -- a group's own scene for an item inside
+	 * one -- because an item id is only unique within that scene.
+	 */
+	if (change->journal)
+		change->journal->record(ActionJournal::Entry::Kind::SceneItem, obs_scene_get_source(scene),
+					obs_sceneitem_get_id(item), before);
+	obs_sceneitem_set_visible(item, after);
+	return true;
+}
+
+/*
+ * Shows, hides or toggles every scene item backed by the named source: in the named scene, or in
+ * every scene when none is named. Groups are walked into either way, since a source inside a group
+ * is still in the scene as far as anyone looking at it is concerned.
+ */
+void setSourceVisible(const EndingActionConfig &config, ActionJournal *journal)
+{
+	if (config.itemSourceName.isEmpty())
+		return;
+
+	OBSSourceAutoRelease target = obs_get_source_by_name(config.itemSourceName.toUtf8().constData());
+	if (!target) {
+		obs_log(LOG_WARNING, "action: source '%s' not found", config.itemSourceName.toUtf8().constData());
+		return;
 	}
+
+	VisibilityChange change{target, config.itemMode, journal, 0};
+
+	if (config.itemSceneName.isEmpty()) {
+		obs_enum_scenes(
+			[](void *param, obs_source_t *source) {
+				if (obs_scene_t *scene = obs_scene_from_source(source))
+					obs_scene_enum_items(scene, setMatchingItemsVisible, param);
+				return true;
+			},
+			&change);
+	} else {
+		OBSSourceAutoRelease sceneSource = obs_get_source_by_name(config.itemSceneName.toUtf8().constData());
+		obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+		if (!scene)
+			scene = sceneSource ? obs_group_from_source(sceneSource) : nullptr;
+		if (!scene) {
+			obs_log(LOG_WARNING, "action: scene '%s' not found", config.itemSceneName.toUtf8().constData());
+			return;
+		}
+		obs_scene_enum_items(scene, setMatchingItemsVisible, &change);
+	}
+
+	if (change.matched == 0)
+		obs_log(LOG_WARNING, "action: source '%s' is not in %s", config.itemSourceName.toUtf8().constData(),
+			config.itemSceneName.isEmpty()
+				? "any scene"
+				: qUtf8Printable(QStringLiteral("scene '%1'").arg(config.itemSceneName)));
 }
 
 struct HotkeySearch {
@@ -177,7 +269,7 @@ void fireHotkey(const EndingActionConfig &config)
 	obs_enum_hotkeys(matchHotkey, &search);
 
 	if (search.id == OBS_INVALID_HOTKEY_ID) {
-		obs_log(LOG_WARNING, "ending action: hotkey '%s' not found", name.constData());
+		obs_log(LOG_WARNING, "action: hotkey '%s' not found", name.constData());
 		return;
 	}
 
@@ -237,7 +329,10 @@ void runOnUiThread(void *param)
 		fireHotkey(config);
 		break;
 	case EndingActionType::SetFilterEnabled:
-		setFilterEnabled(config);
+		setFilterEnabled(config, deferred->journal.get());
+		break;
+	case EndingActionType::SetSourceVisible:
+		setSourceVisible(config, deferred->journal.get());
 		break;
 	}
 
@@ -336,27 +431,54 @@ void EndingActionConfig::decodeHotkey(const QString &encoded, QString *name, QSt
 	*partner = encoded.mid(split + 1);
 }
 
-void EndingActionConfig::save(obs_data_t *data) const
+namespace {
+
+/* `prefix` followed by `key`, for the keys an action is stored under. */
+std::string keyOf(const char *prefix, const char *key)
 {
-	obs_data_set_string(data, "ea_type", endingActionId(type));
-	obs_data_set_double(data, "ea_delay", delay);
-	obs_data_set_string(data, "ea_scene", sceneName.toUtf8().constData());
-	obs_data_set_string(data, "ea_filter_source", filterSourceName.toUtf8().constData());
-	obs_data_set_string(data, "ea_filter_name", filterName.toUtf8().constData());
-	obs_data_set_string(data, "ea_filter_mode", filterToggleModeId(filterMode));
-	obs_data_set_string(data, "ea_hotkey", encodeHotkey(hotkeyName, hotkeyPartner).toUtf8().constData());
+	return std::string(prefix ? prefix : "") + key;
 }
 
-void EndingActionConfig::load(obs_data_t *data)
-{
-	type = endingActionFromId(obs_data_get_string(data, "ea_type"), EndingActionType::None);
-	delay = obs_data_get_double(data, "ea_delay");
-	sceneName = QString::fromUtf8(obs_data_get_string(data, "ea_scene"));
-	filterSourceName = QString::fromUtf8(obs_data_get_string(data, "ea_filter_source"));
-	filterName = QString::fromUtf8(obs_data_get_string(data, "ea_filter_name"));
-	filterMode = filterToggleModeFromId(obs_data_get_string(data, "ea_filter_mode"), FilterToggleMode::Enable);
+} // namespace
 
-	decodeHotkey(QString::fromUtf8(obs_data_get_string(data, "ea_hotkey")), &hotkeyName, &hotkeyPartner);
+void EndingActionConfig::save(obs_data_t *data, const char *prefix) const
+{
+	const auto key = [prefix](const char *name) {
+		return keyOf(prefix, name);
+	};
+
+	obs_data_set_string(data, key("type").c_str(), endingActionId(type));
+	obs_data_set_double(data, key("delay").c_str(), delay);
+	obs_data_set_string(data, key("scene").c_str(), sceneName.toUtf8().constData());
+	obs_data_set_string(data, key("filter_source").c_str(), filterSourceName.toUtf8().constData());
+	obs_data_set_string(data, key("filter_name").c_str(), filterName.toUtf8().constData());
+	obs_data_set_string(data, key("filter_mode").c_str(), filterToggleModeId(filterMode));
+	obs_data_set_string(data, key("hotkey").c_str(), encodeHotkey(hotkeyName, hotkeyPartner).toUtf8().constData());
+	obs_data_set_string(data, key("item_scene").c_str(), itemSceneName.toUtf8().constData());
+	obs_data_set_string(data, key("item_source").c_str(), itemSourceName.toUtf8().constData());
+	obs_data_set_string(data, key("item_mode").c_str(), filterToggleModeId(itemMode));
+}
+
+void EndingActionConfig::load(obs_data_t *data, const char *prefix)
+{
+	const auto key = [prefix](const char *name) {
+		return keyOf(prefix, name);
+	};
+
+	type = endingActionFromId(obs_data_get_string(data, key("type").c_str()), EndingActionType::None);
+	delay = obs_data_get_double(data, key("delay").c_str());
+	sceneName = QString::fromUtf8(obs_data_get_string(data, key("scene").c_str()));
+	filterSourceName = QString::fromUtf8(obs_data_get_string(data, key("filter_source").c_str()));
+	filterName = QString::fromUtf8(obs_data_get_string(data, key("filter_name").c_str()));
+	filterMode =
+		filterToggleModeFromId(obs_data_get_string(data, key("filter_mode").c_str()), FilterToggleMode::Enable);
+
+	decodeHotkey(QString::fromUtf8(obs_data_get_string(data, key("hotkey").c_str())), &hotkeyName, &hotkeyPartner);
+
+	itemSceneName = QString::fromUtf8(obs_data_get_string(data, key("item_scene").c_str()));
+	itemSourceName = QString::fromUtf8(obs_data_get_string(data, key("item_source").c_str()));
+	itemMode =
+		filterToggleModeFromId(obs_data_get_string(data, key("item_mode").c_str()), FilterToggleMode::Enable);
 
 	if (delay < 0.0)
 		delay = 0.0;
@@ -367,19 +489,149 @@ void EndingActionConfig::defaults(obs_data_t *data)
 	obs_data_set_default_string(data, "ea_type", "none");
 	obs_data_set_default_double(data, "ea_delay", 0.0);
 	obs_data_set_default_string(data, "ea_filter_mode", "enable");
+	obs_data_set_default_string(data, "ea_item_mode", "enable");
 }
 
-void EndingActionConfig::execute(obs_source_t *self) const
+void EndingActionConfig::execute(obs_source_t *self, const std::shared_ptr<ActionJournal> &journal) const
 {
+	if (type == EndingActionType::None)
+		return;
+
 	auto *deferred = new DeferredAction();
 	deferred->config = *this;
 	deferred->self = obs_source_get_ref(self);
+	if (isRevertible(type))
+		deferred->journal = journal;
 
 	/*
-	 * Ending actions are decided on the graphics thread but touch the frontend and the
-	 * scene graph, so they are always handed to the UI queue rather than run in place.
+	 * Actions are decided on the graphics thread but touch the frontend and the scene graph, so
+	 * they are always handed to the UI queue rather than run in place.
 	 */
 	obs_queue_task(OBS_TASK_UI, runOnUiThread, deferred, false);
+}
+
+bool EndingActionConfig::isRevertible(EndingActionType type)
+{
+	/*
+	 * HideSelf is deliberately not among them, though it is a visibility change: a roll that hides
+	 * itself is reset by being hidden when it starts on show, and a revert that showed it again
+	 * would start it again -- straight back into the action that hid it.
+	 */
+	return type == EndingActionType::SetFilterEnabled || type == EndingActionType::SetSourceVisible;
+}
+
+QString EndingActionConfig::summary() const
+{
+	const auto modeWord = [](FilterToggleMode mode, const char *on, const char *off) {
+		switch (mode) {
+		case FilterToggleMode::Enable:
+			return QString::fromUtf8(on);
+		case FilterToggleMode::Disable:
+			return QString::fromUtf8(off);
+		case FilterToggleMode::Toggle:
+		default:
+			return QStringLiteral("Toggle");
+		}
+	};
+
+	switch (type) {
+	case EndingActionType::SwitchScene:
+		if (!sceneName.isEmpty())
+			return QStringLiteral("Switch to %1").arg(sceneName);
+		break;
+	case EndingActionType::FireHotkey:
+		if (!hotkeyName.isEmpty())
+			return QStringLiteral("Hotkey %1").arg(hotkeyName);
+		break;
+	case EndingActionType::SetFilterEnabled:
+		if (!filterName.isEmpty())
+			return QStringLiteral("%1 %2").arg(modeWord(filterMode, "Enable", "Disable"), filterName);
+		break;
+	case EndingActionType::SetSourceVisible:
+		if (!itemSourceName.isEmpty())
+			return QStringLiteral("%1 %2").arg(modeWord(itemMode, "Show", "Hide"), itemSourceName);
+		break;
+	default:
+		break;
+	}
+
+	return QString::fromUtf8(endingActionName(type));
+}
+
+ActionJournal::~ActionJournal()
+{
+	for (const Entry &entry : entries)
+		obs_weak_source_release(entry.target);
+}
+
+void ActionJournal::record(Entry::Kind kind, obs_source_t *target, int64_t itemId, bool previous)
+{
+	if (!target)
+		return;
+
+	Entry entry;
+	entry.kind = kind;
+	entry.target = obs_source_get_weak_source(target);
+	entry.itemId = itemId;
+	entry.previous = previous;
+
+	std::lock_guard<std::mutex> lock(mutex);
+	entries.push_back(entry);
+}
+
+bool ActionJournal::empty() const
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	return entries.empty();
+}
+
+void ActionJournal::revert(const std::shared_ptr<ActionJournal> &self)
+{
+	if (!self)
+		return;
+
+	auto *held = new std::shared_ptr<ActionJournal>(self);
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			auto *journal = static_cast<std::shared_ptr<ActionJournal> *>(param);
+			(*journal)->revertNow();
+			delete journal;
+		},
+		held, false);
+}
+
+void ActionJournal::revertNow()
+{
+	std::vector<Entry> taken;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		taken.swap(entries);
+	}
+
+	/* Newest first, so something changed twice ends up as it was before the first change. */
+	for (auto it = taken.rbegin(); it != taken.rend(); ++it) {
+		OBSSourceAutoRelease target = obs_weak_source_get_source(it->target);
+		obs_weak_source_release(it->target);
+		if (!target)
+			continue;
+
+		switch (it->kind) {
+		case Entry::Kind::Filter:
+			obs_source_set_enabled(target, it->previous);
+			break;
+		case Entry::Kind::SceneItem: {
+			obs_scene_t *scene = obs_scene_from_source(target);
+			if (!scene)
+				scene = obs_group_from_source(target);
+			if (!scene)
+				break;
+			if (obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, it->itemId))
+				obs_sceneitem_set_visible(item, it->previous);
+			break;
+		}
+		}
+	}
 }
 
 void emitCreditsFinished(obs_source_t *self)
