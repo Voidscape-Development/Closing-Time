@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QByteArray>
 #include <QHash>
+#include <QPair>
 #include <QSet>
 #include <QString>
 
@@ -247,6 +248,16 @@ struct CreditsSourceData {
 	bool finished = false;
 	bool actionPending = false;
 	double actionRemaining = 0.0;
+	/*
+	 * Action sections. `cueClock` is the roll time the actions have been run up to -- negative before
+	 * the roll has started, so that one due at the very first moment still runs. `cuesFired` is set
+	 * once any of them has run since the roll was last armed, which is what says the journal may
+	 * have something in it to put back.
+	 */
+	double cueClock = -1.0;
+	bool cuesFired = false;
+	/* What the actions changed, so a restart can put it back; see ActionJournal. */
+	std::shared_ptr<ActionJournal> journal = std::make_shared<ActionJournal>();
 	/*
 	 * The live timeline's finish time, copied here whenever the timeline changes so that a thread
 	 * other than the graphics thread can report it. Infinite for a loop or a hold that never ends.
@@ -772,6 +783,14 @@ void commitStaged(CreditsSourceData *data)
 
 	std::lock_guard<std::mutex> lock(data->stateMutex);
 	data->duration = data->timeline.finishTime();
+
+	/*
+	 * An edit re-arms the roll, and the layout for it lands a little after: anything this layout
+	 * would have run in that moment is caught up on the next tick rather than skipped -- unless
+	 * something has already run since the roll was armed, which can only have been the old layout's.
+	 */
+	if (!data->cuesFired)
+		data->cueClock = -1.0;
 }
 
 /*
@@ -814,6 +833,17 @@ void resetRollLocked(CreditsSourceData *data)
 	data->finished = false;
 	data->actionPending = false;
 	data->actionRemaining = 0.0;
+
+	/*
+	 * A roll going back to its start puts back what its Action sections changed: a restart is a
+	 * fresh pass and should find things as the last one did. Queued behind any action still waiting
+	 * to run, so nothing slips in after the revert.
+	 */
+	data->cueClock = -1.0;
+	if (data->cuesFired) {
+		data->cuesFired = false;
+		data->journal->revert(data->journal);
+	}
 }
 
 /* Callers must hold stateMutex. */
@@ -863,6 +893,84 @@ double tickSeconds(float seconds)
 	const double interval = static_cast<double>(ovi.fps_den) / static_cast<double>(ovi.fps_num);
 	const bool withinJitter = seconds > interval * 0.5 && seconds < interval * 1.5;
 	return withinJitter ? interval : static_cast<double>(seconds);
+}
+
+/*
+ * Runs whatever Action sections the roll has reached since the last tick.
+ *
+ * Each action is a moment in roll time -- its marker crossing its line, plus its own delay -- so the
+ * whole question is which moments the clock passed over, which the timeline answers. A loop that
+ * went round puts back what the pass that ended changed before the new pass runs anything.
+ *
+ * Graphics thread only.
+ */
+void runCues(CreditsSourceData *data)
+{
+	if (!data->live || data->live->cues.isEmpty())
+		return;
+
+	double from = 0.0;
+	double to = 0.0;
+	{
+		std::lock_guard<std::mutex> lock(data->stateMutex);
+		if (data->phase != Phase::Running)
+			return;
+		from = data->cueClock;
+		to = data->rollTime;
+		data->cueClock = to;
+	}
+
+	if (to <= from)
+		return;
+
+	/* One moment per action, flattened, with the cue and action it came from beside it. */
+	const QVector<ActionCuePlacement> &cues = data->live->cues;
+	const QVector<double> &crossings = data->timeline.cueTimes();
+	QVector<double> times;
+	QVector<QPair<int, int>> owners;
+	for (int cue = 0; cue < cues.size() && cue < crossings.size(); ++cue) {
+		for (int action = 0; action < cues.at(cue).actions.size(); ++action) {
+			const double at = crossings.at(cue);
+			times.append(at == RollTimeline::kNever
+					     ? at
+					     : at + std::max(0.0, cues.at(cue).actions.at(action).delay));
+			owners.append({cue, action});
+		}
+	}
+
+	const CueSweep sweep = data->timeline.sweep(times, from, to);
+	if (sweep.before.isEmpty() && sweep.after.isEmpty() && !sweep.wrapped)
+		return;
+
+	/* In the order they fall due, so two actions on one target land in the order the roll reached them. */
+	const auto inOrder = [&times](QVector<int> hits) {
+		std::stable_sort(hits.begin(), hits.end(),
+				 [&times](int a, int b) { return times.at(a) < times.at(b); });
+		return hits;
+	};
+	const auto fire = [&](const QVector<int> &hits) {
+		for (int hit : inOrder(hits)) {
+			const QPair<int, int> &owner = owners.at(hit);
+			cues.at(owner.first).actions.at(owner.second).execute(data->source, data->journal);
+		}
+		if (!hits.isEmpty()) {
+			std::lock_guard<std::mutex> lock(data->stateMutex);
+			data->cuesFired = true;
+		}
+	};
+
+	fire(sweep.before);
+	if (sweep.wrapped) {
+		bool revert = false;
+		{
+			std::lock_guard<std::mutex> lock(data->stateMutex);
+			revert = data->cuesFired;
+			data->cuesFired = false;
+		}
+		if (revert)
+			data->journal->revert(data->journal);
+	}
+	fire(sweep.after);
 }
 
 /*
@@ -918,6 +1026,8 @@ void advance(CreditsSourceData *data, double seconds)
 			}
 		}
 	}
+
+	runCues(data);
 
 	/* Signals and actions run outside the lock so their handlers can call back in. */
 	if (finishedNow) {
@@ -1002,6 +1112,8 @@ void update(void *raw, obs_data_t *settings)
 		{
 			std::lock_guard<std::mutex> lock(data->stateMutex);
 			data->rollTime = data->timeline.rebase(data->rollTime, next);
+			if (data->cueClock >= 0.0)
+				data->cueClock = data->timeline.rebase(data->cueClock, next);
 			data->duration = next.finishTime();
 		}
 		data->timeline = std::move(next);
@@ -1589,6 +1701,9 @@ bool onEndingActionChanged(obs_properties_t *props, obs_property_t *, obs_data_t
 	setVisible("ea_filter_name", type == EndingActionType::SetFilterEnabled);
 	setVisible("ea_filter_mode", type == EndingActionType::SetFilterEnabled);
 	setVisible("ea_hotkey", type == EndingActionType::FireHotkey);
+	setVisible("ea_item_scene", type == EndingActionType::SetSourceVisible);
+	setVisible("ea_item_source", type == EndingActionType::SetSourceVisible);
+	setVisible("ea_item_mode", type == EndingActionType::SetSourceVisible);
 	setVisible("ea_delay", type != EndingActionType::None);
 
 	return true;
@@ -1746,6 +1861,35 @@ obs_properties_t *getProperties(void *raw)
 							     obs_module_text("EndingAction.Hotkey"),
 							     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	fillHotkeyList(hotkeyList);
+
+	obs_property_t *itemScene = obs_properties_add_list(ending, "ea_item_scene",
+							    obs_module_text("EndingAction.ItemScene"),
+							    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(itemScene, obs_module_text("EndingAction.ItemScene.All"), "");
+	fillSceneList(itemScene);
+
+	obs_property_t *itemSource = obs_properties_add_list(ending, "ea_item_source",
+							     obs_module_text("EndingAction.ItemSource"),
+							     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(itemSource, "", "");
+	obs_enum_all_sources(
+		[](void *param, obs_source_t *source) {
+			/* Anything a scene item can be backed by: inputs, and scenes nested in other scenes. */
+			const obs_source_type type = obs_source_get_type(source);
+			if (type != OBS_SOURCE_TYPE_INPUT && type != OBS_SOURCE_TYPE_SCENE)
+				return true;
+			if (const char *name = obs_source_get_name(source))
+				obs_property_list_add_string(static_cast<obs_property_t *>(param), name, name);
+			return true;
+		},
+		itemSource);
+
+	obs_property_t *itemMode = obs_properties_add_list(ending, "ea_item_mode",
+							   obs_module_text("EndingAction.ItemMode"),
+							   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(itemMode, obs_module_text("EndingAction.ItemMode.Show"), "enable");
+	obs_property_list_add_string(itemMode, obs_module_text("EndingAction.ItemMode.Hide"), "disable");
+	obs_property_list_add_string(itemMode, obs_module_text("EndingAction.FilterMode.Toggle"), "toggle");
 
 	obs_property_t *delay =
 		obs_properties_add_float(ending, "ea_delay", obs_module_text("EndingAction.Delay"), 0.0, 600.0, 0.1);

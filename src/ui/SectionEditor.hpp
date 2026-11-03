@@ -45,6 +45,8 @@ class QVBoxLayout;
 
 namespace closingtime {
 
+class ActionListEditor;
+
 /*
  * The four tabs the section's settings are dealt out into.
  *
@@ -480,6 +482,11 @@ private:
 	QSpinBox *sectionWidth = nullptr;
 	QComboBox *sectionAlign = nullptr;
 	QSpinBox *spacerHeight = nullptr;
+
+	/* Action sections only: the line it fires on, and what it runs. */
+	QSpinBox *actionLine = nullptr;
+	QGroupBox *actionsGroup = nullptr;
+	ActionListEditor *actionList = nullptr;
 
 	/* Sticky Ending Block sections only. */
 	QComboBox *stickyEntrance = nullptr;

@@ -47,10 +47,15 @@ CT_SUITE(layout_every_type, "Measure/render agreement and containment, over ever
 	 * a sticky block included, since those are sections too and are laid out by the same call.
 	 */
 	int sectionCount = 0;
-	visitSections(document.sections, [&sectionCount](const Section &section) {
-		if (section.visible)
+	int markerCount = 0;
+	visitSections(document.sections, [&sectionCount, &markerCount](const Section &section) {
+		/* An Action section is a marker rather than a box, and reports itself as one. */
+		if (section.visible && section.type == SectionType::Action)
+			++markerCount;
+		else if (section.visible)
 			++sectionCount;
 	});
+	checkEq(boxesOf(document, LayoutBox::Kind::Action).size(), markerCount, "every marker reports a line");
 
 	checkEq(boxesOf(document, LayoutBox::Kind::Section).size(), sectionCount, "every section reports a box");
 	checkEq(boxesOf(document, LayoutBox::Kind::Content).size(), sectionCount,
@@ -72,6 +77,16 @@ CT_SUITE(layout_padding, "Padding and the section box, over every section type")
 
 		const Document document = documentWith(section);
 		const int height = measure(document);
+
+		/*
+		 * An Action section is the one type that has no box at all: it is a marker, and padding on
+		 * it would be room taken by a thing whose whole promise is that it takes none.
+		 */
+		if (type == SectionType::Action) {
+			checkEq(height, 0, "an action marker takes no height, padding or not");
+			checkEq(boxesOf(document, LayoutBox::Kind::Section).size(), 0, "and reports no section box");
+			continue;
+		}
 
 		/* Padding is space, so it is worth exactly its own pixels and never less. */
 		Section unpaddedSection = section;

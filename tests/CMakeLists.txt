@@ -14,6 +14,7 @@ target_sources(
     harness/Probe.cpp
     harness/Probe.hpp
     harness/main.cpp
+    suites/Actions.cpp
     suites/AnimatedLogos.cpp
     suites/Backgrounds.cpp
     suites/BridgedRows.cpp

@@ -37,6 +37,7 @@ columns — which between them cover every shape in the table below:
 | Section Divider | An ornamental rule between sections, composed from its two ends, the rule between them, and whatever sits in the middle |
 | Spacer | A blank run, for pacing |
 | Sticky Ending Block | Sections that hold still on the frame while the rest of the roll scrolls past behind them — a closing card that stays up, and can be the end of the roll |
+| Action | A marker that runs actions when the roll reaches it — show a background source, switch a filter on, trigger a hotkey — and takes no room at all |
 
 Any section can carry a **background** — a color, a gradient or an image, with rounded corners and
 a border — behind the whole section or behind the individual things it draws. See *Backgrounds*
@@ -196,6 +197,18 @@ is; drag them under the block in the section list and they are inside it. Nothin
 moves for it, and you can have as many as you like — the same mechanism gives you a chapter
 heading that holds while the section under it scrolls by.
 
+An **Action section** is a cue rather than content. Put one between two sections and, when it
+crosses a line you pick on the frame — the bottom edge as it comes into view, the middle, the top
+as it leaves — it runs a list of actions: show, hide or toggle a source (in one scene or all of
+them), enable, disable or toggle a filter, switch scene, trigger a hotkey, stop an output, or
+anything else the ending action can do. Each action has its own delay, so one marker can bring a
+background up and fade a filter in two seconds later. It takes no height and draws nothing, so
+adding one to a finished roll moves nothing and does not change how long the roll runs; the
+designer's preview shows each one as a labeled line. Put one inside a sticky block and it travels
+with the card — one at the card's pin fires as the card settles. When the roll restarts, loops or
+is reset, the filters and sources the actions changed are put back the way they were, so every
+pass starts from the same place.
+
 The source properties cover canvas size, background color, scroll speed, lead-in and
 lead-out padding, start behavior, looping, and the ending action.
 
@@ -220,6 +233,7 @@ says so — Closing Time can:
 
 - switch scene, stop recording, stop streaming, stop the virtual camera, hide itself
   (everywhere it appears, nested scenes and groups included), or restart the roll;
+- show, hide or toggle another source, in one scene or in every scene that holds it;
 - trigger any existing OBS hotkey by name;
 - enable, disable or toggle a filter on any source — handy for kicking off a stinger or a
   fade to black;

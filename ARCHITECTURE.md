@@ -160,6 +160,7 @@ stepping the entry within its own column rather than off it.
 | `SectionDivider` | no entries; three piece stacks of its own | an ornamental rule composed from two ends, an arm and a middle; see below |
 | `Spacer` | nothing | a blank run of `spacerHeight` px |
 | `StickyBlock` | `children`: whole sections of its own | pins to the canvas while the roll runs past behind it; see below |
+| `Action` | `actions`: a list of actions, and `actionLine` | a marker with no height that runs its actions when it crosses a line on the canvas; see *Action sections* |
 
 ### Logo rows
 
@@ -1296,6 +1297,62 @@ source's name, for source hotkeys, since names like "Show"/"Hide" repeat) and ca
 is the supported way to make a hotkey fire from code. Both the press and the release edge
 are delivered, because toggle-style hotkeys act on one and reset on the other.
 
+`SetSourceVisible` shows, hides or toggles every scene item backed by a named source — in one
+named scene, or in every scene when none is named, walking groups the way `HideSelf` does. It is
+what "a background becomes active" means in OBS's own terms.
+
+### Action sections
+
+The ending action answers "what happens when the roll is over". An `Action` section answers the
+same question for any point in the middle of it: a marker placed between two sections that runs a
+list of actions — the very `EndingActionConfig` the ending action is, so anything one can do the
+other can — when it crosses a line on the canvas.
+
+**It takes no room.** `layoutSection` returns zero for the type before anything is measured, padding
+included, and the layered renderer makes no picture for it. Dropping a marker into a finished roll
+moves nothing and changes how long the roll runs by nothing, which is the promise that makes it
+safe to add one after a roll has been timed. The layout reports it as an `ActionCuePlacement` — its
+place in the strip, its line, a copy of its actions — collected in the measure pass like blocks and
+animated logos, and as a zero-height `LayoutBox::Kind::Action` for the overlay. The designer's
+preview draws every marker as a labeled dashed line whether the overlay is on or not, since a
+marker draws nothing into the roll and would otherwise be invisible there.
+
+**The line is a share of the canvas height**, `actionLine`, 1.0 at the bottom edge — the default,
+which is "as it comes into frame" — and 0.0 at the top. A share for the reason a sticky block's pin
+is one: it means the same place after a canvas resize.
+
+**When it fires is the timeline's to say.** `RollTimeline::cueTimes()` is the roll time each marker
+first reaches its line coming up from below. In the roll that is a straight line in time, and a
+marker the strip stops short of — because a block ended the roll first — never fires. A marker
+inside a sticky block travels with the block: it crosses on the way up if the pin leaves it past
+the line, as the card comes up if the card waited for the roll and appears already past it, and
+otherwise only once the card is let go — never, for one that holds forever. A block that holds
+nothing but markers has no slot and is never placed, so its markers go with the roll from where the
+block was.
+
+**An action is a moment in roll time**: its marker's crossing plus its own delay. The delay is roll
+time rather than wall time, so pausing the roll holds pending actions back with it, and a delay past
+the end of the roll still lands because roll time keeps running after the finish. Each tick the
+source asks `RollTimeline::sweep` which of those moments the clock passed over since the last one
+and runs them in the order they fell due. Nothing is stateful beyond the one number saying how far
+the actions have been run up to, so a pause, a stall or a speed change (the number is rebased with
+roll time) cannot run an action twice or skip one. A roll parked under manual scroll runs nothing,
+and neither does the designer's preview.
+
+**What a restart puts back.** Filter and visibility changes are recorded in an `ActionJournal` as
+they are made — on the UI thread, by the action itself, since only it knows the state just before
+it — and reverted, newest first, whenever the roll goes back to its start: a restart, a re-arm
+after an edit or a show, a reset on hide, and each wrap of a loop, before the new pass runs
+anything. The revert is queued onto the same UI task queue the actions run from, so it can never
+overtake an action already waiting there. Scene switches, hotkeys and stopping outputs cannot be
+undone and are not. `HideSelf` is deliberately left out too: a roll that starts on show is reset by
+being hidden, and a revert that showed it again would start it straight back into the action that
+hid it.
+
+An edit to an Action section is a content edit like any other — it lays the roll out again and a
+running roll starts over, putting back what it had changed. The layout for the edit lands a moment
+after the re-arm, and anything due in that moment is caught up on the next tick rather than skipped.
+
 ## Designer window
 
 Three panes in a splitter: section list, editor for the selected section, live preview.
@@ -1775,8 +1832,9 @@ same reason: reporting it would send the user after a font nothing uses.
    that renders every glyph but one is worse than one that reports the family as uncarried.
 2. **Undo does not reach across Apply.** The stack is per-designer-window and starts empty
    each time the window opens; Cancel still discards everything since the last Apply.
-3. **One ending action per source.** A roll that needs to do two things has to chain them
-   through the `credits_finished` signal.
+3. **One ending action per source.** A roll that needs to do two things at its end can put an
+   Action section after its last credit with a line at the top edge, or chain them through the
+   `credits_finished` signal.
 4. **An animated logo is bounded by what fits in memory.** Every frame is decoded up front at
    the drawn size, so artwork longer than 30 seconds (or 1800 frames, or 256 MB of frames)
    plays only its first part. This is a deliberate trade — see *Animated logos* — but it does

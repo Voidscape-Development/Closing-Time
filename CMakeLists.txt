@@ -101,6 +101,8 @@ target_sources(
     src/source/RollControl.cpp
     src/source/RollControl.hpp
     src/third-party/obs-websocket-api.h
+    src/ui/ActionListEditor.cpp
+    src/ui/ActionListEditor.hpp
     src/ui/BackgroundControls.cpp
     src/ui/BackgroundControls.hpp
     src/ui/CollapsibleGroup.cpp

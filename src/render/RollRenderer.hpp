@@ -215,6 +215,25 @@ struct StickyBlockPlacement {
 };
 
 /*
+ * An Action section the layout placed: a marker with no height, and the actions it runs.
+ *
+ * Collected in the measure pass, as the blocks and the animated logos are. The actions are copied off
+ * the section so that whoever plays the roll reads them from the layout it is playing rather than
+ * from a document that may since have been edited.
+ */
+struct ActionCuePlacement {
+	/* The marker in strip space -- for one inside a block, the spot in the block's slot. */
+	double top = 0.0;
+	/* The block it travels with -- an index into RollLayout::blocks -- or -1 for the roll. */
+	int block = -1;
+	/* Where the line it fires on sits, as a share of the canvas height. */
+	double line = 1.0;
+	QVector<EndingActionConfig> actions;
+	/* Index into Document::sections: the section itself, or the block holding it. */
+	int section = -1;
+};
+
+/*
  * The whole roll rasterized up front: every section composited into tiles, every block's picture
  * filled in. What RollRenderer::render hands back, for the harness and for anything else that wants
  * the roll as pictures rather than as layers to draw from -- the source and the designer draw from a
@@ -274,6 +293,11 @@ struct LayoutBox {
 		 * centered in it and a stack of rules is taller than any one of them.
 		 */
 		Divider,
+		/*
+		 * An Action section's marker: the full width of the canvas and no height at all, which the
+		 * overlay draws as a line rather than a box.
+		 */
+		Action,
 	};
 
 	Kind kind = Kind::Section;
@@ -381,6 +405,8 @@ struct RollLayout {
 	QVector<RollLayer> layers;
 	QVector<StickyBlockPlacement> blocks;
 	QVector<AnimatedLogoPlacement> animatedLogos;
+	/* Every Action section's marker, in document order. */
+	QVector<ActionCuePlacement> cues;
 	/* Collected only when asked for; see RollRenderer::layout. */
 	LayoutBoxes boxes;
 

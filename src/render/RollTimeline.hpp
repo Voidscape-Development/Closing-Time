@@ -75,6 +75,16 @@ struct TimelineLogo {
 	double speed = 1.0;
 };
 
+/* What the timeline needs to know about one Action section's marker. */
+struct TimelineCue {
+	/* The marker in strip space -- or in its block's slot space, when `block` is set. */
+	double top = 0.0;
+	/* The block it travels with, or -1 for a marker in the roll. */
+	int block = -1;
+	/* The line it fires on, in canvas pixels down from the top edge. */
+	double line = 0.0;
+};
+
 struct TimelineInputs {
 	int canvasHeight = 1080;
 	int stripHeight = 0;
@@ -83,6 +93,7 @@ struct TimelineInputs {
 	bool loop = false;
 	QVector<TimelineBlock> blocks;
 	QVector<TimelineLogo> logos;
+	QVector<TimelineCue> cues;
 };
 
 /* One sticky block at one moment. */
@@ -108,6 +119,19 @@ struct RollFrame {
 	bool finished = false;
 	/* Which pass of a looping roll this moment is in; 0 for a roll that does not loop. */
 	int pass = 0;
+};
+
+/*
+ * Which moments a stretch of roll time passed over; see RollTimeline::sweep.
+ *
+ * Indices into the list of times that was swept. For a loop that went round in the stretch, the
+ * moments are split by the wrap: those left in the pass that ended, and those in the pass that began,
+ * so that whoever acts on them can do what a new pass calls for in between.
+ */
+struct CueSweep {
+	QVector<int> before;
+	bool wrapped = false;
+	QVector<int> after;
 };
 
 class RollTimeline {
@@ -163,12 +187,33 @@ public:
 
 	const QVector<BlockSchedule> &schedules() const { return schedule; }
 
+	/*
+	 * When each Action section's marker first crosses its line, in roll time -- within a pass, for a
+	 * loop. kNever for a marker that never gets there: one below the line when the strip stops, one
+	 * on a card that never lets go.
+	 *
+	 * A marker already past its line when it comes into view crosses it the moment it does, which is
+	 * t = 0 for a line at the bottom edge and the moment a card comes up for one that waited.
+	 */
+	const QVector<double> &cueTimes() const { return cueTime; }
+
+	/*
+	 * Which of `times` -- roll times within a pass, such as cueTimes() plus a delay -- the roll passed
+	 * going from `from` to `to`: those after `from` and no later than `to`. A negative `from` means
+	 * the roll is just starting, so a time of exactly zero counts.
+	 *
+	 * For a loop, a time past the end of the pass is reached at the wrap, as the pass runs out, so an
+	 * action delayed beyond the end of the roll still happens once a pass. kNever is never reached.
+	 */
+	CueSweep sweep(const QVector<double> &times, double from, double to) const;
+
 private:
 	void simulate();
 	double stripOffsetAt(double t) const;
 	double blockTopAt(int index, double t) const;
 	BlockFrame blockAt(int index, double t) const;
 	double logoStart(int index) const;
+	double cueCrossing(int index) const;
 
 	TimelineInputs in;
 	double speed = 0.0;
@@ -176,6 +221,7 @@ private:
 	double finish = kNever;
 	QVector<BlockSchedule> schedule;
 	QVector<double> logoStarts;
+	QVector<double> cueTime;
 };
 
 } // namespace closingtime

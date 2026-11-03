@@ -68,6 +68,11 @@ enum class SectionType {
 	 * It holds other sections rather than content of its own; see `Section::children`.
 	 */
 	StickyBlock,
+	/*
+	 * A marker in the roll that runs actions when it crosses a line on the canvas. Takes no room and
+	 * draws nothing; see `Section::actions`.
+	 */
+	Action,
 };
 
 const char *sectionTypeId(SectionType type);
@@ -1098,6 +1103,25 @@ struct Section {
 	bool stickyHoldForever = false;
 
 	StickyRelease stickyRelease = StickyRelease::EndAtHold;
+
+	/*
+	 * Action sections only.
+	 *
+	 * An Action section is a marker with no height: it sits between two sections, travels with the
+	 * roll -- or with its block, inside a sticky block -- and when it crosses `actionLine` it runs
+	 * every action in `actions`, each after its own delay. Taking no room is what lets one be dropped
+	 * anywhere in a finished roll without moving anything or changing how long the roll runs.
+	 *
+	 * The line is a share of the canvas height, 0.0 at the top and 1.0 at the bottom, like a sticky
+	 * block's pin, so it means the same place after a canvas resize. The default is the bottom edge:
+	 * the marker crosses it the moment it comes into frame.
+	 *
+	 * Each action's `delay` is roll time, not wall time -- a paused roll holds its actions back with
+	 * it. Filter and visibility changes are put back when the roll restarts, loops or is reset; see
+	 * ActionJournal.
+	 */
+	QVector<EndingActionConfig> actions;
+	double actionLine = 1.0;
 
 	bool visible = true;
 

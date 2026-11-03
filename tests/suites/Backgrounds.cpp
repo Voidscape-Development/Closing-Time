@@ -380,8 +380,14 @@ CT_SUITE(background_entry_stripes, "One panel per row, and every other row")
 
 CT_SUITE(background_slots_for_type, "Which panels a type has anything to sit behind")
 {
-	/* Every type has a section to sit behind, including the two that draw no content. */
+	/*
+	 * Every type has a section to sit behind, including the two that draw no content -- except an
+	 * Action section, which has no height for a panel to be the size of.
+	 */
+	checkEq(backgroundSlotsFor(SectionType::Action).size(), 0, "an action marker offers no panel at all");
 	for (const SectionType type : allSectionTypes()) {
+		if (type == SectionType::Action)
+			continue;
 		check(backgroundSlotsFor(type).contains(BackgroundSlot::Section),
 		      qPrintable(
 			      QStringLiteral("%1 offers a section panel").arg(QString::fromUtf8(sectionTypeId(type)))));
