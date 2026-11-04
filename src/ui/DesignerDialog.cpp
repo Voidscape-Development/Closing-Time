@@ -22,19 +22,30 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <plugin-support.h>
 
+#include <QAbstractSpinBox>
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
-#include <QDialogButtonBox>
+#include <QComboBox>
 #include <QDropEvent>
+#include <QFontDatabase>
+#include <QKeyEvent>
+#include <QLocale>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPlainTextEdit>
+#include <QShortcut>
+#include <QStyle>
+#include <QStyledItemDelegate>
+#include <QTextEdit>
+#include <QToolTip>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QHBoxLayout>
 #include <QHash>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -49,12 +60,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 #include "model/StyleLibrary.hpp"
 #include "render/AnimatedLogo.hpp"
 #include "render/FontResolution.hpp"
 #include "render/RenderThread.hpp"
 #include "render/RollTimeline.hpp"
+#include "ui/AddSectionGallery.hpp"
+#include "ui/DesignerWidgets.hpp"
 #include "ui/FontDialog.hpp"
 #include "ui/PreviewWidget.hpp"
 #include "ui/SectionEditor.hpp"
@@ -86,27 +100,321 @@ constexpr int kLibraryWriteDebounceMs = 400;
 constexpr int kEditBurstMs = 900;
 
 /*
+ * What a row of the section list carries, beside its display text.
+ *
  * Set on the row of a sticky block that has children, and read by the list to tell a click on the
  * fold arrow from a click on the row. The list has to answer that itself -- a press is where a
  * drag starts, so there is nothing later to ask.
  */
 constexpr int kBlockRowRole = Qt::UserRole + 1;
+/* The section's type, which picks its badge. */
+constexpr int kTypeRole = Qt::UserRole + 2;
+/* The row's second line: "Bridged · 6 rows". */
+constexpr int kDetailRole = Qt::UserRole + 3;
+/* Whether the section is in the roll. */
+constexpr int kVisibleRole = Qt::UserRole + 4;
+/* 0 for a section of the roll, 1 for one inside a sticky block. */
+constexpr int kDepthRole = Qt::UserRole + 5;
+/* Spacers and Actions, which take no words and are drawn as thin markers between the rest. */
+constexpr int kMarkerRole = Qt::UserRole + 6;
+/* 0 when the row does not fold, 1 when its block is open, 2 when it is folded. */
+constexpr int kFoldRole = Qt::UserRole + 7;
+/* The section's own name, which is empty when it names itself; what an in-place rename starts from. */
+constexpr int kLabelRole = Qt::UserRole + 8;
+/* True on the last child of a block, whose guide line stops at its own row. */
+constexpr int kLastChildRole = Qt::UserRole + 9;
 
-/* What a row of a block's children is drawn with: the branch, and the last of them. */
-const QString kChildBranch = QStringLiteral("   \u251c\u2500 ");
-const QString kChildBranchLast = QStringLiteral("   \u2514\u2500 ");
+/* Where each part of a row sits. Shared by the painting and by the list's own hit tests. */
+struct RowGeometry {
+	QRect fold;
+	QRect badge;
+	QRect text;
+	QRect eye;
+};
+
+constexpr int kRowFoldWidth = 14;
+constexpr int kRowIndent = 18;
+constexpr int kRowEyeWidth = 22;
+
+RowGeometry rowGeometry(const QRect &row, int depth, bool marker)
+{
+	RowGeometry geometry;
+	int x = row.left() + 4 + depth * kRowIndent;
+
+	geometry.fold = QRect(x, row.top(), kRowFoldWidth, row.height());
+	x += kRowFoldWidth;
+
+	const int badge = marker ? 16 : 22;
+	geometry.badge = QRect(x + (22 - badge) / 2, row.center().y() - badge / 2, badge, badge);
+	x += 22 + 8;
+
+	geometry.eye = QRect(row.right() - 4 - kRowEyeWidth, row.top(), kRowEyeWidth, row.height());
+	geometry.text = QRect(x, row.top(), std::max(10, geometry.eye.left() - 4 - x), row.height());
+	return geometry;
+}
 
 /*
- * The fold arrows, and the blank that stands in for one on a row that does not fold. Every
- * top-level row carries one of the three, so their labels start at the same place whether or not
- * the row is a block.
+ * Draws a row of the section list: the section's badge, its name over a line of detail, and the
+ * eye that shows or hides it. Spacers and Actions are thin rows with a dashed rule, read as
+ * events in the roll rather than as content. A block's children hang off a guide line.
+ *
+ * Also the in-place editor for a rename, which reports through `onRename` rather than writing the
+ * model: the document is what holds the name, and the list is only ever rebuilt from it.
  */
-const QString kFoldOpen = QStringLiteral("\u25be ");
-const QString kFoldClosed = QStringLiteral("\u25b8 ");
-const QString kFoldNone = QStringLiteral("  ");
+class SectionRowDelegate : public QStyledItemDelegate {
+public:
+	using QStyledItemDelegate::QStyledItemDelegate;
 
-/* Slack either side of the arrow glyph, so the target is a comfortable one to hit. */
-constexpr int kFoldHitPadding = 6;
+	std::function<void(int row, const QString &name)> onRename;
+
+	QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+	{
+		const QFontMetrics metrics(option.font);
+		if (index.data(kMarkerRole).toBool())
+			return QSize(160, std::max(24, metrics.height() + 8));
+		return QSize(160, std::max(40, metrics.height() * 2 + 10));
+	}
+
+	void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+	{
+		painter->save();
+		painter->setRenderHint(QPainter::Antialiasing);
+
+		const QPalette &palette = option.palette;
+		const bool selected = option.state & QStyle::State_Selected;
+		const bool hovered = option.state & QStyle::State_MouseOver;
+		const bool visible = index.data(kVisibleRole).toBool();
+		const bool marker = index.data(kMarkerRole).toBool();
+		const int depth = index.data(kDepthRole).toInt();
+		const QRect row = option.rect.adjusted(2, 1, -2, -1);
+		const RowGeometry geometry = rowGeometry(row, depth, marker);
+
+		if (selected) {
+			QColor fill = palette.color(QPalette::Highlight);
+			fill.setAlpha(60);
+			painter->setPen(QPen(palette.color(QPalette::Highlight), 1));
+			painter->setBrush(fill);
+			painter->drawRoundedRect(QRectF(row).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
+		} else if (hovered) {
+			painter->setPen(Qt::NoPen);
+			painter->setBrush(palette.color(QPalette::AlternateBase));
+			painter->drawRoundedRect(row, 5, 5);
+		}
+
+		QColor text = palette.color(QPalette::Text);
+		QColor dim = text;
+		dim.setAlphaF(0.6f);
+
+		/* A child's guide line, down from its block's badge and across to its own. */
+		if (depth > 0) {
+			const int x = row.left() + 4 + kRowFoldWidth + 11;
+			QColor guide = palette.color(QPalette::Mid);
+			painter->setPen(QPen(guide, 1));
+			const bool last = index.data(kLastChildRole).toBool();
+			painter->drawLine(QPointF(x + 0.5, option.rect.top()),
+					  QPointF(x + 0.5, last ? row.center().y() : option.rect.bottom() + 1));
+			painter->drawLine(QPointF(x + 0.5, row.center().y() + 0.5),
+					  QPointF(geometry.badge.left() - 3, row.center().y() + 0.5));
+		}
+
+		const int fold = index.data(kFoldRole).toInt();
+		if (fold != 0) {
+			const QPointF c = QRectF(geometry.fold).center();
+			QPainterPath arrow;
+			if (fold == 1) {
+				arrow.moveTo(c.x() - 4, c.y() - 2);
+				arrow.lineTo(c.x() + 4, c.y() - 2);
+				arrow.lineTo(c.x(), c.y() + 3);
+			} else {
+				arrow.moveTo(c.x() - 2, c.y() - 4);
+				arrow.lineTo(c.x() + 3, c.y());
+				arrow.lineTo(c.x() - 2, c.y() + 4);
+			}
+			arrow.closeSubpath();
+			painter->fillPath(arrow, dim);
+		}
+
+		painter->setOpacity(visible ? 1.0 : 0.45);
+		paintTypeBadge(*painter, geometry.badge, static_cast<SectionType>(index.data(kTypeRole).toInt()));
+
+		const QString name = index.data(Qt::DisplayRole).toString();
+		const QString detail = visible ? index.data(kDetailRole).toString()
+					       : moduleText("Designer.Detail.Hidden");
+		const QFontMetrics metrics(option.font);
+
+		if (marker) {
+			const QString line = detail.isEmpty() ? name : QStringLiteral("%1 · %2").arg(name, detail);
+			const QString shown = metrics.elidedText(line, Qt::ElideRight, geometry.text.width());
+			painter->setPen(dim);
+			painter->drawText(geometry.text, Qt::AlignLeft | Qt::AlignVCenter, shown);
+
+			const int after = geometry.text.left() + metrics.horizontalAdvance(shown) + 8;
+			if (after < geometry.text.right()) {
+				QPen dashed(palette.color(QPalette::Mid), 1);
+				dashed.setStyle(Qt::DashLine);
+				painter->setPen(dashed);
+				painter->drawLine(QPointF(after, row.center().y() + 0.5),
+						  QPointF(geometry.text.right(), row.center().y() + 0.5));
+			}
+		} else {
+			const int lineHeight = metrics.height();
+			const int top = row.center().y() - lineHeight;
+			painter->setPen(text);
+			painter->drawText(QRect(geometry.text.left(), top, geometry.text.width(), lineHeight),
+					  Qt::AlignLeft | Qt::AlignVCenter,
+					  metrics.elidedText(name, Qt::ElideRight, geometry.text.width()));
+
+			QFont small = option.font;
+			small.setPointSizeF(std::max(6.5, small.pointSizeF() * 0.88));
+			painter->setFont(small);
+			painter->setPen(dim);
+			painter->drawText(
+				QRect(geometry.text.left(), top + lineHeight, geometry.text.width(), lineHeight),
+				Qt::AlignLeft | Qt::AlignVCenter,
+				QFontMetrics(small).elidedText(detail, Qt::ElideRight, geometry.text.width()));
+		}
+
+		painter->setOpacity(1.0);
+
+		/* The eye shows on the row being pointed at or worked on, and always on a hidden one. */
+		if (hovered || selected || !visible)
+			paintEye(*painter, geometry.eye, visible, visible ? dim : QColor(240, 164, 58));
+
+		painter->restore();
+	}
+
+	QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &) const override
+	{
+		auto *edit = new QLineEdit(parent);
+		edit->setFrame(true);
+		edit->ensurePolished();
+		applyReadablePlaceholder(edit);
+		return edit;
+	}
+
+	void setEditorData(QWidget *editor, const QModelIndex &index) const override
+	{
+		auto *edit = static_cast<QLineEdit *>(editor);
+		const QString label = index.data(kLabelRole).toString();
+		edit->setText(label.isEmpty() ? index.data(Qt::DisplayRole).toString() : label);
+		edit->selectAll();
+	}
+
+	void setModelData(QWidget *editor, QAbstractItemModel *, const QModelIndex &index) const override
+	{
+		if (onRename)
+			onRename(index.row(), static_cast<QLineEdit *>(editor)->text());
+	}
+
+	void updateEditorGeometry(QWidget *editor, const QStyleOptionViewItem &option,
+				  const QModelIndex &index) const override
+	{
+		const RowGeometry geometry = rowGeometry(option.rect.adjusted(2, 1, -2, -1),
+							 index.data(kDepthRole).toInt(),
+							 index.data(kMarkerRole).toBool());
+		/* Over the whole of the name and its second line, so nothing of the row shows round it. */
+		const QRect row = option.rect.adjusted(2, 3, -2, -3);
+		editor->setGeometry(geometry.text.left() - 3, row.top(),
+				    geometry.eye.right() - geometry.text.left() + 3, row.height());
+	}
+};
+
+/* A handful of starting points for a new roll, offered from the Roll menu. */
+struct RollTemplate {
+	const char *nameKey;
+	std::function<QVector<Section>()> build;
+};
+
+Section withText(SectionType type, const QString &text, const QString &secondary = QString())
+{
+	Section section = Section::makeDefault(type);
+	section.text = text;
+	if (!secondary.isEmpty())
+		section.secondaryText = secondary;
+	return section;
+}
+
+Section withEntries(SectionType type, const QVector<QPair<QString, QString>> &rows)
+{
+	Section section = Section::makeDefault(type);
+	section.entries.clear();
+	for (const auto &[text, secondary] : rows) {
+		Entry entry;
+		entry.text = text;
+		entry.secondaryText = secondary;
+		section.entries.append(entry);
+	}
+	return section;
+}
+
+const QVector<RollTemplate> &rollTemplates()
+{
+	static const QVector<RollTemplate> templates = {
+		{"Designer.Template.Stream",
+		 [] {
+			 Section thanks = Section::makeDefault(SectionType::StickyBlock);
+			 thanks.label = moduleText("Designer.Template.ThanksCard");
+			 thanks.children.push_back(
+				 withText(SectionType::Title, moduleText("Designer.Template.ThanksText")));
+			 return QVector<Section>{
+				 withText(SectionType::TitleWithSubtitle, moduleText("Designer.Template.ShowName"),
+					  moduleText("Designer.Template.ShowTagline")),
+				 withText(SectionType::Header, moduleText("Designer.Template.Team")),
+				 withEntries(SectionType::Bridged, {{moduleText("Designer.Template.Host"),
+								     moduleText("Designer.Template.Name")},
+								    {moduleText("Designer.Template.Moderator"),
+								     moduleText("Designer.Template.Name")}}),
+				 Section::makeDefault(SectionType::SectionDivider),
+				 withText(SectionType::Header, moduleText("Designer.Template.Supporters")),
+				 withEntries(SectionType::MultiTextList,
+					     {{moduleText("Designer.Template.Name"), QString()},
+					      {moduleText("Designer.Template.Name"), QString()},
+					      {moduleText("Designer.Template.Name"), QString()}}),
+				 thanks,
+			 };
+		 }},
+		{"Designer.Template.Film",
+		 [] {
+			 return QVector<Section>{
+				 withText(SectionType::Title, moduleText("Designer.Template.ShowName")),
+				 withText(SectionType::Header, moduleText("Designer.Template.Cast")),
+				 withEntries(SectionType::Bridged, {{moduleText("Designer.Template.Role"),
+								     moduleText("Designer.Template.Name")},
+								    {moduleText("Designer.Template.Role"),
+								     moduleText("Designer.Template.Name")}}),
+				 withText(SectionType::Header, moduleText("Designer.Template.Crew")),
+				 withEntries(SectionType::TitleSubtitleList, {{moduleText("Designer.Template.Role"),
+									       moduleText("Designer.Template.Name")}}),
+			 };
+		 }},
+		{"Designer.Template.Simple",
+		 [] {
+			 return QVector<Section>{
+				 withText(SectionType::Title, moduleText("Designer.Template.ShowName")),
+				 withEntries(SectionType::TextList,
+					     {{moduleText("Designer.Template.Name"), QString()},
+					      {moduleText("Designer.Template.Name"), QString()}}),
+			 };
+		 }},
+	};
+	return templates;
+}
+
+/* Every section with its view state cleared, for asking whether two rolls say the same thing. */
+QVector<Section> withoutViewState(QVector<Section> sections)
+{
+	for (Section &section : sections)
+		section.childrenCollapsed = false;
+	return sections;
+}
+
+/* True when a key is going to a field that is being typed into, where Escape means "stop typing". */
+bool isTypingInto(const QWidget *widget)
+{
+	return qobject_cast<const QLineEdit *>(widget) || qobject_cast<const QAbstractSpinBox *>(widget) ||
+	       qobject_cast<const QPlainTextEdit *>(widget) || qobject_cast<const QTextEdit *>(widget) ||
+	       qobject_cast<const QComboBox *>(widget);
+}
 
 /* How many steps back the designer can go before the oldest is forgotten. */
 constexpr int kUndoDepth = 100;
@@ -327,28 +635,36 @@ SectionListWidget::SectionListWidget(QWidget *parent) : QListWidget(parent)
 	setDefaultDropAction(Qt::MoveAction);
 	setDropIndicatorShown(true);
 	setSelectionMode(QAbstractItemView::SingleSelection);
+	/* A row is renamed where it is read: double-click it, or F2. */
+	setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+	setMouseTracking(true);
+	viewport()->setAttribute(Qt::WA_Hover);
+	setFrameShape(QFrame::NoFrame);
+	setSpacing(1);
 }
 
 void SectionListWidget::mousePressEvent(QMouseEvent *event)
 {
 	/*
-	 * A press on a block's fold arrow folds it and does nothing else: it does not select the
-	 * row, and it does not start a drag. Answered here rather than on release because a press
-	 * is where the drag machinery starts from, and a fold that only happened when nothing was
+	 * A press on a row's eye or a block's fold arrow does that and nothing else: it does not
+	 * select the row, and it does not start a drag. Answered here rather than on release because a
+	 * press is where the drag machinery starts from, and a fold that only happened when nothing was
 	 * dragged would be a fold that sometimes did not happen.
 	 */
 	const QModelIndex index = indexAt(event->position().toPoint());
 
-	if (event->button() == Qt::LeftButton && index.data(kBlockRowRole).toBool()) {
-		const QRect row = visualRect(index);
-		/*
-		 * The arrow and the space after it, plus the small inset a view puts before an item's
-		 * text. Measured from the font rather than fixed, so the target follows a themed or
-		 * scaled list instead of drifting off the glyph it belongs to.
-		 */
-		const int arrow = fontMetrics().horizontalAdvance(kFoldOpen) + kFoldHitPadding;
+	if (event->button() == Qt::LeftButton && index.isValid()) {
+		const RowGeometry geometry = rowGeometry(visualRect(index).adjusted(2, 1, -2, -1),
+							 index.data(kDepthRole).toInt(),
+							 index.data(kMarkerRole).toBool());
+		const QPoint at = event->position().toPoint();
 
-		if (event->position().x() - row.left() <= arrow) {
+		if (geometry.eye.contains(at)) {
+			emit visibilityToggled(index.row());
+			return;
+		}
+
+		if (index.data(kBlockRowRole).toBool() && geometry.fold.adjusted(-4, 0, 4, 0).contains(at)) {
 			emit blockFoldToggled(index.row());
 			return;
 		}
@@ -388,12 +704,129 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	designerRegistry().insert(source, this);
 	sink->dialog = this;
 
-	setWindowTitle(QStringLiteral("%1 - %2").arg(moduleText("Designer.Title"),
-						     QString::fromUtf8(obs_source_get_name(source))));
+	/* The [*] is where Qt puts the asterisk while there are changes not yet applied. */
+	setWindowTitle(QStringLiteral("%1 - %2[*]")
+			       .arg(moduleText("Designer.Title"), QString::fromUtf8(obs_source_get_name(source))));
 	setAttribute(Qt::WA_DeleteOnClose);
 	resize(1280, 800);
 
+	setStyleSheet(designerStyleSheet());
+
 	auto *outer = new QVBoxLayout(this);
+	outer->setContentsMargins(8, 6, 8, 8);
+	outer->setSpacing(6);
+
+	/*
+	 * --- top: the toolbar ---
+	 *
+	 * Undo and redo where people look for them, the roll's running time and anything that will not
+	 * come out as designed, the roll-wide tools in one menu, and saving. Saving is up here rather
+	 * than in a footer because it is the thing the whole window is working towards, and the dot
+	 * beside it says whether there is anything to save.
+	 */
+	auto *toolbar = new QHBoxLayout();
+	toolbar->setSpacing(6);
+	outer->addLayout(toolbar);
+
+	const QColor iconColor = palette().color(QPalette::ButtonText);
+	undoButton = new QToolButton(this);
+	undoButton->setIcon(undoIcon(false, iconColor));
+	undoButton->setAutoRaise(true);
+	undoButton->setToolTip(moduleText("Designer.Undo.Tip"));
+	undoButton->setShortcut(QKeySequence::Undo);
+	redoButton = new QToolButton(this);
+	redoButton->setIcon(undoIcon(true, iconColor));
+	redoButton->setAutoRaise(true);
+	redoButton->setToolTip(moduleText("Designer.Redo.Tip"));
+	/*
+	 * These take Ctrl+Z / Ctrl+Shift+Z away from the text fields' own undo. That is the
+	 * intent: one stack covering the whole document beats two that disagree about what the
+	 * last change was, and an undo step here already restores the text along with it.
+	 */
+	redoButton->setShortcut(QKeySequence::Redo);
+	toolbar->addWidget(undoButton);
+	toolbar->addWidget(redoButton);
+
+	auto *separator = new QFrame(this);
+	separator->setFrameShape(QFrame::VLine);
+	separator->setFrameShadow(QFrame::Sunken);
+	toolbar->addWidget(separator);
+
+	durationPill = new QLabel(this);
+	durationPill->setObjectName(QStringLiteral("designerPill"));
+	durationPill->setToolTip(moduleText("Designer.Duration.Tip"));
+	toolbar->addWidget(durationPill);
+
+	warningChip = new QToolButton(this);
+	warningChip->setObjectName(QStringLiteral("designerWarning"));
+	warningChip->setCursor(Qt::PointingHandCursor);
+	warningChip->hide();
+	toolbar->addWidget(warningChip);
+
+	toolbar->addStretch(1);
+
+	auto *rollButton = new QToolButton(this);
+	rollButton->setObjectName(QStringLiteral("designerMenuButton"));
+	rollButton->setText(moduleText("Designer.RollMenu") + QStringLiteral(" ▾"));
+	rollButton->setPopupMode(QToolButton::InstantPopup);
+	rollButton->setToolTip(moduleText("Designer.RollMenu.Tip"));
+	auto *rollMenu = new QMenu(rollButton);
+	QAction *libraryAction = rollMenu->addAction(moduleText("Designer.StyleLibrary"));
+	libraryAction->setToolTip(moduleText("Designer.StyleLibrary.Tip"));
+	QAction *fontsAction = rollMenu->addAction(moduleText("Designer.Fonts"));
+	fontsAction->setToolTip(moduleText("Designer.Fonts.Tip"));
+	rollMenu->addSeparator();
+	QMenu *templateMenu = rollMenu->addMenu(moduleText("Designer.Template"));
+	for (int index = 0; index < rollTemplates().size(); ++index) {
+		QAction *action = templateMenu->addAction(moduleText(rollTemplates().at(index).nameKey));
+		connect(action, &QAction::triggered, this, [this, index] { startFromTemplate(index); });
+	}
+	rollMenu->addSeparator();
+	QAction *importAction = rollMenu->addAction(moduleText("Designer.ImportJson"));
+	QAction *exportAction = rollMenu->addAction(moduleText("Designer.ExportJson"));
+	rollMenu->setToolTipsVisible(true);
+	rollButton->setMenu(rollMenu);
+	toolbar->addWidget(rollButton);
+
+	auto *separator2 = new QFrame(this);
+	separator2->setFrameShape(QFrame::VLine);
+	separator2->setFrameShadow(QFrame::Sunken);
+	toolbar->addWidget(separator2);
+
+	dirtyMark = new QWidget(this);
+	{
+		auto *dirtyLayout = new QHBoxLayout(dirtyMark);
+		dirtyLayout->setContentsMargins(0, 0, 4, 0);
+		dirtyLayout->setSpacing(4);
+		auto *dot = new QLabel(dirtyMark);
+		dot->setPixmap(changedDotIcon().pixmap(QSize(12, 12)));
+		auto *text = new QLabel(moduleText("Designer.Unsaved"), dirtyMark);
+		styleAsHint(text);
+		dirtyLayout->addWidget(dot);
+		dirtyLayout->addWidget(text);
+	}
+	dirtyMark->setToolTip(moduleText("Designer.Unsaved.Tip"));
+	dirtyMark->hide();
+	toolbar->addWidget(dirtyMark);
+
+	auto *cancelButton = new QPushButton(moduleText("Designer.Cancel"), this);
+	cancelButton->setFlat(true);
+	applyButton = new QPushButton(moduleText("Designer.Apply"), this);
+	applyButton->setToolTip(moduleText("Designer.Apply.Tip"));
+	doneButton = new QPushButton(moduleText("Designer.Done"), this);
+	doneButton->setObjectName(QStringLiteral("designerPrimary"));
+	doneButton->setToolTip(moduleText("Designer.Done.Tip"));
+	/*
+	 * None of them is the default button: Enter belongs to whatever is being typed into, and a
+	 * window that closed on an Enter pressed in the wrong field would be exactly the kind of
+	 * surprise this one is meant to be free of. Ctrl+Enter is Done.
+	 */
+	for (QPushButton *button : {cancelButton, applyButton, doneButton}) {
+		button->setAutoDefault(false);
+		button->setDefault(false);
+		toolbar->addWidget(button);
+	}
+
 	splitter = new QSplitter(Qt::Horizontal, this);
 	/* Folding a pane away is the collapse button's job now, not something a drag can do. */
 	splitter->setChildrenCollapsible(false);
@@ -401,10 +834,12 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	/* --- left: the section list, in roll order --- */
 	listPane = new QWidget(splitter);
 	auto *listLayout = new QVBoxLayout(listPane);
-	listLayout->setContentsMargins(0, 0, 0, 0);
+	listLayout->setContentsMargins(0, 0, 4, 0);
+	listLayout->setSpacing(6);
 
 	auto *listHeader = new QHBoxLayout();
 	sectionsLabel = new QLabel(moduleText("Designer.Sections"), listPane);
+	sectionsLabel->setObjectName(QStringLiteral("designerPaneTitle"));
 	collapseButton = new QToolButton(listPane);
 	collapseButton->setAutoRaise(true);
 	collapseButton->setArrowType(Qt::LeftArrow);
@@ -413,73 +848,50 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	listHeader->addWidget(collapseButton);
 	listLayout->addLayout(listHeader);
 
+	/* Finds a section in a long roll by what it is called or what kind it is. */
+	filterEdit = new QLineEdit(listPane);
+	filterEdit->setPlaceholderText(moduleText("Designer.Filter"));
+	filterEdit->setClearButtonEnabled(true);
+	listLayout->addWidget(filterEdit);
+
 	sectionList = new SectionListWidget(listPane);
+	auto *rowDelegate = new SectionRowDelegate(sectionList);
+	rowDelegate->onRename = [this](int row, const QString &name) {
+		/* Queued: the list is still closing its editor, and the rename rebuilds the list. */
+		QMetaObject::invokeMethod(this, [this, row, name] { renameRow(row, name); }, Qt::QueuedConnection);
+	};
+	sectionList->setItemDelegate(rowDelegate);
+	sectionList->setContextMenuPolicy(Qt::CustomContextMenu);
 	listLayout->addWidget(sectionList, 1);
 
 	listButtonRow = new QWidget(listPane);
 	auto *listButtons = new QHBoxLayout(listButtonRow);
 	listButtons->setContentsMargins(0, 0, 0, 0);
-	const auto addListButton = [&](QToolButton *button, auto slot) {
-		listButtons->addWidget(button);
-		connect(button, &QToolButton::clicked, this, slot);
-	};
 
 	/*
-	 * Add is a menu button rather than a plain one: there are twelve section types and
-	 * picking the type up front is what decides which editor fields appear.
+	 * One clear way to add a section, opening a gallery of what each kind looks like. Everything
+	 * else a row can have done to it lives on the row itself: its right-click menu, the ⋯ button
+	 * beside this one, and keyboard shortcuts.
 	 */
-	auto *addButton = makeGlyphButton(listButtonRow, QStringLiteral("+"), moduleText("Designer.Add"));
-	addButton->setPopupMode(QToolButton::InstantPopup);
-	listButtons->addWidget(addButton);
+	addButton = new QToolButton(listButtonRow);
+	addButton->setObjectName(QStringLiteral("designerAddSection"));
+	addButton->setText(moduleText("Designer.AddSection"));
+	addButton->setToolTip(moduleText("Designer.AddSection.Tip"));
+	addButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	addButton->setCursor(Qt::PointingHandCursor);
+	listButtons->addWidget(addButton, 1);
 
-	addListButton(makeGlyphButton(listButtonRow, QStringLiteral("−"), moduleText("Designer.Remove")),
-		      &DesignerDialog::removeSection);
-	addListButton(makeArrowButton(listButtonRow, Qt::UpArrow, moduleText("Designer.MoveUp")),
-		      [this] { moveSection(-1); });
-	addListButton(makeArrowButton(listButtonRow, Qt::DownArrow, moduleText("Designer.MoveDown")),
-		      [this] { moveSection(1); });
-	/* No glyph says "duplicate" without a theme icon behind it, so this one keeps its word. */
-	addListButton(makeLabeledButton(listButtonRow, moduleText("Designer.Duplicate")),
-		      &DesignerDialog::duplicateSection);
-	listButtons->addStretch();
+	auto *moreButton = new QToolButton(listButtonRow);
+	moreButton->setObjectName(QStringLiteral("designerMenuButton"));
+	moreButton->setText(QStringLiteral("⋯"));
+	moreButton->setToolTip(moduleText("Designer.MoreActions"));
+	moreButton->setPopupMode(QToolButton::InstantPopup);
+	listButtons->addWidget(moreButton);
 	listLayout->addWidget(listButtonRow);
 
-	auto *addMenu = new QMenu(addButton);
-	for (SectionType type : allSectionTypes()) {
-		QAction *action = addMenu->addAction(QString::fromUtf8(sectionTypeName(type)));
-		connect(action, &QAction::triggered, this, [this, type] {
-			commitCurrentSection();
-
-			/*
-			 * Asked before the undo step is opened, so backing out of the naming dialog
-			 * leaves the undo stack exactly as the menu found it.
-			 */
-			QString name;
-			if (!promptForSectionName(moduleText("Designer.NameSection.Add.Title"),
-						  QString::fromUtf8(sectionTypeName(type)), &name))
-				return;
-
-			beginUndoStep();
-
-			/*
-			 * Next to whatever is selected, in the same container: a section added while a
-			 * child of a sticky block is selected joins that block, which is the only
-			 * reading of "add one here" that does not surprise anyone.
-			 */
-			const SectionPath at = currentPath.isValid()
-						       ? SectionPath{currentPath.parent, currentPath.index + 1}
-						       : SectionPath{-1, static_cast<int>(document.sections.size())};
-
-			Section section = Section::makeDefault(type);
-			section.label = name;
-
-			const SectionPath added = insertSection(at, section);
-			refreshSectionList(-1);
-			refreshSectionList(rowOf(added));
-			schedulePreviewRefresh();
-		});
-	}
-	addButton->setMenu(addMenu);
+	gallery = new AddSectionGallery(this);
+	connect(gallery, &AddSectionGallery::typeChosen, this, &DesignerDialog::addSectionOfType);
+	connect(addButton, &QToolButton::clicked, this, &DesignerDialog::openAddGallery);
 
 	splitter->addWidget(listPane);
 
@@ -487,8 +899,8 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	 * --- middle: the editor for whichever section is selected ---
 	 *
 	 * Added straight to the splitter rather than wrapped in a scroll area: the editor is tabbed
-	 * and scrolls each of its pages itself, which is what keeps its type picker and its tab strip
-	 * on screen while a long page is scrolled. See SectionEditor::addTab.
+	 * and scrolls each of its pages itself, which is what keeps its header and its tab strip on
+	 * screen while a long page is scrolled. See SectionEditor::addTab.
 	 */
 	editor = new SectionEditor(splitter);
 	splitter->addWidget(editor);
@@ -496,7 +908,8 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	/* --- right: live preview of the whole strip --- */
 	previewPane = new QWidget(splitter);
 	auto *previewLayout = new QVBoxLayout(previewPane);
-	previewLayout->setContentsMargins(0, 0, 0, 0);
+	previewLayout->setContentsMargins(4, 0, 0, 0);
+	previewLayout->setSpacing(6);
 
 	/*
 	 * A header of its own, so the preview folds away to a button the way the section list does.
@@ -509,6 +922,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	previewCollapseButton->setArrowType(Qt::RightArrow);
 	previewCollapseButton->setToolTip(moduleText("Designer.Preview.Collapse"));
 	previewLabel = new QLabel(moduleText("Designer.Preview"), previewPane);
+	previewLabel->setObjectName(QStringLiteral("designerPaneTitle"));
 	previewHeader->addWidget(previewCollapseButton);
 	previewHeader->addWidget(previewLabel, 1);
 	previewLayout->addLayout(previewHeader);
@@ -516,7 +930,43 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	previewBody = new QWidget(previewPane);
 	auto *previewBodyLayout = new QVBoxLayout(previewBody);
 	previewBodyLayout->setContentsMargins(0, 0, 0, 0);
+	previewBodyLayout->setSpacing(6);
 	previewLayout->addWidget(previewBody, 1);
+
+	/* The view's own controls, over the view: zoom, the layout overlay, and animation. */
+	auto *viewBar = new QHBoxLayout();
+	viewBar->setSpacing(4);
+	zoomControl = new SegmentedControl(previewBody);
+	zoomControl->addSegment(moduleText("Designer.Preview.Fit"), moduleText("Designer.Preview.Fit.Tip"));
+	zoomControl->addSegment(moduleText("Designer.Preview.Actual"), moduleText("Designer.Preview.Actual.Tip"));
+	viewBar->addWidget(zoomControl);
+	viewBar->addStretch();
+
+	/*
+	 * Off by default: this is a view of the layout rather than of the roll, wanted only while
+	 * a section is not landing where its settings say it should.
+	 */
+	layoutBoxesButton = new QToolButton(previewBody);
+	layoutBoxesButton->setText(moduleText("Designer.LayoutBoxes"));
+	layoutBoxesButton->setToolTip(moduleText("Designer.LayoutBoxes.Tip"));
+	layoutBoxesButton->setCheckable(true);
+	layoutBoxesButton->setAutoRaise(true);
+	viewBar->addWidget(layoutBoxesButton);
+
+	/*
+	 * Off by default, like the overlay beside it and for the same reason: this pane is what a roll
+	 * is written in, and something moving in the corner of it while a name is being typed is a
+	 * distraction rather than a feature. With it off every animated logo shows its first frame,
+	 * which is the frame the layout was measured from.
+	 */
+	animateButton = new QToolButton(previewBody);
+	animateButton->setText(moduleText("Designer.PlayAnimations"));
+	animateButton->setToolTip(moduleText("Designer.PlayAnimations.Tip"));
+	animateButton->setCheckable(true);
+	animateButton->setAutoRaise(true);
+	animateButton->setEnabled(false);
+	viewBar->addWidget(animateButton);
+	previewBodyLayout->addLayout(viewBar);
 
 	preview = new PreviewWidget(previewBody);
 	preview->setToolTip(moduleText("Designer.Preview.Tip"));
@@ -528,30 +978,53 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 		if (row >= 0)
 			sectionList->setCurrentRow(row);
 	});
+
 	/*
-	 * Off by default: this is a view of the layout rather than of the roll, wanted only while
-	 * a section is not landing where its settings say it should.
+	 * The transport: the roll played in the preview at its own speed, with sticky blocks pinning
+	 * and holding and logos animating, as it will go to air. The scrubber marks every Action.
 	 */
-	layoutBoxesCheck = new QCheckBox(moduleText("Designer.LayoutBoxes"), previewBody);
-	layoutBoxesCheck->setToolTip(moduleText("Designer.LayoutBoxes.Tip"));
-	previewBodyLayout->addWidget(layoutBoxesCheck);
-	/*
-	 * Off by default, like the overlay above it and for the same reason: this pane is what a roll
-	 * is written in, and something moving in the corner of it while a name is being typed is a
-	 * distraction rather than a feature. With it off every animated logo shows its first frame,
-	 * which is the frame the layout was measured from.
-	 */
-	animateCheck = new QCheckBox(moduleText("Designer.PlayAnimations"), previewBody);
-	animateCheck->setToolTip(moduleText("Designer.PlayAnimations.Tip"));
-	animateCheck->setEnabled(false);
-	previewBodyLayout->addWidget(animateCheck);
-	durationLabel = new QLabel(previewBody);
-	previewBodyLayout->addWidget(durationLabel);
-	fontWarningLabel = new QLabel(previewBody);
-	fontWarningLabel->setWordWrap(true);
-	fontWarningLabel->setStyleSheet(QStringLiteral("color: #e0a030;"));
-	fontWarningLabel->hide();
-	previewBodyLayout->addWidget(fontWarningLabel);
+	auto *transport = new QHBoxLayout();
+	transport->setSpacing(6);
+	playButton = new QToolButton(previewBody);
+	playButton->setIcon(transportIcon(TransportIcon::Play, iconColor));
+	playButton->setToolTip(moduleText("Designer.Preview.Play.Tip"));
+	playButton->setAutoRaise(true);
+	stopButton = new QToolButton(previewBody);
+	stopButton->setIcon(transportIcon(TransportIcon::Stop, iconColor));
+	stopButton->setToolTip(moduleText("Designer.Preview.Stop.Tip"));
+	stopButton->setAutoRaise(true);
+	stopButton->setEnabled(false);
+	scrubber = new TimelineScrubber(previewBody);
+	timecodeLabel = new QLabel(previewBody);
+	styleAsHint(timecodeLabel);
+	QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+	timecodeLabel->setFont(mono);
+	transport->addWidget(playButton);
+	transport->addWidget(stopButton);
+	transport->addWidget(scrubber, 1);
+	transport->addWidget(timecodeLabel);
+	previewBodyLayout->addLayout(transport);
+
+	playTimer = new QTimer(this);
+	playTimer->setInterval(33);
+	connect(playTimer, &QTimer::timeout, this, [this] {
+		playTime += playClock.restart() / 1000.0;
+		const double length = playbackLength();
+		if (length > 0.0 && playTime >= length) {
+			playTime = length;
+			setPlaying(false);
+		}
+		showPlaybackAt(playTime);
+	});
+	connect(playButton, &QToolButton::clicked, this, [this] { setPlaying(!playing); });
+	connect(stopButton, &QToolButton::clicked, this, &DesignerDialog::stopPlayback);
+	connect(scrubber, &TimelineScrubber::seeked, this, [this](double seconds) {
+		playTime = seconds;
+		if (playing)
+			playClock.restart();
+		showPlaybackAt(seconds);
+	});
+
 	splitter->addWidget(previewPane);
 
 	splitter->setStretchFactor(0, 1);
@@ -564,35 +1037,109 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	splitter->setSizes(kDefaultPaneSizes);
 	outer->addWidget(splitter, 1);
 
-	/* --- bottom: undo, import/export and the dialog buttons --- */
-	auto *footer = new QHBoxLayout();
-	undoButton = new QPushButton(moduleText("Designer.Undo"), this);
-	redoButton = new QPushButton(moduleText("Designer.Redo"), this);
+	toast = new UndoToast(this);
+
 	/*
-	 * These take Ctrl+Z / Ctrl+Shift+Z away from the text fields' own undo. That is the
-	 * intent: one stack covering the whole document beats two that disagree about what the
-	 * last change was, and an undo step here already restores the text along with it.
+	 * --- actions on a section ---
+	 *
+	 * One set, reached from the right-click menu, the ⋯ button and the keyboard alike. The ones
+	 * whose keys a text field would also want (Delete, H, Alt+arrows) only listen while the list
+	 * has the focus; the rest work from anywhere in the window.
 	 */
-	undoButton->setShortcut(QKeySequence::Undo);
-	redoButton->setShortcut(QKeySequence::Redo);
-	footer->addWidget(undoButton);
-	footer->addWidget(redoButton);
+	const auto makeAction = [this](const char *key, const QKeySequence &shortcut, QWidget *scope,
+				       Qt::ShortcutContext context, auto slot) {
+		auto *action = new QAction(moduleText(key), this);
+		action->setShortcut(shortcut);
+		action->setShortcutContext(context);
+		scope->addAction(action);
+		connect(action, &QAction::triggered, this, slot);
+		return action;
+	};
 
-	auto *libraryButton = new QPushButton(moduleText("Designer.StyleLibrary"), this);
-	libraryButton->setToolTip(moduleText("Designer.StyleLibrary.Tip"));
-	auto *fontsButton = new QPushButton(moduleText("Designer.Fonts"), this);
-	fontsButton->setToolTip(moduleText("Designer.Fonts.Tip"));
-	auto *importButton = new QPushButton(moduleText("Designer.ImportJson"), this);
-	auto *exportButton = new QPushButton(moduleText("Designer.ExportJson"), this);
-	footer->addWidget(libraryButton);
-	footer->addWidget(fontsButton);
-	footer->addWidget(importButton);
-	footer->addWidget(exportButton);
-	footer->addStretch();
+	addSectionAction = makeAction("Designer.AddSection.Action", QKeySequence::New, this, Qt::WindowShortcut,
+				      &DesignerDialog::openAddGallery);
+	renameAction = makeAction("Designer.Rename", QKeySequence(Qt::Key_F2), this, Qt::WindowShortcut,
+				  &DesignerDialog::renameSelected);
+	duplicateAction = makeAction("Designer.Duplicate", QKeySequence(Qt::CTRL | Qt::Key_D), this, Qt::WindowShortcut,
+				     &DesignerDialog::duplicateSection);
+	hideAction = makeAction("Designer.ToggleInRoll", QKeySequence(Qt::Key_H), sectionList,
+				Qt::WidgetWithChildrenShortcut, [this] { toggleRowVisibility(currentRow); });
+	moveUpAction = makeAction("Designer.MoveUp", QKeySequence(Qt::ALT | Qt::Key_Up), sectionList,
+				  Qt::WidgetWithChildrenShortcut, [this] { moveSection(-1); });
+	moveDownAction = makeAction("Designer.MoveDown", QKeySequence(Qt::ALT | Qt::Key_Down), sectionList,
+				    Qt::WidgetWithChildrenShortcut, [this] { moveSection(1); });
+	removeAction = makeAction("Designer.Remove", QKeySequence::Delete, sectionList, Qt::WidgetWithChildrenShortcut,
+				  &DesignerDialog::removeSection);
 
-	buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
-	footer->addWidget(buttons);
-	outer->addLayout(footer);
+	/* Shown on the menus, which a shortcut on a hidden widget's action would not otherwise say. */
+	for (QAction *action :
+	     {addSectionAction, renameAction, duplicateAction, hideAction, moveUpAction, moveDownAction, removeAction})
+		action->setShortcutVisibleInContextMenu(true);
+
+	auto *moreMenu = new QMenu(moreButton);
+	moreMenu->addAction(renameAction);
+	moreMenu->addAction(duplicateAction);
+	moreMenu->addAction(hideAction);
+	moreMenu->addSeparator();
+	moreMenu->addAction(moveUpAction);
+	moreMenu->addAction(moveDownAction);
+	moreMenu->addSeparator();
+	moreMenu->addAction(removeAction);
+	moreButton->setMenu(moreMenu);
+	connect(sectionList, &QWidget::customContextMenuRequested, this, &DesignerDialog::showSectionMenu);
+
+	const auto addShortcut = [this](const QKeySequence &keys, QWidget *scope, Qt::ShortcutContext context,
+					auto slot) {
+		auto *shortcut = new QShortcut(keys, scope);
+		shortcut->setContext(context);
+		connect(shortcut, &QShortcut::activated, this, slot);
+	};
+
+	addShortcut(QKeySequence::Find, this, Qt::WindowShortcut, [this] {
+		setSectionsCollapsed(false);
+		filterEdit->setFocus(Qt::ShortcutFocusReason);
+		filterEdit->selectAll();
+	});
+	addShortcut(QKeySequence::Save, this, Qt::WindowShortcut, [this] { applyChanges(); });
+	addShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), this, Qt::WindowShortcut, [this] {
+		applyChanges();
+		accept();
+	});
+	addShortcut(QKeySequence(Qt::CTRL | Qt::Key_Enter), this, Qt::WindowShortcut, [this] {
+		applyChanges();
+		accept();
+	});
+	for (int tab = 0; tab < kEditorTabCount; ++tab) {
+		addShortcut(QKeySequence(Qt::CTRL | (Qt::Key_1 + tab)), this, Qt::WindowShortcut,
+			    [this, tab] { editor->showTab(static_cast<EditorTab>(tab)); });
+	}
+	/* Space plays and pauses -- but only from the list and the preview, never from a text field. */
+	for (QWidget *scope : {static_cast<QWidget *>(sectionList), static_cast<QWidget *>(previewPane)})
+		addShortcut(QKeySequence(Qt::Key_Space), scope, Qt::WidgetWithChildrenShortcut,
+			    [this] { setPlaying(!playing); });
+
+	connect(filterEdit, &QLineEdit::textChanged, this, &DesignerDialog::applyRowVisibility);
+	connect(sectionList, &SectionListWidget::visibilityToggled, this, &DesignerDialog::toggleRowVisibility);
+	connect(zoomControl, &SegmentedControl::currentIndexChanged, this, [this](int index) {
+		preview->setZoom(index == 1 ? PreviewWidget::Zoom::Actual : PreviewWidget::Zoom::Fit);
+	});
+	connect(warningChip, &QToolButton::clicked, this, [this] {
+		if (fontWarnings)
+			openFonts();
+		else
+			QToolTip::showText(warningChip->mapToGlobal(QPoint(0, warningChip->height())),
+					   warnings.join(QStringLiteral("\n")), warningChip);
+	});
+	connect(libraryAction, &QAction::triggered, this, &DesignerDialog::openStyleLibrary);
+	connect(fontsAction, &QAction::triggered, this, &DesignerDialog::openFonts);
+	connect(importAction, &QAction::triggered, this, &DesignerDialog::importJson);
+	connect(exportAction, &QAction::triggered, this, &DesignerDialog::exportJson);
+	connect(cancelButton, &QPushButton::clicked, this, &DesignerDialog::reject);
+	connect(applyButton, &QPushButton::clicked, this, &DesignerDialog::applyChanges);
+	connect(doneButton, &QPushButton::clicked, this, [this] {
+		applyChanges();
+		accept();
+	});
 
 	refreshTimer = new QTimer(this);
 	refreshTimer->setSingleShot(true);
@@ -606,15 +1153,16 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	libraryWriteTimer->setSingleShot(true);
 	libraryWriteTimer->setInterval(kLibraryWriteDebounceMs);
 
-	connect(layoutBoxesCheck, &QCheckBox::toggled, this, [this](bool on) { preview->setLayoutBoxesVisible(on); });
-	connect(animateCheck, &QCheckBox::toggled, this, [this](bool on) { preview->setAnimationPlaying(on); });
+	connect(layoutBoxesButton, &QToolButton::toggled, this,
+		[this](bool on) { preview->setLayoutBoxesVisible(on); });
+	connect(animateButton, &QToolButton::toggled, this, [this](bool on) { preview->setAnimationPlaying(on); });
 	connect(refreshTimer, &QTimer::timeout, this, &DesignerDialog::refreshPreview);
 	connect(editBurstTimer, &QTimer::timeout, this, [this] { editBurstOpen = false; });
 	connect(libraryWriteTimer, &QTimer::timeout, this, &DesignerDialog::flushLibraryEdits);
 	connect(collapseButton, &QToolButton::clicked, this, [this] { setSectionsCollapsed(!sectionsCollapsed); });
 	connect(previewCollapseButton, &QToolButton::clicked, this, [this] { setPreviewCollapsed(!previewCollapsed); });
-	connect(undoButton, &QPushButton::clicked, this, &DesignerDialog::undo);
-	connect(redoButton, &QPushButton::clicked, this, &DesignerDialog::redo);
+	connect(undoButton, &QToolButton::clicked, this, &DesignerDialog::undo);
+	connect(redoButton, &QToolButton::clicked, this, &DesignerDialog::redo);
 	connect(sectionList, &QListWidget::currentRowChanged, this, &DesignerDialog::onSelectionChanged);
 	connect(sectionList, &SectionListWidget::rowMoved, this, &DesignerDialog::moveSectionTo);
 	connect(sectionList, &SectionListWidget::blockFoldToggled, this, &DesignerDialog::toggleBlockFold);
@@ -623,22 +1171,6 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	connect(editor, &SectionEditor::presetDeleteRequested, this, &DesignerDialog::deletePreset);
 	connect(editor, &SectionEditor::backgroundPresetSaveRequested, this, &DesignerDialog::saveBackgroundPreset);
 	connect(editor, &SectionEditor::backgroundPresetDeleteRequested, this, &DesignerDialog::deleteBackgroundPreset);
-	connect(libraryButton, &QPushButton::clicked, this, &DesignerDialog::openStyleLibrary);
-	connect(fontsButton, &QPushButton::clicked, this, &DesignerDialog::openFonts);
-	connect(importButton, &QPushButton::clicked, this, &DesignerDialog::importJson);
-	connect(exportButton, &QPushButton::clicked, this, &DesignerDialog::exportJson);
-	connect(buttons, &QDialogButtonBox::accepted, this, [this] {
-		commitCurrentSection();
-		flushLibraryEdits();
-		writeToSource();
-		accept();
-	});
-	connect(buttons, &QDialogButtonBox::rejected, this, &DesignerDialog::reject);
-	connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] {
-		commitCurrentSection();
-		flushLibraryEdits();
-		writeToSource();
-	});
 
 	/*
 	 * A library edited in another OBS window, imported from elsewhere, or written by hand shows up
@@ -657,6 +1189,22 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 
 	loadFromSource();
 	refreshUndoButtons();
+}
+
+void DesignerDialog::changeEvent(QEvent *event)
+{
+	QDialog::changeEvent(event);
+
+	if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::StyleChange)
+		applyReadablePlaceholders(this);
+}
+
+void DesignerDialog::showEvent(QShowEvent *event)
+{
+	QDialog::showEvent(event);
+
+	/* Here rather than in the constructor: the fields are polished by now, and keep what is set. */
+	applyReadablePlaceholders(this);
 }
 
 void DesignerDialog::reloadStyleLibrary()
@@ -777,12 +1325,21 @@ void DesignerDialog::loadFromSource()
 	OBSDataAutoRelease settings = obs_source_get_settings(source);
 	document.load(settings);
 
-	if (document.sections.isEmpty())
+	/*
+	 * A new roll starts with a heading, a heading for a run of credits, and the run itself -- the
+	 * shape most rolls take -- rather than one lone title to work out the rest from. The Roll menu
+	 * offers fuller starting points.
+	 */
+	if (document.sections.isEmpty()) {
 		document.sections.append(Section::makeDefault(SectionType::Title));
+		document.sections.append(Section::makeDefault(SectionType::Header));
+		document.sections.append(Section::makeDefault(SectionType::TextList));
+	}
 
 	editor->setPresets(document.stylePresets);
 	editor->setBackgroundPresets(document.backgroundPresets);
 	refreshSectionList(0);
+	markSaved();
 	refreshPreview();
 }
 
@@ -820,6 +1377,158 @@ void DesignerDialog::writeToSource()
 	OBSDataAutoRelease updated = obs_data_create();
 	merged.save(updated);
 	obs_source_update(source, updated);
+
+	markSaved();
+}
+
+void DesignerDialog::applyChanges()
+{
+	commitCurrentSection();
+	flushLibraryEdits();
+	writeToSource();
+}
+
+bool DesignerDialog::isDirty()
+{
+	commitCurrentSection();
+
+	const DocumentSnapshot now = snapshot();
+	const bool sameExtras =
+		now.stylePresets == savedState.stylePresets && now.backgroundPresets == savedState.backgroundPresets &&
+		now.bundleFonts == savedState.bundleFonts && now.fontSubstitutions == savedState.fontSubstitutions;
+	if (!sameExtras)
+		return true;
+
+	/* Shared data compares in an instant; only a real difference pays for the view state to be cleared. */
+	if (now.sections == savedState.sections)
+		return false;
+	return withoutViewState(now.sections) != withoutViewState(savedState.sections);
+}
+
+void DesignerDialog::refreshDirty()
+{
+	dirty = isDirty();
+	dirtyMark->setVisible(dirty);
+	setWindowModified(dirty);
+}
+
+void DesignerDialog::markSaved()
+{
+	commitCurrentSection();
+	savedState = snapshot();
+	refreshDirty();
+}
+
+void DesignerDialog::reject()
+{
+	/*
+	 * A source deleted under the window has nowhere to save to, so there is nothing to ask; and
+	 * a roll with nothing unapplied has nothing to lose.
+	 */
+	if (sourceIsGone() || !isDirty()) {
+		QDialog::reject();
+		return;
+	}
+
+	QMessageBox box(this);
+	box.setWindowTitle(moduleText("Designer.Title"));
+	box.setIcon(QMessageBox::Question);
+	OBSSourceAutoRelease source = obs_weak_source_get_source(weakSource);
+	box.setText(moduleText("Designer.SaveChanges").arg(QString::fromUtf8(obs_source_get_name(source))));
+	box.setInformativeText(moduleText("Designer.SaveChanges.Detail"));
+	QPushButton *save = box.addButton(moduleText("Designer.SaveChanges.Save"), QMessageBox::AcceptRole);
+	QPushButton *discard = box.addButton(moduleText("Designer.SaveChanges.Discard"), QMessageBox::DestructiveRole);
+	QPushButton *keep = box.addButton(moduleText("Designer.SaveChanges.Keep"), QMessageBox::RejectRole);
+	box.setDefaultButton(save);
+	box.setEscapeButton(keep);
+	box.exec();
+
+	if (box.clickedButton() == save) {
+		applyChanges();
+		QDialog::accept();
+	} else if (box.clickedButton() == discard) {
+		QDialog::reject();
+	}
+}
+
+void DesignerDialog::keyPressEvent(QKeyEvent *event)
+{
+	/*
+	 * Escape in a field being typed into stops the typing and goes back to the list; it is not
+	 * a request to close the window. Escape from anywhere else still closes it, by way of reject.
+	 */
+	if (event->key() == Qt::Key_Escape && isTypingInto(focusWidget())) {
+		sectionList->setFocus(Qt::OtherFocusReason);
+		event->accept();
+		return;
+	}
+
+	QDialog::keyPressEvent(event);
+}
+
+double DesignerDialog::playbackLength() const
+{
+	const double finish = shownTimeline.finishTime();
+	if (std::isfinite(finish))
+		return finish;
+
+	const double travel = shownTimeline.travelTime();
+	if (std::isfinite(travel))
+		return travel;
+
+	/* A roll that holds for ever: as far as the last thing that happens, and a little more. */
+	double last = 0.0;
+	for (const RollTimeline::BlockSchedule &block : shownTimeline.schedules()) {
+		for (const double moment : {block.enter, block.pin, block.holdEnd, block.release})
+			if (std::isfinite(moment))
+				last = std::max(last, moment);
+	}
+	return last + 10.0;
+}
+
+void DesignerDialog::setPlaying(bool play)
+{
+	if (play == playing)
+		return;
+
+	playing = play;
+
+	if (playing) {
+		/* From the top again once it has run to the end. */
+		if (playTime >= playbackLength() - 0.01)
+			playTime = 0.0;
+		playClock.restart();
+		playTimer->start();
+		showPlaybackAt(playTime);
+	} else {
+		playTimer->stop();
+	}
+
+	playButton->setIcon(transportIcon(playing ? TransportIcon::Pause : TransportIcon::Play,
+					  palette().color(QPalette::ButtonText)));
+	playButton->setToolTip(moduleText(playing ? "Designer.Preview.Pause.Tip" : "Designer.Preview.Play.Tip"));
+	stopButton->setEnabled(playing || preview->isShowingPlayback());
+}
+
+void DesignerDialog::showPlaybackAt(double seconds)
+{
+	if (!shownLayout)
+		return;
+
+	preview->showPlaybackFrame(shownTimeline.evaluate(seconds));
+	scrubber->setPosition(seconds);
+	timecodeLabel->setText(QStringLiteral("%1 / %2").arg(formatClock(seconds), formatClock(playbackLength())));
+	stopButton->setEnabled(true);
+}
+
+void DesignerDialog::stopPlayback()
+{
+	setPlaying(false);
+	playTime = 0.0;
+	preview->clearPlayback();
+	scrubber->setPosition(0.0);
+	timecodeLabel->setText(QStringLiteral("%1 / %2").arg(formatClock(0.0), formatClock(playbackLength())));
+	stopButton->setEnabled(false);
 }
 
 Section *DesignerDialog::sectionAt(const SectionPath &path)
@@ -894,19 +1603,6 @@ DesignerDialog::SectionPath DesignerDialog::insertSection(const SectionPath &pat
 	return SectionPath{path.parent, at};
 }
 
-bool DesignerDialog::promptForSectionName(const QString &title, const QString &initial, QString *name)
-{
-	bool accepted = false;
-	const QString answer = QInputDialog::getText(this, title, moduleText("Designer.NameSection.Prompt"),
-						     QLineEdit::Normal, initial, &accepted)
-				       .trimmed();
-	if (!accepted)
-		return false;
-
-	*name = answer;
-	return true;
-}
-
 void DesignerDialog::removeSectionAt(const SectionPath &path)
 {
 	if (!sectionAt(path))
@@ -921,6 +1617,19 @@ void DesignerDialog::removeSectionAt(const SectionPath &path)
 	children.erase(children.begin() + path.index);
 }
 
+void DesignerDialog::highlightCurrentSection()
+{
+	if (!currentPath.isValid()) {
+		preview->setHighlightedSection(-1);
+		return;
+	}
+
+	/* Named after what the preview outlines, which for a child is its whole block. */
+	const int index = highlightFor(currentPath);
+	const Section *outlined = sectionAt(SectionPath{-1, index});
+	preview->setHighlightedSection(index, outlined ? outlined->displayLabel() : QString());
+}
+
 int DesignerDialog::highlightFor(const SectionPath &path) const
 {
 	/*
@@ -931,33 +1640,39 @@ int DesignerDialog::highlightFor(const SectionPath &path) const
 	return path.parent >= 0 ? path.parent : path.index;
 }
 
-QString DesignerDialog::rowLabel(const SectionPath &path, const Section &section) const
+void DesignerDialog::fillRowItem(QListWidgetItem *item, const SectionPath &path, const Section &section) const
 {
+	const bool block = path.parent < 0 && section.type == SectionType::StickyBlock;
+	const int held = block ? static_cast<int>(section.children.size()) : 0;
+
+	item->setText(section.displayLabel());
+	item->setToolTip(QString::fromUtf8(sectionTypeName(section.type)));
+	item->setFlags(item->flags() | Qt::ItemIsEditable);
+	item->setData(kTypeRole, static_cast<int>(section.type));
+	item->setData(kVisibleRole, section.visible);
+	item->setData(kDepthRole, path.parent >= 0 ? 1 : 0);
+	item->setData(kMarkerRole, section.type == SectionType::Spacer || section.type == SectionType::Action);
+	item->setData(kLabelRole, section.label);
+
 	/*
-	 * Children are drawn with a branch off their block rather than by a delegate or a tree: a
-	 * list is the right widget for a roll that is a run of sections with one shallow exception
-	 * in it, and a tree would trade the drag-and-drop reordering that works for one that has to
-	 * be taught which drops mean what. The branch is what says the row belongs to the block above
-	 * it -- an indent alone reads as a wider margin as readily as it reads as a child.
+	 * A block says how many sections it holds, which is the one thing about it a folded row cannot
+	 * show for itself, and carries the arrow that folds it. A block holding nothing has nothing to
+	 * fold.
 	 */
+	QString detail = describeSection(section);
+	/* An unnamed spacer already says its height in the name it gives itself. */
+	if (section.type == SectionType::Spacer && section.label.isEmpty())
+		detail.clear();
+	if (block)
+		detail = moduleText("Designer.Detail.Holding").arg(detail).arg(held);
+	item->setData(kDetailRole, detail);
+	item->setData(kBlockRowRole, block && held > 0);
+	item->setData(kFoldRole, block && held > 0 ? (section.childrenCollapsed ? 2 : 1) : 0);
+
 	if (path.parent >= 0) {
-		const Section *block = sectionAt(SectionPath{-1, path.parent});
-		const bool last = block && path.index + 1 == static_cast<int>(block->children.size());
-		return (last ? kChildBranchLast : kChildBranch) + section.displayLabel();
+		const Section *owner = sectionAt(SectionPath{-1, path.parent});
+		item->setData(kLastChildRole, owner && path.index + 1 == static_cast<int>(owner->children.size()));
 	}
-
-	/*
-	 * A block says how many sections it holds, which is the one thing about it a folded row
-	 * cannot show for itself, and carries the arrow that folds it. A block holding nothing has
-	 * nothing to fold, so it takes the same blank every other top-level row does.
-	 */
-	if (section.type == SectionType::StickyBlock) {
-		const int held = static_cast<int>(section.children.size());
-		const QString fold = held == 0 ? kFoldNone : (section.childrenCollapsed ? kFoldClosed : kFoldOpen);
-		return fold + section.displayLabel() + QStringLiteral(" (%1)").arg(held);
-	}
-
-	return kFoldNone + section.displayLabel();
 }
 
 void DesignerDialog::toggleBlockFold(int row)
@@ -995,21 +1710,11 @@ void DesignerDialog::refreshSectionList(int selectRow)
 		if (!section)
 			continue;
 
-		auto *item = new QListWidgetItem(rowLabel(path, *section), sectionList);
-		item->setToolTip(QString::fromUtf8(sectionTypeName(section->type)));
-		if (!section->visible)
-			item->setForeground(Qt::gray);
-
-		/* Only a block with something in it folds, and only its row answers a click on one. */
-		if (path.parent < 0 && section->type == SectionType::StickyBlock && !section->children.empty())
-			item->setData(kBlockRowRole, true);
-
-		/* A folded block's children stay in the list, and out of sight; see toggleBlockFold. */
-		if (path.parent >= 0) {
-			const Section *block = sectionAt(SectionPath{-1, path.parent});
-			item->setHidden(block && block->childrenCollapsed);
-		}
+		fillRowItem(new QListWidgetItem(sectionList), path, *section);
 	}
+
+	sectionsLabel->setText(moduleText("Designer.Sections.Count").arg(document.sections.size()));
+	applyRowVisibility();
 
 	int row = std::clamp(selectRow, -1, static_cast<int>(rowPaths.size()) - 1);
 
@@ -1017,18 +1722,56 @@ void DesignerDialog::refreshSectionList(int selectRow)
 	 * Never a row nothing can see: a selection folded away leaves the editor working on a
 	 * section the list is not showing, so it moves up to the block that folded it.
 	 */
-	if (row >= 0 && row < sectionList->count() && sectionList->item(row)->isHidden())
+	if (row >= 0 && row < sectionList->count() && sectionList->item(row)->isHidden() &&
+	    rowPaths.at(row).parent >= 0)
 		row = rowOf(SectionPath{-1, rowPaths.at(row).parent});
 	sectionList->setCurrentRow(row);
 	currentRow = row;
 	currentPath = row >= 0 ? rowPaths.at(row) : SectionPath{};
 	/* Set here as well as on selection: this path moves the row with the list's signals blocked. */
-	preview->setHighlightedSection(row >= 0 ? highlightFor(currentPath) : -1);
+	highlightCurrentSection();
 
 	if (const Section *section = sectionAt(currentPath))
 		editor->setSection(*section);
 
 	editor->setEnabled(row >= 0);
+}
+
+void DesignerDialog::applyRowVisibility()
+{
+	const QString needle = filterEdit->text().trimmed();
+	const bool filtering = !needle.isEmpty();
+
+	const auto matches = [&needle](const QListWidgetItem *item) {
+		return item->text().contains(needle, Qt::CaseInsensitive) ||
+		       item->data(kDetailRole).toString().contains(needle, Qt::CaseInsensitive) ||
+		       item->toolTip().contains(needle, Qt::CaseInsensitive);
+	};
+
+	for (int row = 0; row < sectionList->count() && row < rowPaths.size(); ++row) {
+		QListWidgetItem *item = sectionList->item(row);
+		const SectionPath &path = rowPaths.at(row);
+
+		bool show = true;
+		if (filtering) {
+			/* A block is shown when anything in it matches, so a match is never left without its context. */
+			show = matches(item);
+			if (!show && path.parent < 0) {
+				for (int child = row + 1;
+				     child < rowPaths.size() && rowPaths.at(child).parent == path.index; ++child)
+					show = show || matches(sectionList->item(child));
+			}
+		} else if (path.parent >= 0) {
+			/* A folded block's children stay in the list, and out of sight; see toggleBlockFold. */
+			const Section *block = sectionAt(SectionPath{-1, path.parent});
+			show = !(block && block->childrenCollapsed);
+		}
+
+		item->setHidden(!show);
+	}
+
+	/* A drop is placed by the row it follows, which a filtered list cannot be trusted to show. */
+	sectionList->setDragEnabled(!filtering);
 }
 
 DesignerDialog::DocumentSnapshot DesignerDialog::snapshot() const
@@ -1046,6 +1789,9 @@ void DesignerDialog::beginUndoStep()
 {
 	editBurstOpen = false;
 	editBurstTimer->stop();
+
+	/* A toast's Undo means the edit it was about; once anything else has happened, it would not. */
+	toast->hide();
 
 	undoStack.append(snapshot());
 	if (undoStack.size() > kUndoDepth)
@@ -1096,6 +1842,7 @@ void DesignerDialog::undo()
 		return;
 
 	commitCurrentSection();
+	toast->hide();
 	redoStack.append(snapshot());
 	restore(undoStack.takeLast());
 	refreshUndoButtons();
@@ -1120,6 +1867,7 @@ void DesignerDialog::setSectionsCollapsed(bool collapsed)
 	sectionsCollapsed = collapsed;
 
 	sectionsLabel->setVisible(!collapsed);
+	filterEdit->setVisible(!collapsed);
 	sectionList->setVisible(!collapsed);
 	listButtonRow->setVisible(!collapsed);
 
@@ -1204,7 +1952,7 @@ void DesignerDialog::onSelectionChanged()
 	currentRow = row;
 	currentPath = row >= 0 && row < rowPaths.size() ? rowPaths.at(row) : SectionPath{};
 	editor->setEnabled(row >= 0);
-	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
+	highlightCurrentSection();
 
 	if (const Section *section = sectionAt(currentPath))
 		editor->setSection(*section);
@@ -1235,9 +1983,7 @@ void DesignerDialog::onSectionEdited()
 	const Section *section = sectionAt(currentPath);
 	if (section && currentRow >= 0 && currentRow < sectionList->count()) {
 		const QSignalBlocker blocker(sectionList);
-		QListWidgetItem *item = sectionList->item(currentRow);
-		item->setText(rowLabel(currentPath, *section));
-		item->setForeground(section->visible ? QBrush() : QBrush(Qt::gray));
+		fillRowItem(sectionList->item(currentRow), currentPath, *section);
 	}
 
 	schedulePreviewRefresh();
@@ -1251,66 +1997,31 @@ void DesignerDialog::duplicateSection()
 	if (!section)
 		return;
 
-	/*
-	 * Offered from the name the list already shows rather than from the stored label, so a
-	 * section that never had one still suggests something the reader recognizes. Clearing the
-	 * field puts the copy back to naming itself, exactly as its original does.
-	 */
-	QString name;
-	if (!promptForSectionName(moduleText("Designer.NameSection.Duplicate.Title"),
-				  moduleText("Designer.NameSection.CopySuffix").arg(section->displayLabel()), &name))
-		return;
-
 	beginUndoStep();
 	/* Copied first: inserting into the container can move the section the pointer names. */
-	Section copy = *sectionAt(currentPath);
-	copy.label = name;
+	Section copy = *section;
+	/*
+	 * Named after the name the list already shows rather than the stored label, so a section that
+	 * never had one still gives the copy something the reader recognizes. The rename that follows
+	 * starts from it; Enter keeps it.
+	 */
+	copy.label = moduleText("Designer.NameSection.CopySuffix").arg(section->displayLabel());
 	const SectionPath added = insertSection(SectionPath{currentPath.parent, currentPath.index + 1}, copy);
 	refreshSectionList(-1);
 	refreshSectionList(rowOf(added));
 	schedulePreviewRefresh();
-}
-
-bool DesignerDialog::confirmRemoveSection(const Section &section)
-{
-	if (!askBeforeRemovingSection)
-		return true;
-
-	QMessageBox box(this);
-	box.setWindowTitle(moduleText("Designer.RemoveSection.Title"));
-	/*
-	 * Named rather than merely counted, because the section list is a column of short labels and
-	 * "the selected one" is exactly what a misclick makes uncertain.
-	 */
-	box.setText(moduleText("Designer.RemoveSection.Confirm").arg(section.displayLabel()));
-	box.setIcon(QMessageBox::Question);
-	box.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
-	box.setDefaultButton(QMessageBox::Cancel);
-
-	/*
-	 * Remembered for this window rather than for the machine: undo already covers a delete, so
-	 * the box is a courtesy rather than the safety net, and someone who has switched it off
-	 * gets it back by opening the designer again rather than by hunting for a setting.
-	 */
-	auto *remember = new QCheckBox(moduleText("Designer.RemoveSection.DontAsk"), &box);
-	box.setCheckBox(remember);
-
-	const bool confirmed = box.exec() == QMessageBox::Yes;
-	if (confirmed && remember->isChecked())
-		askBeforeRemovingSection = false;
-
-	return confirmed;
+	renameSelected();
 }
 
 void DesignerDialog::removeSection()
 {
+	commitCurrentSection();
+
 	const Section *section = sectionAt(currentPath);
 	if (!section)
 		return;
 
-	if (!confirmRemoveSection(*section))
-		return;
-
+	const QString name = section->displayLabel();
 	beginUndoStep();
 
 	const int removedRow = currentRow;
@@ -1323,6 +2034,176 @@ void DesignerDialog::removeSection()
 	refreshSectionList(-1);
 	refreshSectionList(std::min(removedRow, static_cast<int>(rowPaths.size()) - 1));
 	schedulePreviewRefresh();
+
+	/*
+	 * No "are you sure?" first: undo covers a delete, and what a misclick needs is to be told what
+	 * happened and handed the way back, there and then.
+	 */
+	toast->showMessage(moduleText("Designer.Removed").arg(name), [this] { undo(); });
+}
+
+void DesignerDialog::addSectionOfType(SectionType type)
+{
+	commitCurrentSection();
+	beginUndoStep();
+
+	/*
+	 * Next to whatever is selected, in the same container: a section added while a child of a
+	 * sticky block is selected joins that block, which is the only reading of "add one here" that
+	 * does not surprise anyone.
+	 */
+	const SectionPath at = currentPath.isValid() ? SectionPath{currentPath.parent, currentPath.index + 1}
+						     : SectionPath{-1, static_cast<int>(document.sections.size())};
+
+	const SectionPath added = insertSection(at, Section::makeDefault(type));
+	refreshSectionList(-1);
+	refreshSectionList(rowOf(added));
+	schedulePreviewRefresh();
+
+	/*
+	 * The one moment a name is worth asking for is the moment the section is made, so the new row
+	 * opens for renaming in place -- Enter keeps the name it gives itself, and Escape leaves the
+	 * section added with that name.
+	 */
+	renameSelected();
+}
+
+void DesignerDialog::openAddGallery()
+{
+	setSectionsCollapsed(false);
+
+	const Section *after = sectionAt(currentPath);
+	gallery->popup(addButton,
+		       after ? moduleText("Designer.Gallery.InsertsBelow").arg(after->displayLabel()) : QString());
+}
+
+void DesignerDialog::renameSelected()
+{
+	if (currentRow < 0 || currentRow >= sectionList->count())
+		return;
+
+	setSectionsCollapsed(false);
+
+	/* Deferred so a menu or popup that started this has gone, and the list can take the focus. */
+	QTimer::singleShot(0, this, [this] {
+		if (currentRow < 0 || currentRow >= sectionList->count())
+			return;
+		QListWidgetItem *item = sectionList->item(currentRow);
+		sectionList->setFocus();
+		sectionList->scrollToItem(item);
+		sectionList->editItem(item);
+	});
+}
+
+void DesignerDialog::renameRow(int row, const QString &typed)
+{
+	if (row < 0 || row >= rowPaths.size())
+		return;
+
+	const SectionPath path = rowPaths.at(row);
+	Section *section = sectionAt(path);
+	if (!section)
+		return;
+
+	commitCurrentSection();
+	section = sectionAt(path);
+
+	QString name = typed.trimmed();
+
+	/*
+	 * Accepting the name a section gives itself keeps it naming itself, so it goes on following
+	 * what it holds rather than freezing today's words into a label.
+	 */
+	Section unnamed = *section;
+	unnamed.label.clear();
+	if (name == unnamed.displayLabel())
+		name.clear();
+
+	if (name == section->label)
+		return;
+
+	beginUndoStep();
+	section->label = name;
+
+	const QSignalBlocker blocker(sectionList);
+	fillRowItem(sectionList->item(row), path, *section);
+	if (row == currentRow)
+		editor->setSection(*section);
+	schedulePreviewRefresh();
+}
+
+void DesignerDialog::toggleRowVisibility(int row)
+{
+	if (row < 0 || row >= rowPaths.size())
+		return;
+
+	commitCurrentSection();
+
+	const SectionPath path = rowPaths.at(row);
+	Section *section = sectionAt(path);
+	if (!section)
+		return;
+
+	beginUndoStep();
+	section->visible = !section->visible;
+
+	{
+		const QSignalBlocker blocker(sectionList);
+		fillRowItem(sectionList->item(row), path, *section);
+	}
+	if (row == currentRow)
+		editor->setSection(*section);
+	schedulePreviewRefresh();
+}
+
+void DesignerDialog::showSectionMenu(const QPoint &position)
+{
+	const int row = sectionList->indexAt(position).row();
+	if (row >= 0 && row != currentRow)
+		sectionList->setCurrentRow(row);
+
+	const bool onRow = row >= 0;
+	for (QAction *action : {renameAction, duplicateAction, hideAction, moveUpAction, moveDownAction, removeAction})
+		action->setEnabled(onRow);
+
+	if (const Section *section = sectionAt(currentPath))
+		hideAction->setText(moduleText(section->visible ? "Designer.HideFromRoll" : "Designer.ShowInRoll"));
+
+	QMenu menu(this);
+	menu.addAction(renameAction);
+	menu.addAction(duplicateAction);
+	menu.addAction(hideAction);
+	menu.addSeparator();
+	menu.addAction(moveUpAction);
+	menu.addAction(moveDownAction);
+	menu.addSeparator();
+	menu.addAction(addSectionAction);
+	menu.addSeparator();
+	menu.addAction(removeAction);
+	menu.exec(sectionList->viewport()->mapToGlobal(position));
+
+	for (QAction *action : {renameAction, duplicateAction, hideAction, moveUpAction, moveDownAction, removeAction})
+		action->setEnabled(true);
+	hideAction->setText(moduleText("Designer.ToggleInRoll"));
+}
+
+void DesignerDialog::startFromTemplate(int index)
+{
+	if (index < 0 || index >= rollTemplates().size())
+		return;
+
+	commitCurrentSection();
+	beginUndoStep();
+
+	const RollTemplate &chosen = rollTemplates().at(index);
+	document.sections = chosen.build();
+	currentPath = SectionPath{};
+	currentRow = -1;
+	refreshSectionList(-1);
+	refreshSectionList(0);
+	schedulePreviewRefresh();
+
+	toast->showMessage(moduleText("Designer.Template.Started").arg(moduleText(chosen.nameKey)), [this] { undo(); });
 }
 
 void DesignerDialog::moveSection(int delta)
@@ -1598,6 +2479,8 @@ void DesignerDialog::schedulePreviewRefresh()
 
 void DesignerDialog::refreshPreview()
 {
+	refreshDirty();
+
 	/* Overtakes whatever layout is in flight: it gives up between sections when it sees this. */
 	const uint64_t generation = ++sink->generation;
 
@@ -1648,33 +2531,37 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 
 	shownLayout = layout;
 	preview->setLayout(layout, rendered.background);
-	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
+	highlightCurrentSection();
 
 	/*
 	 * How long the roll runs is the timeline's answer, which counts what the strip's height alone
-	 * cannot: a card holding at the end, a card that waits for the roll and then fades up.
+	 * cannot: a card holding at the end, a card that waits for the roll and then fades up. The
+	 * transport plays the same timeline.
 	 */
-	const RollTimeline timeline(layout->timelineInputs());
-	const auto clock = [](double seconds) {
-		const int whole = static_cast<int>(seconds);
-		return QStringLiteral("%1:%2").arg(whole / 60).arg(whole % 60, 2, 10, QLatin1Char('0'));
-	};
+	shownTimeline = RollTimeline(layout->timelineInputs());
+	const RollTimeline &timeline = shownTimeline;
 
 	QString running;
 	if (rendered.loop && std::isfinite(timeline.travelTime()))
-		running =
-			QStringLiteral("%1 %2").arg(moduleText("Designer.DurationLoops"), clock(timeline.travelTime()));
+		running = moduleText("Designer.DurationLoops").arg(formatClock(timeline.travelTime()));
 	else if (std::isfinite(timeline.finishTime()))
-		running = QStringLiteral("%1 %2").arg(moduleText("Designer.Duration"), clock(timeline.finishTime()));
+		running = moduleText("Designer.Duration").arg(formatClock(timeline.finishTime()));
 	else
 		running = moduleText("Designer.DurationForever");
 
-	durationLabel->setText(QStringLiteral("%1  ·  %2 %3 px")
-				       .arg(running)
-				       .arg(moduleText("Designer.StripHeight"))
-				       .arg(layout->height));
+	durationPill->setText(
+		QStringLiteral("%1  ·  %2")
+			.arg(running, moduleText("Designer.StripHeight").arg(QLocale().toString(layout->height))));
 
-	QStringList warnings;
+	scrubber->setDuration(playbackLength());
+	scrubber->setMarkers(timeline.cueTimes());
+	if (!playing && !preview->isShowingPlayback())
+		timecodeLabel->setText(QStringLiteral("%1 / %2").arg(formatClock(0.0), formatClock(playbackLength())));
+	else
+		showPlaybackAt(std::min(playTime, playbackLength()));
+
+	warnings.clear();
+	fontWarnings = false;
 
 	/*
 	 * Only the families nothing has been done about are a warning. One the roll carries its own
@@ -1683,8 +2570,10 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 	 * worth saying and is not a problem to go and fix.
 	 */
 	const QStringList unresolvedFonts = unresolvedFontFamilies(rendered);
-	if (!unresolvedFonts.isEmpty())
+	if (!unresolvedFonts.isEmpty()) {
 		warnings.append(moduleText("Designer.MissingFonts").arg(unresolvedFonts.join(QStringLiteral(", "))));
+		fontWarnings = true;
+	}
 
 	QStringList substituted;
 	for (const QString &family : missingFontFamilies(rendered)) {
@@ -1693,8 +2582,10 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 			substituted.append(QStringLiteral("%1 → %2").arg(family, substitute));
 	}
 
-	if (!substituted.isEmpty())
+	if (!substituted.isEmpty()) {
 		warnings.append(moduleText("Designer.SubstitutedFonts").arg(substituted.join(QStringLiteral(", "))));
+		fontWarnings = true;
+	}
 
 	/*
 	 * Reported from the layout rather than from the document, because it is an answer only the
@@ -1707,12 +2598,16 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 	if (truncated)
 		warnings.append(moduleText("Designer.LogoTruncated").arg(kMaxLogoDurationMs / 1000));
 
-	fontWarningLabel->setVisible(!warnings.isEmpty());
-	fontWarningLabel->setText(warnings.join(QStringLiteral("\n")));
+	warningChip->setVisible(!warnings.isEmpty());
+	warningChip->setText(warnings.size() == 1 ? moduleText("Designer.Issue")
+						  : moduleText("Designer.Issues").arg(warnings.size()));
+	warningChip->setToolTip(
+		warnings.join(QStringLiteral("\n")) +
+		(fontWarnings ? QStringLiteral("\n\n") + moduleText("Designer.Issues.FixFonts") : QString()));
 
-	animateCheck->setEnabled(preview->hasAnimatedLogos());
-	if (!preview->hasAnimatedLogos() && animateCheck->isChecked())
-		animateCheck->setChecked(false);
+	animateButton->setEnabled(preview->hasAnimatedLogos());
+	if (!preview->hasAnimatedLogos() && animateButton->isChecked())
+		animateButton->setChecked(false);
 
 	/* Edits made while this render was out are picked up now, against the live document. */
 	if (previewAgain) {

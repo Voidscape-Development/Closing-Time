@@ -79,7 +79,10 @@ src/
   third-party/
     obs-websocket-api.h     obs-websocket's vendor API, as published
   ui/
-    DesignerDialog.{hpp,cpp} three-pane designer window
+    DesignerDialog.{hpp,cpp} three-pane designer window: toolbar, section outline, preview transport
+    DesignerWidgets.{hpp,cpp} the designer's small parts: type badges, switch, chips, segmented control,
+                             undo toast, spacing diagram, timeline scrubber, remembered fold state
+    AddSectionGallery.{hpp,cpp} the add-section picker: every type as a sketch of itself
     SectionEditor.{hpp,cpp}  per-section editor + StyleEditor
     BackgroundControls.{hpp,cpp} BackgroundEditor: one panel's fill, shape, edge and preset
     StyleControls.{hpp,cpp}  color button, gradient stop editor and its swatch
@@ -1063,7 +1066,7 @@ the height the logo is drawn at, and keeps them: playback becomes an index into 
 than a decoder running beside the compositor. That is the right trade for a logo and the wrong
 one for an hour of video, so it is bounded — 1800 frames, 30 seconds, and a 256 MB backstop for
 artwork whose `maxHeight` makes the first two meaningless. Past a cap the animation is truncated
-and says so, and the designer surfaces that under the preview.
+and says so, and the designer surfaces that as an issue in its toolbar.
 
 **One decoder, and it is Qt's.** GIF, APNG and animated WebP come through `QImageReader`, which
 is what keeps preview and output identical for the formats logos arrive in, and what keeps the

@@ -18,11 +18,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "ui/CollapsibleGroup.hpp"
 
-#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLayout>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include "ui/DesignerWidgets.hpp"
 
 namespace closingtime {
 
@@ -53,13 +54,12 @@ CollapsibleGroup::CollapsibleGroup(const QString &title, QWidget *parent) : QWid
 	header = new QToolButton(headerWidget);
 	header->setCheckable(true);
 	/*
-	 * Folded to start with. A tab that opens as a column of named headings is a table of contents
-	 * for what the type being edited offers; the same tab opened with every group expanded is the
-	 * wall of rows the groups were introduced to break up, and the reader has to fold four of them
-	 * away before they can see the one they came for. Unfolding a group is one click and it stays
-	 * unfolded for as long as the window is open, so the cost falls on the first visit only.
+	 * Open to start with. A tab that opened as a column of folded headings hid the very fields the
+	 * reader came for -- the words of a title sat behind "Content Properties" until somebody
+	 * thought to click it. Folding away what one never wants is remembered instead; see
+	 * setStateKey.
 	 */
-	header->setChecked(false);
+	header->setChecked(true);
 	header->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	header->setArrowType(Qt::DownArrow);
 	/*
@@ -85,6 +85,8 @@ CollapsibleGroup::CollapsibleGroup(const QString &title, QWidget *parent) : QWid
 	connect(header, &QToolButton::toggled, this, [this](bool expanded) {
 		body->setVisible(expanded);
 		refreshHeader();
+		if (!stateKey.isEmpty() && !enable)
+			setDesignerUiValue(stateKey, expanded);
 		emit expandedChanged(expanded);
 	});
 
@@ -124,6 +126,13 @@ void CollapsibleGroup::setExpanded(bool expanded)
 	header->setChecked(expanded);
 }
 
+void CollapsibleGroup::setStateKey(const QString &key)
+{
+	stateKey = QStringLiteral("fold/") + key;
+	if (!enable)
+		setExpanded(designerUiValue(stateKey, true).toBool());
+}
+
 void CollapsibleGroup::setCheckable(bool checkable)
 {
 	if (checkable == (enable != nullptr))
@@ -136,7 +145,7 @@ void CollapsibleGroup::setCheckable(bool checkable)
 		return;
 	}
 
-	enable = new QCheckBox(header->parentWidget());
+	enable = new ToggleSwitch(header->parentWidget());
 	enable->setChecked(true);
 	enable->setToolTip(header->toolTip());
 	/*
@@ -145,17 +154,21 @@ void CollapsibleGroup::setCheckable(bool checkable)
 	 * follows it belongs to the title.
 	 */
 	headerRow->insertWidget(0, enable);
+	headerRow->insertSpacing(1, 6);
 
-	connect(enable, &QCheckBox::toggled, this, [this](bool checked) {
+	connect(enable, &QAbstractButton::toggled, this, [this](bool checked) {
 		/*
-		 * Switched off, the settings stay where they are and gray out, which is what the
-		 * checkable QGroupBox this replaces did. Folding is left alone deliberately: a group
-		 * that hid itself the moment it was switched off would take the settings away at
-		 * exactly the moment somebody is deciding whether they want them.
+		 * The fold follows the switch, so the row is one decision: on shows the settings that
+		 * now apply, off puts away settings that no longer do. They keep their values either
+		 * way, and come straight back with the switch.
 		 */
 		body->setEnabled(checked);
+		setExpanded(checked);
 		emit toggled(checked);
 	});
+
+	/* A switched-off group starts folded, the same as one switched off by hand. */
+	setExpanded(enable->isChecked());
 }
 
 bool CollapsibleGroup::isChecked() const

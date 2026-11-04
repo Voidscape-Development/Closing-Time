@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "ui/PreviewWidget.hpp"
 
+#include <obs-module.h>
+
 #include <QCoreApplication>
 #include <QFontMetrics>
 #include <QMouseEvent>
@@ -110,6 +112,8 @@ PreviewWidget::PreviewWidget(QWidget *parent) : QWidget(parent)
 {
 	setMinimumWidth(240);
 	setFocusPolicy(Qt::WheelFocus);
+	/* For the outline that follows the pointer over the roll. */
+	setMouseTracking(true);
 
 	/*
 	 * Faster than most logo artwork needs and slower than the compositor runs: the frame shown is
@@ -186,14 +190,43 @@ void PreviewWidget::setLayoutBoxesVisible(bool visible)
 	update();
 }
 
-void PreviewWidget::setHighlightedSection(int index)
+void PreviewWidget::setHighlightedSection(int index, const QString &label)
 {
-	if (index == highlightedSection)
+	if (index == highlightedSection && label == highlightedLabel)
 		return;
 
 	highlightedSection = index;
-	if (layoutBoxesVisible)
-		update();
+	highlightedLabel = label;
+	update();
+}
+
+void PreviewWidget::setZoom(Zoom newZoom)
+{
+	if (newZoom == zoom)
+		return;
+
+	/* Kept on the same part of the roll across the change, measured in roll pixels. */
+	const qreal stripTop = scroll / scaleFactor();
+	zoom = newZoom;
+	pan = maxPan() / 2;
+	scroll = std::clamp(static_cast<int>(stripTop * scaleFactor()), 0, maxScroll());
+	update();
+}
+
+void PreviewWidget::showPlaybackFrame(const RollFrame &frame)
+{
+	playbackActive = true;
+	playbackFrame = frame;
+	update();
+}
+
+void PreviewWidget::clearPlayback()
+{
+	if (!playbackActive)
+		return;
+
+	playbackActive = false;
+	update();
 }
 
 void PreviewWidget::scrollToStripY(int stripY)
@@ -214,7 +247,21 @@ int PreviewWidget::canvasHeight() const
 
 int PreviewWidget::canvasScreenWidth() const
 {
+	if (zoom == Zoom::Actual)
+		return canvasWidth();
 	return std::max(1, width() - kCanvasInset * 2);
+}
+
+int PreviewWidget::maxPan() const
+{
+	if (zoom != Zoom::Actual)
+		return 0;
+	return std::max(0, canvasScreenWidth() - (width() - kCanvasInset * 2));
+}
+
+int PreviewWidget::canvasLeft() const
+{
+	return kCanvasInset - std::clamp(pan, 0, maxPan());
 }
 
 qreal PreviewWidget::scaleFactor() const
@@ -267,9 +314,86 @@ void PreviewWidget::wheelEvent(QWheelEvent *event)
 		return;
 	}
 
+	/* Sideways, at 100%, with a horizontal wheel or with shift held. */
+	const int sideways = event->angleDelta().x() != 0               ? event->angleDelta().x()
+			     : (event->modifiers() & Qt::ShiftModifier) ? delta
+									: 0;
+	if (zoom == Zoom::Actual && sideways != 0) {
+		pan = std::clamp(pan - sideways, 0, maxPan());
+		update();
+		event->accept();
+		return;
+	}
+
 	scroll = std::clamp(scroll - delta, 0, maxScroll());
 	update();
 	event->accept();
+}
+
+int PreviewWidget::sectionAt(const QPointF &position) const
+{
+	if (!layout || playbackActive)
+		return -1;
+
+	const qreal scale = scaleFactor();
+	const QPointF at((position.x() - canvasLeft()) / scale, (position.y() + scroll) / scale);
+
+	/*
+	 * A marker has no height to point inside, so a point a few pixels either side of its line picks
+	 * it -- ahead of the sections, since it always sits on the edge of one of them.
+	 */
+	constexpr qreal kMarkerReach = 5.0;
+	for (const ActionCuePlacement &cue : layout->cues) {
+		if (std::abs((markerTop(cue) - at.y()) * scale) <= kMarkerReach)
+			return cue.section;
+	}
+
+	for (const LayoutBox &box : layout->boxes) {
+		if ((box.kind == LayoutBox::Kind::Section || box.kind == LayoutBox::Kind::Sticky) &&
+		    box.rect.contains(at))
+			return box.section;
+	}
+
+	return -1;
+}
+
+QRectF PreviewWidget::sectionScreenRect(int section) const
+{
+	if (!layout || section < 0)
+		return QRectF();
+
+	QRectF united;
+	for (const LayoutBox &box : layout->boxes) {
+		if (box.section == section &&
+		    (box.kind == LayoutBox::Kind::Section || box.kind == LayoutBox::Kind::Sticky))
+			united = united.isNull() ? box.rect : united.united(box.rect);
+	}
+	if (united.isNull())
+		return QRectF();
+
+	const qreal scale = scaleFactor();
+	return QRectF(canvasLeft() + united.x() * scale, united.y() * scale - scroll, united.width() * scale,
+		      united.height() * scale);
+}
+
+void PreviewWidget::mouseMoveEvent(QMouseEvent *event)
+{
+	const int under = sectionAt(event->position());
+	if (under != hoveredSection) {
+		hoveredSection = under;
+		setCursor(under >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
+		update();
+	}
+	QWidget::mouseMoveEvent(event);
+}
+
+void PreviewWidget::leaveEvent(QEvent *event)
+{
+	if (hoveredSection >= 0) {
+		hoveredSection = -1;
+		update();
+	}
+	QWidget::leaveEvent(event);
 }
 
 /*
@@ -284,29 +408,11 @@ void PreviewWidget::mousePressEvent(QMouseEvent *event)
 		return;
 	}
 
-	const qreal scale = scaleFactor();
-	const QPointF at((event->position().x() - kCanvasInset) / scale, (event->position().y() + scroll) / scale);
-
-	/*
-	 * A marker has no height to click inside, so a click a few pixels either side of its line picks
-	 * it -- ahead of the sections, since it always sits on the edge of one of them.
-	 */
-	constexpr qreal kMarkerReach = 5.0;
-	for (const ActionCuePlacement &cue : layout->cues) {
-		if (std::abs((markerTop(cue) - at.y()) * scale) <= kMarkerReach) {
-			emit sectionClicked(cue.section);
-			event->accept();
-			return;
-		}
-	}
-
-	for (const LayoutBox &box : layout->boxes) {
-		if ((box.kind == LayoutBox::Kind::Section || box.kind == LayoutBox::Kind::Sticky) &&
-		    box.rect.contains(at)) {
-			emit sectionClicked(box.section);
-			event->accept();
-			return;
-		}
+	const int section = sectionAt(event->position());
+	if (section >= 0) {
+		emit sectionClicked(section);
+		event->accept();
+		return;
 	}
 
 	QWidget::mousePressEvent(event);
@@ -402,10 +508,15 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 {
 	QPainter painter(this);
 	const qreal scale = scaleFactor();
-	const QRect canvasColumn(kCanvasInset, 0, canvasScreenWidth(), height());
+	const QRect canvasColumn(canvasLeft(), 0, canvasScreenWidth(), height());
 
 	/* Anything outside the canvas is not part of the roll, so it is left as plain surround. */
 	painter.fillRect(rect(), palette().window());
+
+	if (playbackActive) {
+		paintPlayback(painter, canvasColumn);
+		return;
+	}
 
 	if (background.alpha() >= 255) {
 		painter.fillRect(canvasColumn, background);
@@ -462,6 +573,7 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 	if (layoutBoxesVisible)
 		paintLayoutBoxes(painter, canvasColumn, scale);
 	paintActionMarkers(painter, canvasColumn, scale);
+	paintSelection(painter);
 
 	painter.setBrush(Qt::NoBrush);
 
@@ -475,6 +587,126 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 	pen.setWidth(1);
 	painter.setPen(pen);
 	painter.drawRect(onAir);
+}
+
+void PreviewWidget::paintSelection(QPainter &painter) const
+{
+	painter.save();
+	painter.setRenderHint(QPainter::Antialiasing);
+	painter.setBrush(Qt::NoBrush);
+
+	if (hoveredSection >= 0 && hoveredSection != highlightedSection) {
+		const QRectF hovered = sectionScreenRect(hoveredSection);
+		if (!hovered.isEmpty()) {
+			QPen pen(QColor(255, 255, 255, 110), 1);
+			pen.setStyle(Qt::DashLine);
+			painter.setPen(pen);
+			painter.drawRoundedRect(hovered.adjusted(1.5, 0.5, -1.5, -0.5), 3, 3);
+		}
+	}
+
+	/* The overlay already draws the selected section at full strength, so this is for the plain view. */
+	if (!layoutBoxesVisible && highlightedSection >= 0) {
+		const QRectF selected = sectionScreenRect(highlightedSection);
+		if (!selected.isEmpty()) {
+			QColor accent = palette().color(QPalette::Highlight).lighter(130);
+			painter.setPen(QPen(accent, 1.5));
+			painter.drawRoundedRect(selected.adjusted(1.5, 0.5, -1.5, -0.5), 3, 3);
+
+			/*
+			 * The section's name on a tab at the outline's corner, inside the box when the box
+			 * starts at the top of the pane, so the tag is never drawn off the top.
+			 */
+			if (!highlightedLabel.isEmpty()) {
+				QFont font = painter.font();
+				font.setPointSizeF(std::max(7.0, font.pointSizeF() * 0.85));
+				painter.setFont(font);
+				const QFontMetrics metrics(font);
+				const QString text = metrics.elidedText(highlightedLabel, Qt::ElideRight,
+									std::max(40, qRound(selected.width()) - 8));
+				const qreal tagHeight = metrics.height() + 2;
+				const qreal top = selected.top() - tagHeight >= 0 ? selected.top() - tagHeight + 0.5
+										  : selected.top() + 1.5;
+				const QRectF tag(std::max(selected.left(), 0.0) + 1.5, top,
+						 metrics.horizontalAdvance(text) + 10, tagHeight);
+				painter.setPen(Qt::NoPen);
+				painter.setBrush(accent);
+				painter.drawRoundedRect(tag, 2, 2);
+				painter.setPen(Qt::white);
+				painter.drawText(tag.adjusted(5, 0, -5, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
+			}
+		}
+	}
+
+	painter.restore();
+}
+
+void PreviewWidget::paintPlayback(QPainter &painter, const QRect &canvasColumn)
+{
+	const qreal framedHeight = onAirHeight();
+	const QRect onAir(canvasColumn.left(), 0, canvasColumn.width(), qRound(framedHeight));
+
+	if (background.alpha() >= 255) {
+		painter.fillRect(onAir, background);
+	} else {
+		paintChecker(painter, onAir);
+		if (background.alpha() > 0)
+			painter.fillRect(onAir, background);
+	}
+
+	if (layout && !layout->isEmpty()) {
+		++paintCount;
+		collectPictures();
+
+		const qreal scaleNow = rasterScale();
+		const qreal dpr = devicePixelRatioF();
+
+		/* The canvas as the source draws it at this moment, scaled down to the pane. */
+		ComposeView view = ComposeView::canvas(playbackFrame, canvasHeight());
+		view.scale = scaleNow;
+		view.stripTop *= scaleNow;
+		view.clipTop = 0.0;
+		view.clipBottom = framedHeight * dpr;
+		const DrawList visible = composeFrame(*layout, playbackFrame, view);
+		requestPictures(visible, visible);
+
+		painter.save();
+		painter.setClipRect(onAir);
+		painter.setRenderHints(QPainter::SmoothPixmapTransform | QPainter::Antialiasing);
+		painter.scale(1.0 / dpr, 1.0 / dpr);
+		paintDrawList(
+			painter, visible,
+			[&](const DrawSource &source) -> QImage {
+				if (source.kind != DrawSource::Kind::Chunk)
+					return logoImage(*layout, source);
+
+				const auto it = pictures.find(
+					chunkKey(layout->layers.at(source.layer), source.chunk, scaleNow));
+				if (it == pictures.end())
+					return QImage();
+				it->lastPainted = paintCount;
+				return it->image;
+			},
+			QPointF(canvasColumn.left() * dpr, 0.0));
+		painter.restore();
+
+		trimPictures();
+	}
+
+	QPen pen(QColor(255, 200, 80, 200));
+	pen.setStyle(Qt::DashLine);
+	painter.setPen(pen);
+	painter.setBrush(Qt::NoBrush);
+	painter.drawRect(QRectF(onAir).adjusted(0.5, 0.5, -0.5, -0.5));
+
+	if (onAir.bottom() + 24 < height()) {
+		QColor hint = palette().color(QPalette::WindowText);
+		hint.setAlphaF(0.55f);
+		painter.setPen(hint);
+		painter.drawText(QRect(0, onAir.bottom() + 8, width(), 40),
+				 Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap,
+				 QString::fromUtf8(obs_module_text("Designer.Preview.PlayingHint")));
+	}
 }
 
 /*

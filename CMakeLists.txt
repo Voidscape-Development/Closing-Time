@@ -105,6 +105,8 @@ target_sources(
     src/third-party/obs-websocket-api.h
     src/ui/ActionListEditor.cpp
     src/ui/ActionListEditor.hpp
+    src/ui/AddSectionGallery.cpp
+    src/ui/AddSectionGallery.hpp
     src/ui/BackgroundControls.cpp
     src/ui/BackgroundControls.hpp
     src/ui/CollapsibleGroup.cpp
@@ -113,6 +115,8 @@ target_sources(
     src/ui/CsvImportDialog.hpp
     src/ui/DesignerDialog.cpp
     src/ui/DesignerDialog.hpp
+    src/ui/DesignerWidgets.cpp
+    src/ui/DesignerWidgets.hpp
     src/ui/FontDialog.cpp
     src/ui/FontDialog.hpp
     src/ui/FontPickerDialog.cpp
