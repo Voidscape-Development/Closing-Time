@@ -134,10 +134,6 @@ Entry entryFromStash(const QVariant &value)
 	return entry;
 }
 
-/* Height the divider's center table asks for before it starts scrolling, in pixels. A center
- * stack is a handful of pieces where an entry list is a cast, so it asks for less. */
-constexpr int kCenterTableMinimumHeight = 150;
-
 /* Image formats QImageReader can decode without extra plugins on every OBS platform. */
 QString imageFilter()
 {
