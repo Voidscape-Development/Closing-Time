@@ -20,19 +20,24 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 
+#include <QActionGroup>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QGuiApplication>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -41,7 +46,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTableWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -54,6 +61,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ui/CsvImportDialog.hpp"
 #include "ui/FontPickerDialog.hpp"
 #include "ui/ActionListEditor.hpp"
+#include "ui/DesignerWidgets.hpp"
 #include "ui/ToolButtons.hpp"
 
 namespace closingtime {
@@ -295,6 +303,35 @@ void selectByData(QComboBox *box, int value)
 	box->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+/* A tick when the chip is in, a plus when it could be: the chip says what clicking it will do. */
+void markChip(QToolButton *chip)
+{
+	chip->setText((chip->isChecked() ? QStringLiteral("✓ ") : QStringLiteral("+ ")) +
+		      chip->property("chipText").toString());
+}
+
+/*
+ * Keeps a field to the width its value needs.
+ *
+ * A form stretches every field to the pane's width, which turned a three-digit pixel count into a
+ * box the width of the editor -- the eye travels from the label across empty field to find the
+ * number. Numbers and short pickers keep a width that fits what they hold; text and paths, which
+ * really are long, still take the room.
+ */
+void capFieldWidth(QWidget *field)
+{
+	constexpr int kNumberWidth = 150;
+	constexpr int kPickerWidth = 320;
+	constexpr int kSwatchWidth = 220;
+
+	if (qobject_cast<QAbstractSpinBox *>(field))
+		field->setMaximumWidth(kNumberWidth);
+	else if (qobject_cast<QComboBox *>(field))
+		field->setMaximumWidth(kPickerWidth);
+	else if (qobject_cast<ColorButton *>(field))
+		field->setMaximumWidth(kSwatchWidth);
+}
+
 } // namespace
 
 /* ---------------------------------------------------------------------- StyleEditor */
@@ -321,31 +358,48 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 
 	fontButton = new QPushButton(this);
 	fontButton->setToolTip(moduleText("Designer.Font.Tip"));
+	fontButton->setMaximumWidth(360);
 	layout->addRow(moduleText("Designer.Font"), fontButton);
 
-	pixelSize = new QSpinBox(this);
+	/*
+	 * Size and line spacing on one row: two numbers that are only ever tuned together, and that
+	 * stacked one under the other read as two unrelated settings.
+	 */
+	sizeRow = new QWidget(this);
+	auto *sizeLayout = new QHBoxLayout(sizeRow);
+	sizeLayout->setContentsMargins(0, 0, 0, 0);
+	pixelSize = new QSpinBox(sizeRow);
 	pixelSize->setRange(1, 1024);
 	pixelSize->setSuffix(QStringLiteral(" px"));
-	layout->addRow(moduleText("Designer.FontSize"), pixelSize);
-
-	alignment = new QComboBox(this);
-	addAlignmentOptions(alignment);
-	layout->addRow(moduleText("Designer.Alignment"), alignment);
-
-	lineSpacing = new QDoubleSpinBox(this);
+	capFieldWidth(pixelSize);
+	lineSpacing = new QDoubleSpinBox(sizeRow);
 	lineSpacing->setRange(0.5, 4.0);
 	lineSpacing->setSingleStep(0.05);
 	lineSpacing->setDecimals(2);
-	layout->addRow(moduleText("Designer.LineSpacing"), lineSpacing);
+	lineSpacing->setToolTip(moduleText("Designer.LineSpacing"));
+	capFieldWidth(lineSpacing);
+	sizeLayout->addWidget(pixelSize);
+	sizeLayout->addSpacing(10);
+	sizeLayout->addWidget(new QLabel(moduleText("Designer.LineSpacing"), sizeRow));
+	sizeLayout->addWidget(lineSpacing);
+	sizeLayout->addStretch();
+	layout->addRow(moduleText("Designer.FontSize"), sizeRow);
+
+	alignment = new QComboBox(this);
+	addAlignmentOptions(alignment);
+	capFieldWidth(alignment);
+	layout->addRow(moduleText("Designer.Alignment"), alignment);
 
 	fillBox = new QComboBox(this);
 	fillBox->addItem(moduleText("Designer.Fill.Solid"), static_cast<int>(TextFill::Solid));
 	fillBox->addItem(moduleText("Designer.Fill.Linear"), static_cast<int>(TextFill::LinearGradient));
 	fillBox->addItem(moduleText("Designer.Fill.Radial"), static_cast<int>(TextFill::RadialGradient));
+	capFieldWidth(fillBox);
 	layout->addRow(moduleText("Designer.Fill"), fillBox);
 
 	colorButton = new ColorButton(this);
 	colorButton->setDialogTitle(moduleText("Designer.FontColor"));
+	capFieldWidth(colorButton);
 	layout->addRow(moduleText("Designer.FontColor"), colorButton);
 
 	gradientEditor = new GradientEditor(this);
@@ -359,9 +413,11 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	outlineWidth->setDecimals(1);
 	outlineWidth->setSingleStep(0.5);
 	outlineWidth->setSuffix(QStringLiteral(" px"));
+	capFieldWidth(outlineWidth);
 	outlineForm->addRow(moduleText("Designer.OutlineWidth"), outlineWidth);
 	outlineColor = new ColorButton(outlineGroup);
 	outlineColor->setDialogTitle(moduleText("Designer.OutlineColor"));
+	capFieldWidth(outlineColor);
 	outlineForm->addRow(moduleText("Designer.OutlineColor"), outlineColor);
 	layout->addRow(outlineGroup);
 
@@ -380,18 +436,23 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	shadowOffsetY->setRange(-2048, 2048);
 	shadowOffsetY->setPrefix(QStringLiteral("Y "));
 	shadowOffsetY->setSuffix(QStringLiteral(" px"));
+	capFieldWidth(shadowOffsetX);
+	capFieldWidth(shadowOffsetY);
 	offsetLayout->addWidget(shadowOffsetX);
 	offsetLayout->addWidget(shadowOffsetY);
+	offsetLayout->addStretch();
 	shadowForm->addRow(moduleText("Designer.ShadowOffset"), offsetRow);
 
 	shadowBlur = new QSpinBox(shadowGroup);
 	shadowBlur->setRange(0, 200);
 	shadowBlur->setSuffix(QStringLiteral(" px"));
 	shadowBlur->setToolTip(moduleText("Designer.ShadowBlur.Tip"));
+	capFieldWidth(shadowBlur);
 	shadowForm->addRow(moduleText("Designer.ShadowBlur"), shadowBlur);
 
 	shadowColor = new ColorButton(shadowGroup);
 	shadowColor->setDialogTitle(moduleText("Designer.ShadowColor"));
+	capFieldWidth(shadowColor);
 	shadowForm->addRow(moduleText("Designer.ShadowColor"), shadowColor);
 	layout->addRow(shadowGroup);
 
@@ -409,10 +470,16 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 		gradient = gradientEditor->gradient();
 		notifyEdited();
 	});
-	connect(outlineGroup, &QGroupBox::toggled, this, notify);
+	connect(outlineGroup, &QGroupBox::toggled, this, [this] {
+		applyEffectVisibility();
+		notifyEdited();
+	});
 	connect(outlineWidth, &QDoubleSpinBox::valueChanged, this, notify);
 	connect(outlineColor, &ColorButton::colorChanged, this, notify);
-	connect(shadowGroup, &QGroupBox::toggled, this, notify);
+	connect(shadowGroup, &QGroupBox::toggled, this, [this] {
+		applyEffectVisibility();
+		notifyEdited();
+	});
 	connect(shadowOffsetX, &QSpinBox::valueChanged, this, notify);
 	connect(shadowOffsetY, &QSpinBox::valueChanged, this, notify);
 	connect(shadowBlur, &QSpinBox::valueChanged, this, notify);
@@ -424,6 +491,23 @@ StyleEditor::StyleEditor(QWidget *parent) : QWidget(parent)
 	/* So the button reads as a font rather than as a blank before any style is written into it. */
 	updateFontButton();
 	applyFillVisibility();
+	applyEffectVisibility();
+}
+
+void StyleEditor::applyEffectVisibility()
+{
+	/*
+	 * Only the switch shows while an effect is off. Its settings greyed out underneath taught
+	 * nothing and doubled the length of every style, and they keep their values while hidden, so
+	 * switching the effect back on brings back exactly what was set.
+	 */
+	for (QGroupBox *group : {outlineGroup, shadowGroup}) {
+		const bool on = group->isChecked();
+		for (QWidget *child : group->findChildren<QWidget *>(Qt::FindDirectChildrenOnly))
+			child->setVisible(on);
+		/* Flat while off, so an empty frame is not left drawn under the switch. */
+		group->setFlat(!on);
+	}
 }
 
 void StyleEditor::writeFields(const TextStyle &style)
@@ -459,6 +543,7 @@ void StyleEditor::writeFields(const TextStyle &style)
 	shadowColor->setColor(style.shadow.color);
 
 	applyFillVisibility();
+	applyEffectVisibility();
 }
 
 void StyleEditor::pickFont()
@@ -647,9 +732,8 @@ void StyleEditor::setInkOnly(bool value)
 	inkOnly = value;
 
 	form->setRowVisible(fontButton, !inkOnly);
-	form->setRowVisible(pixelSize, !inkOnly);
+	form->setRowVisible(sizeRow, !inkOnly);
 	form->setRowVisible(alignment, !inkOnly);
-	form->setRowVisible(lineSpacing, !inkOnly);
 
 	/* "Font Color" is the wrong name for the color of a run of dots. */
 	if (auto *label = qobject_cast<QLabel *>(form->labelForField(colorButton)))
@@ -701,11 +785,14 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	outer->setContentsMargins(4, 4, 4, 4);
 
 	/*
-	 * The rows above the tab strip, which every tab is read under. See `headerForm`.
+	 * The header above the tab strip, which every tab is read under: a badge for the kind of
+	 * section, its name, whether it is in the roll, and the chips that shape it. See `typeBadge`.
 	 */
-	form = new QFormLayout();
-	headerForm = form;
-	outer->addLayout(form);
+	auto *header = new QWidget(this);
+	auto *headerLayout = new QVBoxLayout(header);
+	headerLayout->setContentsMargins(2, 2, 2, 8);
+	headerLayout->setSpacing(8);
+	outer->addWidget(header);
 
 	const auto notify = [this] {
 		emitChanged();
@@ -715,49 +802,121 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * Seven base types and a few switches rather than twenty entries in one list. The twenty are
 	 * still what the document holds -- see composedType -- but "a title, with a subtitle, with a
 	 * logo" is three plain answers where picking "Title w/ Subtitle & Logo" out of a list of ten
-	 * headings is one hard question.
+	 * headings is one hard question. The combo is never shown: the header's menu sets it.
 	 */
 	typeBox = new QComboBox(this);
 	for (SectionType type : baseSectionTypes())
 		typeBox->addItem(baseTypeLabel(type), static_cast<int>(type));
-	addRow(moduleText("Designer.SectionType"), typeBox);
+	typeBox->hide();
+
+	auto *identity = new QHBoxLayout();
+	identity->setSpacing(10);
+	headerLayout->addLayout(identity);
+
+	typeBadge = new QLabel(header);
+	typeBadge->setFixedSize(40, 40);
+	identity->addWidget(typeBadge, 0, Qt::AlignTop);
+
+	auto *naming = new QVBoxLayout();
+	naming->setSpacing(1);
+	identity->addLayout(naming, 1);
 
 	/*
-	 * What this section is called in the list, directly under what kind of thing it is: the two
-	 * together are how a section is found again in a roll of forty, and naming one is the next
-	 * thing done after picking the other.
+	 * The name is the header's title and is edited where it is read. Its placeholder is the name
+	 * the section gives itself, so an unnamed section still shows what the list calls it.
 	 */
-	labelEdit = new QLineEdit(this);
-	labelEdit->setPlaceholderText(moduleText("Designer.LabelPlaceholder"));
-	addRow(moduleText("Designer.Label"), labelEdit);
+	labelEdit = new QLineEdit(header);
+	labelEdit->setObjectName(QStringLiteral("designerSectionName"));
+	labelEdit->setToolTip(moduleText("Designer.Label.Tip"));
+	labelEdit->setAccessibleName(moduleText("Designer.Label"));
+	naming->addWidget(labelEdit);
 
-	/* The chosen type in a sentence, under the pair it describes. */
-	typeHelp = new QLabel(this);
-	typeHelp->setWordWrap(true);
-	typeHelp->setEnabled(false);
-	addRow(QString(), typeHelp);
+	auto *typeLine = new QHBoxLayout();
+	typeLine->setContentsMargins(5, 0, 0, 0);
+	typeLine->setSpacing(6);
+	naming->addLayout(typeLine);
 
-	typeSubtitle = new QCheckBox(moduleText("Designer.TypeSubtitle"), this);
-	typeSubtitle->setToolTip(moduleText("Designer.TypeSubtitle.Tip"));
-	addRow(QString(), typeSubtitle);
+	typeNameLabel = new QLabel(header);
+	styleAsHint(typeNameLabel);
+	typeLine->addWidget(typeNameLabel);
 
-	typeLogo = new QCheckBox(moduleText("Designer.TypeLogo"), this);
-	typeLogo->setToolTip(moduleText("Designer.TypeLogo.Tip"));
-	addRow(QString(), typeLogo);
+	/* What the type is for lives behind this, rather than in a paragraph pushing the tabs down. */
+	typeInfo = new QLabel(header);
+	typeInfo->setCursor(Qt::WhatsThisCursor);
+	typeLine->addWidget(typeInfo);
 
-	typeLogoOnly = new QCheckBox(moduleText("Designer.TypeLogoOnly"), this);
-	typeLogoOnly->setToolTip(moduleText("Designer.TypeLogoOnly.Tip"));
-	addRow(QString(), typeLogoOnly);
+	auto *dot = new QLabel(QStringLiteral("·"), header);
+	styleAsHint(dot);
+	typeLine->addWidget(dot);
+
+	changeTypeButton = new QToolButton(header);
+	changeTypeButton->setObjectName(QStringLiteral("designerLink"));
+	changeTypeButton->setText(moduleText("Designer.ChangeType"));
+	changeTypeButton->setPopupMode(QToolButton::InstantPopup);
+	changeTypeButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	changeTypeButton->setCursor(Qt::PointingHandCursor);
+	changeTypeMenu = new QMenu(changeTypeButton);
+	auto *typeActions = new QActionGroup(changeTypeMenu);
+	for (SectionType type : baseSectionTypes()) {
+		QAction *action = changeTypeMenu->addAction(baseTypeLabel(type));
+		action->setCheckable(true);
+		action->setData(static_cast<int>(type));
+		typeActions->addAction(action);
+		connect(action, &QAction::triggered, this,
+			[this, type] { selectByData(typeBox, static_cast<int>(type)); });
+	}
+	changeTypeButton->setMenu(changeTypeMenu);
+	typeLine->addWidget(changeTypeButton);
+	typeLine->addStretch();
+
+	auto *rollToggle = new QHBoxLayout();
+	rollToggle->setSpacing(8);
+	auto *inRoll = new QLabel(moduleText("Designer.InRoll"), header);
+	styleAsHint(inRoll);
+	visibleBox = new ToggleSwitch(header);
+	visibleBox->setToolTip(moduleText("Designer.Visible"));
+	visibleBox->setAccessibleName(moduleText("Designer.Visible"));
+	inRoll->setBuddy(visibleBox);
+	rollToggle->addWidget(inRoll);
+	rollToggle->addWidget(visibleBox);
+	identity->addLayout(rollToggle);
+	identity->setAlignment(rollToggle, Qt::AlignTop);
+
+	/*
+	 * The chips that shape the section: what a heading includes, or what each entry of a list is.
+	 * Only the ones that apply to the type are shown; with none, the row goes away.
+	 */
+	variantRow = new QWidget(header);
+	auto *variants = new QHBoxLayout(variantRow);
+	variants->setContentsMargins(50, 0, 0, 0);
+	variants->setSpacing(6);
+	variantLabel = new QLabel(variantRow);
+	styleAsHint(variantLabel);
+	variants->addWidget(variantLabel);
+
+	typeSubtitle =
+		makeChip(moduleText("Designer.Chip.Subtitle"), moduleText("Designer.TypeSubtitle.Tip"), variantRow);
+	typeLogo = makeChip(moduleText("Designer.Chip.Logo"), moduleText("Designer.TypeLogo.Tip"), variantRow);
+	typeLogoOnly =
+		makeChip(moduleText("Designer.Chip.LogoOnly"), moduleText("Designer.TypeLogoOnly.Tip"), variantRow);
+	for (QToolButton *chip : {typeSubtitle, typeLogo, typeLogoOnly}) {
+		variants->addWidget(chip);
+		chip->setProperty("chipText", chip->text());
+		markChip(chip);
+		connect(chip, &QToolButton::toggled, chip, [chip] { markChip(chip); });
+	}
 
 	typeListContent = new QComboBox(this);
 	typeListContent->addItem(moduleText("Designer.ListContent.Text"), static_cast<int>(SectionListContent::Text));
 	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
 	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
-	typeListContent->setToolTip(moduleText("Designer.ListContent.Tip"));
-	addRow(moduleText("Designer.ListContent"), typeListContent);
-
-	visibleBox = new QCheckBox(moduleText("Designer.Visible"), this);
-	addRow(QString(), visibleBox);
+	typeListContent->hide();
+	listContentSegments = new SegmentedControl(variantRow);
+	listContentSegments->setToolTip(moduleText("Designer.ListContent.Tip"));
+	listContentSegments->bindTo(typeListContent);
+	variants->addWidget(listContentSegments);
+	variants->addStretch();
+	headerLayout->addWidget(variantRow);
 
 	/*
 	 * From here everything goes into one of the four tabs, in named groups that fold away. See
@@ -768,7 +927,12 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * refreshTabVisibility.
 	 */
 	tabs = new QTabWidget(this);
+	tabs->setObjectName(QStringLiteral("designerEditorTabs"));
+	tabs->tabBar()->setObjectName(QStringLiteral("designerEditorTabBar"));
+	tabs->setDocumentMode(true);
+	tabs->setIconSize(QSize(12, 12));
 	outer->addWidget(tabs, 1);
+	changedIcon = changedDotIcon();
 
 	addTab(EditorTab::Content, moduleText("Designer.Tab.Content"));
 	addTab(EditorTab::Layout, moduleText("Designer.Tab.Layout"));
@@ -788,6 +952,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * hundred credits is this section's content as much as a heading's one line is.
 	 */
 	contentGroup = new CollapsibleGroup(moduleText("Designer.Group.Content"), this);
+	contentGroup->setStateKey(QStringLiteral("content"));
 	form = new QFormLayout();
 	contentForm = form;
 	contentGroup->addLayout(form);
@@ -851,6 +1016,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * "Bridge settings" and "Divider settings" are never on screen at the same time.
 	 */
 	typeSettingsGroup = new CollapsibleGroup(moduleText("Designer.Group.TypeSettings"), this);
+	typeSettingsGroup->setStateKey(QStringLiteral("type-settings"));
 	form = new QFormLayout();
 	typeSettingsForm = form;
 	typeSettingsGroup->addLayout(form);
@@ -1157,33 +1323,23 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	actionLine->setToolTip(moduleText("Designer.ActionLine.Tip"));
 	addRow(moduleText("Designer.ActionLine"), actionLine);
 
-	/* Where the section sits on the canvas, which is the same set of questions for every type. */
+	/*
+	 * Where the section sits on the canvas, which is the same set of questions for every type. The
+	 * four edges are set on a drawing of the box they move; width and placement follow as rows.
+	 */
 	placementGroup = new CollapsibleGroup(moduleText("Designer.Group.Placement"), this);
+	placementGroup->setStateKey(QStringLiteral("placement"));
+	spacing = new SpacingDiagram(placementGroup->content());
+	placementGroup->addWidget(spacing);
+	paddingTop = spacing->above();
+	paddingBottom = spacing->below();
+	marginX = spacing->sides();
+	contentOffsetX = spacing->offset();
+
 	form = new QFormLayout();
 	placementForm = form;
 	placementGroup->addLayout(form);
 	tabLayout(EditorTab::Layout)->addWidget(placementGroup);
-
-	paddingTop = new QSpinBox(this);
-	paddingTop->setRange(0, 20000);
-	paddingTop->setSuffix(QStringLiteral(" px"));
-	addRow(moduleText("Designer.PaddingTop"), paddingTop);
-
-	paddingBottom = new QSpinBox(this);
-	paddingBottom->setRange(0, 20000);
-	paddingBottom->setSuffix(QStringLiteral(" px"));
-	addRow(moduleText("Designer.PaddingBottom"), paddingBottom);
-
-	marginX = new QSpinBox(this);
-	marginX->setRange(0, 4096);
-	marginX->setSuffix(QStringLiteral(" px"));
-	addRow(moduleText("Designer.MarginX"), marginX);
-
-	contentOffsetX = new QSpinBox(this);
-	contentOffsetX->setRange(-4096, 4096);
-	contentOffsetX->setSuffix(QStringLiteral(" px"));
-	contentOffsetX->setToolTip(moduleText("Designer.ContentOffsetX.Tip"));
-	addRow(moduleText("Designer.ContentOffsetX"), contentOffsetX);
 
 	sectionWidth = new QSpinBox(this);
 	sectionWidth->setRange(1, 100);
@@ -1191,10 +1347,18 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	sectionWidth->setToolTip(moduleText("Designer.SectionWidth.Tip"));
 	addRow(moduleText("Designer.SectionWidth"), sectionWidth);
 
+	/* Three choices, so three buttons rather than a dropdown; the combo behind them is the value. */
 	sectionAlign = new QComboBox(this);
 	addAlignmentOptions(sectionAlign);
-	sectionAlign->setToolTip(moduleText("Designer.SectionAlign.Tip"));
-	addRow(moduleText("Designer.SectionAlign"), sectionAlign);
+	sectionAlign->hide();
+	alignSegments = new SegmentedControl(this);
+	alignSegments->setToolTip(moduleText("Designer.SectionAlign.Tip"));
+	alignSegments->bindTo(sectionAlign);
+	addRow(moduleText("Designer.SectionAlign"), alignSegments);
+	rowAlias.insert(sectionAlign, alignSegments);
+
+	connect(sectionWidth, &QSpinBox::valueChanged, this,
+		[this](int value) { spacing->setContentText(moduleText("Designer.Spacing.Content").arg(value)); });
 
 	/*
 	 * The styles get a tab to themselves.
@@ -1210,6 +1374,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * beside it says only whether it is on screen. See CollapsibleGroup.
 	 */
 	styleGroup = new CollapsibleGroup(moduleText("Designer.TextStyle"), this);
+	styleGroup->setStateKey(QStringLiteral("style"));
 	primaryStyle = new StyleEditor(styleGroup->content());
 	styleGroup->addWidget(primaryStyle);
 	tabLayout(EditorTab::Style)->addWidget(styleGroup);
@@ -1241,11 +1406,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 * is what the entry's own cell already says.
 	 */
 	rowSubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSubtitleStyle"), this);
+	rowSubtitleStyleGroup->setStateKey(QStringLiteral("style.row-subtitle"));
 	rowSubtitleStyle = new StyleEditor(rowSubtitleStyleGroup->content());
 	rowSubtitleStyleGroup->addWidget(rowSubtitleStyle);
 	tabLayout(EditorTab::Style)->addWidget(rowSubtitleStyleGroup);
 
 	rowSecondarySubtitleStyleGroup = new CollapsibleGroup(moduleText("Designer.RowSecondarySubtitleStyle"), this);
+	rowSecondarySubtitleStyleGroup->setStateKey(QStringLiteral("style.row-secondary-subtitle"));
 	rowSecondarySubtitleStyle = new StyleEditor(rowSecondarySubtitleStyleGroup->content());
 	rowSecondarySubtitleStyleGroup->addWidget(rowSecondarySubtitleStyle);
 	tabLayout(EditorTab::Style)->addWidget(rowSecondarySubtitleStyleGroup);
@@ -1299,6 +1466,25 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	 */
 	entryTable->setMinimumHeight(kEntryTableMinimumHeight);
 	entriesLayout->addWidget(entryTable);
+	entryTable->installEventFilter(this);
+	entryTable->viewport()->installEventFilter(this);
+
+	/* What an empty table is for, said inside it rather than left as a blank grid. */
+	entryEmptyHint = new QLabel(moduleText("Designer.Entries.Empty"), entryTable->viewport());
+	entryEmptyHint->setAlignment(Qt::AlignCenter);
+	entryEmptyHint->setWordWrap(true);
+	styleAsHint(entryEmptyHint);
+	entryEmptyHint->setAttribute(Qt::WA_TransparentForMouseEvents);
+	/*
+	 * Tied to the hint's own lifetime rather than the editor's: the table resets its model while
+	 * it is being torn down, after the hint -- a child of its viewport -- has already gone.
+	 */
+	const auto refreshHint = [this] {
+		refreshEntryEmptyHint();
+	};
+	connect(entryTable->model(), &QAbstractItemModel::rowsInserted, entryEmptyHint, refreshHint);
+	connect(entryTable->model(), &QAbstractItemModel::rowsRemoved, entryEmptyHint, refreshHint);
+	connect(entryTable->model(), &QAbstractItemModel::modelReset, entryEmptyHint, refreshHint);
 
 	auto *buttons = new QHBoxLayout();
 	const auto addButton = [&](QToolButton *button, auto slot) {
@@ -1441,6 +1627,25 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(actionList, &ActionListEditor::changed, this, [this] { emitChanged(); });
 
 	/*
+	 * Style at a glance: one line per style the section draws with, under its words. Somebody
+	 * typing a heading can see that it follows the "Heading Large" preset without leaving the
+	 * words to go and look, and a click on the line takes them to it.
+	 */
+	styleSummary = new QWidget(this);
+	styleSummaryLayout = new QVBoxLayout(styleSummary);
+	styleSummaryLayout->setContentsMargins(4, 10, 4, 4);
+	styleSummaryLayout->setSpacing(4);
+	tabLayout(EditorTab::Content)->addWidget(styleSummary);
+
+	changedTimer = new QTimer(this);
+	changedTimer->setSingleShot(true);
+	changedTimer->setInterval(300);
+	connect(changedTimer, &QTimer::timeout, this, [this] {
+		refreshChangedTabs();
+		refreshStyleSummary();
+	});
+
+	/*
 	 * Whatever height is left over when a page is shorter than the tab it sits in. A QVBoxLayout
 	 * with nothing to give the slack to shares it out between the items it has, so without this a
 	 * type carrying few fields -- Title especially -- has its handful of rows spread down the page
@@ -1457,8 +1662,8 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	/* Every one of these changes which type the picker adds up to, so all of them go one way. */
 	connect(typeBox, &QComboBox::currentIndexChanged, this, &SectionEditor::onTypeSwitchChanged);
 	connect(typeListContent, &QComboBox::currentIndexChanged, this, &SectionEditor::onTypeSwitchChanged);
-	for (QCheckBox *box : {typeSubtitle, typeLogo, typeLogoOnly})
-		connect(box, &QCheckBox::toggled, this, &SectionEditor::onTypeSwitchChanged);
+	for (QToolButton *chip : {typeSubtitle, typeLogo, typeLogoOnly})
+		connect(chip, &QToolButton::toggled, this, &SectionEditor::onTypeSwitchChanged);
 
 	/*
 	 * The column count is part of what a list *is* -- one column or several is the difference
@@ -1467,7 +1672,7 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(columns, &QSpinBox::valueChanged, this, &SectionEditor::onTypeSwitchChanged);
 
 	connect(labelEdit, &QLineEdit::textChanged, this, notify);
-	connect(visibleBox, &QCheckBox::toggled, this, notify);
+	connect(visibleBox, &ToggleSwitch::toggled, this, notify);
 	connect(textEdit, &QPlainTextEdit::textChanged, this, notify);
 	connect(subtitleEdit, &QPlainTextEdit::textChanged, this, notify);
 	connect(logoPath, &QLineEdit::textChanged, this, notify);
@@ -1638,6 +1843,12 @@ void SectionEditor::setSection(const Section &source)
 
 	showTypeAsSwitches(source.type);
 	labelEdit->setText(source.label);
+	{
+		/* The name the section gives itself, shown for as long as it has not been given one. */
+		Section unnamed = source;
+		unnamed.label.clear();
+		labelEdit->setPlaceholderText(unnamed.displayLabel());
+	}
 	visibleBox->setChecked(source.visible);
 	textEdit->setPlainText(source.text);
 	subtitleEdit->setPlainText(source.secondaryText);
@@ -1752,8 +1963,13 @@ void SectionEditor::setSection(const Section &source)
 	writeEntriesToTable(source);
 	/* After the tables, since what it asks about includes the artwork they hold. */
 	refreshLogoPlayback();
+	refreshEntryEmptyHint();
 
 	loading = false;
+
+	changedTimer->stop();
+	refreshChangedTabs();
+	refreshStyleSummary();
 }
 
 Section SectionEditor::section() const
@@ -1912,12 +2128,16 @@ bool formHasVisibleRow(const QFormLayout *form)
 
 void SectionEditor::addRow(const QString &label, QWidget *field)
 {
+	capFieldWidth(field);
 	form->addRow(label, field);
 	rowOwner.insert(field, form);
 }
 
 void SectionEditor::setRowVisible(QWidget *field, bool visible)
 {
+	if (QWidget *shownAs = rowAlias.value(field))
+		field = shownAs;
+
 	QFormLayout *owner = rowOwner.value(field);
 	if (!owner)
 		return;
@@ -1949,6 +2169,7 @@ QVBoxLayout *SectionEditor::addTab(EditorTab tab, const QString &title)
 	tabs->addTab(scroll, title);
 
 	tabLayouts[index] = layout;
+	tabPages[index] = scroll;
 
 	return layout;
 }
@@ -2077,14 +2298,25 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool heading = isHeadingBase(base);
 	const bool list = base == SectionType::TextList;
 
-	setRowVisible(typeSubtitle, heading && !typeLogoOnly->isChecked());
-	setRowVisible(typeLogo, heading && !typeLogoOnly->isChecked());
-	setRowVisible(typeLogoOnly, heading);
-	setRowVisible(typeListContent, list);
+	typeSubtitle->setVisible(heading && !typeLogoOnly->isChecked());
+	typeLogo->setVisible(heading && !typeLogoOnly->isChecked());
+	typeLogoOnly->setVisible(heading);
+	listContentSegments->setVisible(list);
+	for (QToolButton *chip : {typeSubtitle, typeLogo, typeLogoOnly})
+		markChip(chip);
+	variantLabel->setText(moduleText(list ? "Designer.EachEntryIs" : "Designer.Includes"));
+	variantRow->setVisible(heading || list);
 
+	/* The header's picture of the section, its kind in words, and what that kind is for. */
+	typeBadge->setPixmap(typeBadgePixmap(type, typeBadge->width(), devicePixelRatioF()));
+	typeNameLabel->setText(baseTypeLabel(base));
 	const QString help = sectionTypeHelp(type);
-	typeHelp->setText(help);
-	setRowVisible(typeHelp, !help.isEmpty());
+	typeInfo->setPixmap(infoPixmap(13, typeNameLabel->palette().color(QPalette::WindowText), devicePixelRatioF()));
+	typeInfo->setToolTip(help);
+	typeNameLabel->setToolTip(help);
+	typeInfo->setVisible(!help.isEmpty());
+	for (QAction *action : changeTypeMenu->actions())
+		action->setChecked(action->data().toInt() == static_cast<int>(base));
 
 	/*
 	 * The group of type-specific settings is named after the type in it. A group called
@@ -2271,13 +2503,13 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool marker = type == SectionType::Action;
 	setRowVisible(actionLine, marker);
 	actionsGroup->setVisible(marker);
-	setRowVisible(paddingTop, !marker);
-	setRowVisible(paddingBottom, !marker);
 
 	const bool placeable = type != SectionType::StickyBlock && !marker;
-	setRowVisible(marginX, placeable);
 	/* A spacer draws nothing, so there is nothing of it to nudge sideways. */
-	setRowVisible(contentOffsetX, placeable && type != SectionType::Spacer);
+	spacing->setEdgesVisible(!marker, placeable, placeable && type != SectionType::Spacer);
+	spacing->setVisible(!marker);
+	spacing->setContentText(placeable ? moduleText("Designer.Spacing.Content").arg(sectionWidth->value())
+					  : moduleText("Designer.Spacing.Block"));
 	setRowVisible(sectionWidth, placeable);
 	setRowVisible(sectionAlign, placeable);
 
@@ -2351,7 +2583,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	contentGroup->setVisible(formHasVisibleRow(contentForm));
 	typeSettingsGroup->setVisible(formHasVisibleRow(typeSettingsForm));
-	placementGroup->setVisible(formHasVisibleRow(placementForm));
+	placementGroup->setVisible(formHasVisibleRow(placementForm) || !marker);
 
 	/*
 	 * Whichever table the Content tab is showing is the one thing on it worth growing, so it takes
@@ -2363,6 +2595,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 
 	/* Last, so it reads the groups this pass has just settled. */
 	refreshTabVisibility();
+	refreshStyleSummary();
 }
 
 void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
@@ -3035,10 +3268,236 @@ void SectionEditor::importCsv()
 	emitChanged();
 }
 
+void SectionEditor::showTab(EditorTab tab)
+{
+	const int index = static_cast<int>(tab);
+	if (tabs->isTabVisible(index))
+		tabs->setCurrentIndex(index);
+}
+
+void SectionEditor::focusName()
+{
+	labelEdit->setFocus(Qt::ShortcutFocusReason);
+	labelEdit->selectAll();
+}
+
+namespace {
+
+/* True when anything the Layout tab sets differs between the two sections. */
+bool layoutDiffers(const Section &a, const Section &b)
+{
+	/* Read through the spin boxes, which hold whole numbers, so a default of 2.5 is not "changed". */
+	const auto px = [](double value) {
+		return qRound(value);
+	};
+	const auto pct = [](double value) {
+		return qRound(value * 100.0);
+	};
+
+	return a.paddingTop != b.paddingTop || a.paddingBottom != b.paddingBottom || a.marginX != b.marginX ||
+	       a.contentOffsetX != b.contentOffsetX || pct(a.sectionWidth) != pct(b.sectionWidth) ||
+	       a.sectionAlign != b.sectionAlign || a.logoPlacement != b.logoPlacement || a.logoSide != b.logoSide ||
+	       a.logoGap != b.logoGap || a.bridgeType != b.bridgeType || a.bridge != b.bridge ||
+	       a.bridgeSvg != b.bridgeSvg || px(a.bridgeThickness) != px(b.bridgeThickness) ||
+	       px(a.bridgeOffset) != px(b.bridgeOffset) || px(a.bridgeGap) != px(b.bridgeGap) ||
+	       px(a.bridgeMinGap) != px(b.bridgeMinGap) || a.bridgeTint != b.bridgeTint ||
+	       a.bridgeFill != b.bridgeFill || a.bridgeSizing != b.bridgeSizing ||
+	       pct(a.bridgeSplit) != pct(b.bridgeSplit) || a.bridgeRowAlign != b.bridgeRowAlign ||
+	       a.bridgeSpanEmpty != b.bridgeSpanEmpty || a.rowSubtitles != b.rowSubtitles ||
+	       a.dividerMirrorEnds != b.dividerMirrorEnds || a.dividerArm != b.dividerArm ||
+	       a.dividerArmSvg != b.dividerArmSvg || px(a.dividerThickness) != px(b.dividerThickness) ||
+	       a.dividerConnect != b.dividerConnect || px(a.dividerGap) != px(b.dividerGap) ||
+	       px(a.dividerPieceGap) != px(b.dividerPieceGap) || a.dividerRules != b.dividerRules ||
+	       px(a.dividerRuleGap) != px(b.dividerRuleGap) || px(a.dividerRuleInset) != px(b.dividerRuleInset) ||
+	       a.dividerTint != b.dividerTint || a.columnGap != b.columnGap || a.fillAcross != b.fillAcross ||
+	       a.entryGap != b.entryGap || a.indentStep != b.indentStep || a.subtitleGap != b.subtitleGap ||
+	       a.subtitleFirst != b.subtitleFirst || a.spacerHeight != b.spacerHeight ||
+	       pct(a.actionLine) != pct(b.actionLine) || a.stickyEntrance != b.stickyEntrance ||
+	       a.stickyFadeIn != b.stickyFadeIn || a.stickyAnchor != b.stickyAnchor ||
+	       pct(a.stickyCanvasPosition) != pct(b.stickyCanvasPosition) || px(a.stickyOffset) != px(b.stickyOffset) ||
+	       a.stickyHold != b.stickyHold || a.stickyHoldForever != b.stickyHoldForever ||
+	       a.stickyRelease != b.stickyRelease;
+}
+
+bool styleDiffers(const Section &a, const Section &b)
+{
+	return !(a.style == b.style) || !(a.secondaryStyle == b.secondaryStyle) ||
+	       a.useSecondaryStyle != b.useSecondaryStyle || !(a.bridgeStyle == b.bridgeStyle) ||
+	       a.useBridgeStyle != b.useBridgeStyle || !(a.rowSubtitleStyle == b.rowSubtitleStyle) ||
+	       !(a.rowSecondarySubtitleStyle == b.rowSecondarySubtitleStyle) || !a.stylePresetName.isEmpty() ||
+	       !a.secondaryStylePresetName.isEmpty() || !a.bridgeStylePresetName.isEmpty() ||
+	       !a.rowSubtitleStylePresetName.isEmpty() || !a.rowSecondarySubtitleStylePresetName.isEmpty();
+}
+
+bool backgroundDiffers(const Section &a, const Section &b)
+{
+	for (const BackgroundSlot slot : allBackgroundSlots()) {
+		if (a.hasBackground(slot) != b.hasBackground(slot))
+			return true;
+		if (a.hasBackground(slot) && !(a.background(slot) == b.background(slot)))
+			return true;
+	}
+	return false;
+}
+
+} // namespace
+
+void SectionEditor::refreshChangedTabs()
+{
+	const Section edited = section();
+	const Section defaults = Section::makeDefault(edited.type);
+
+	const auto mark = [this](EditorTab tab, bool changed) {
+		const int index = static_cast<int>(tab);
+		tabs->setTabIcon(index, changed ? changedIcon : QIcon());
+		tabs->setTabToolTip(index, changed ? moduleText("Designer.Tab.Changed") : QString());
+	};
+
+	mark(EditorTab::Layout, layoutDiffers(edited, defaults));
+	mark(EditorTab::Style, styleDiffers(edited, defaults));
+	mark(EditorTab::Background, backgroundDiffers(edited, defaults));
+}
+
+void SectionEditor::refreshStyleSummary()
+{
+	while (QLayoutItem *item = styleSummaryLayout->takeAt(0)) {
+		delete item->widget();
+		delete item;
+	}
+
+	struct Shown {
+		CollapsibleGroup *group;
+		StyleEditor *editor;
+	};
+	const QVector<Shown> styles = {{styleGroup, primaryStyle},
+				       {secondaryGroup, secondaryStyle},
+				       {bridgeStyleGroup, bridgeStyle},
+				       {rowSubtitleStyleGroup, rowSubtitleStyle},
+				       {rowSecondarySubtitleStyleGroup, rowSecondarySubtitleStyle}};
+
+	int shown = 0;
+	for (const Shown &entry : styles) {
+		/* Only the styles this section really draws with: on show, and switched on where they switch. */
+		if (entry.group->isHidden() || !entry.group->isChecked())
+			continue;
+
+		const TextStyle style = entry.editor->style();
+		QString what;
+		if (!entry.editor->presetName().isEmpty()) {
+			what = moduleText("Designer.StyleSummary.Preset").arg(entry.editor->presetName());
+		} else if (entry.group == bridgeStyleGroup) {
+			what = style.color.name();
+		} else {
+			what = QStringLiteral("%1 · %2 px · %3")
+				       .arg(style.family.isEmpty() ? moduleText("Designer.StyleSummary.DefaultFont")
+								   : style.family)
+				       .arg(style.pixelSize)
+				       .arg(style.color.name());
+		}
+
+		auto *line = new QPushButton(styleSummary);
+		line->setObjectName(QStringLiteral("designerStyleLink"));
+		line->setText(QStringLiteral("%1:  %2").arg(entry.group->title(), what));
+		line->setToolTip(moduleText("Designer.StyleSummary.Tip"));
+		line->setCursor(Qt::PointingHandCursor);
+		line->setMaximumWidth(480);
+		CollapsibleGroup *group = entry.group;
+		connect(line, &QPushButton::clicked, this, [this, group] {
+			showTab(EditorTab::Style);
+			group->setExpanded(true);
+			if (auto *scroll = qobject_cast<QScrollArea *>(tabPages[static_cast<int>(EditorTab::Style)]))
+				QTimer::singleShot(0, scroll,
+						   [scroll, group] { scroll->ensureWidgetVisible(group, 0, 0); });
+		});
+
+		if (shown == 0) {
+			auto *title = new QLabel(moduleText("Designer.StyleSummary"), styleSummary);
+			styleAsHint(title);
+			styleSummaryLayout->addWidget(title);
+		}
+		styleSummaryLayout->addWidget(line);
+		++shown;
+	}
+
+	styleSummary->setVisible(shown > 0);
+}
+
+void SectionEditor::refreshEntryEmptyHint()
+{
+	const bool empty = entryTable->rowCount() == 0;
+	entryEmptyHint->setVisible(empty);
+	if (empty)
+		entryEmptyHint->setGeometry(entryTable->viewport()->rect().adjusted(16, 0, -16, 0));
+}
+
+bool SectionEditor::eventFilter(QObject *watched, QEvent *event)
+{
+	if (event->type() == QEvent::Resize && watched == entryTable->viewport())
+		refreshEntryEmptyHint();
+
+	if (watched == entryTable && event->type() == QEvent::KeyPress) {
+		auto *key = static_cast<QKeyEvent *>(event);
+		if (key->matches(QKeySequence::Paste)) {
+			pasteIntoEntries();
+			return true;
+		}
+	}
+
+	return QWidget::eventFilter(watched, event);
+}
+
+void SectionEditor::pasteIntoEntries()
+{
+	QString text = QGuiApplication::clipboard()->text();
+	text.replace(QStringLiteral("\r\n"), QStringLiteral("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+	QStringList lines = text.split(QLatin1Char('\n'));
+	/* A copied block of cells ends with a newline, which is not one more empty row. */
+	while (!lines.isEmpty() && lines.last().isEmpty())
+		lines.removeLast();
+	if (lines.isEmpty())
+		return;
+
+	const int startRow = entryTable->currentRow() >= 0 ? entryTable->currentRow() : entryTable->rowCount();
+	const int startColumn = std::max(0, entryTable->currentColumn());
+
+	{
+		const QSignalBlocker blocker(entryTable);
+
+		for (int line = 0; line < lines.size(); ++line) {
+			const int row = startRow + line;
+			if (row >= entryTable->rowCount())
+				entryTable->insertRow(entryTable->rowCount());
+
+			const QStringList cells = lines.at(line).split(QLatin1Char('\t'));
+			for (int cell = 0; cell < cells.size(); ++cell) {
+				const int column = startColumn + cell;
+				if (column >= entryTable->columnCount())
+					break;
+
+				/* Written into an existing item, so a row keeps the entry stashed on its first cell. */
+				if (QTableWidgetItem *item = entryTable->item(row, column))
+					item->setText(cells.at(cell).trimmed());
+				else
+					entryTable->setItem(row, column,
+							    new QTableWidgetItem(cells.at(cell).trimmed()));
+			}
+		}
+	}
+
+	entryTable->setCurrentCell(startRow + static_cast<int>(lines.size()) - 1, startColumn);
+	refreshEntryEmptyHint();
+	refreshLogoPlayback();
+	emitChanged();
+}
+
 void SectionEditor::emitChanged()
 {
-	if (!loading)
-		emit changed();
+	if (loading)
+		return;
+
+	changedTimer->start();
+	emit changed();
 }
 
 } // namespace closingtime

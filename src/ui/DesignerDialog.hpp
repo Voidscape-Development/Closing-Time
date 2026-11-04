@@ -30,11 +30,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/CreditsModel.hpp"
 #include "render/RollRenderer.hpp"
+#include "render/RollTimeline.hpp"
 
-class QCheckBox;
-class QDialogButtonBox;
+#include <QElapsedTimer>
+
+class QAction;
 class QFileSystemWatcher;
 class QLabel;
+class QLineEdit;
+class QMenu;
 class QPushButton;
 class QSplitter;
 class QTimer;
@@ -42,8 +46,12 @@ class QToolButton;
 
 namespace closingtime {
 
+class AddSectionGallery;
 class PreviewWidget;
 class SectionEditor;
+class SegmentedControl;
+class TimelineScrubber;
+class UndoToast;
 
 /*
  * The section list, with drag-and-drop reordering.
@@ -68,6 +76,12 @@ signals:
 	 * section is to keep the click off the selection and out of a drag.
 	 */
 	void blockFoldToggled(int row);
+
+	/* A click on a row's eye: show the section in the roll, or hide it. */
+	void visibilityToggled(int row);
+
+	/* A row's name was edited in place. Empty means "name it after what it holds". */
+	void renamed(int row, const QString &name);
 
 protected:
 	void mousePressEvent(QMouseEvent *event) override;
@@ -107,15 +121,6 @@ void registerDesignerToolsMenu(const char *sourceId);
  */
 void registerStyleLibraryToolsMenu();
 
-/*
- * Adds the Style Library entry to the Tools menu.
- *
- * Separate from the designer's entry because the library is separate from any one roll: styles
- * shared by every source on the machine should not need a source to be found and opened before
- * they can be renamed or thrown away.
- */
-void registerStyleLibraryToolsMenu();
-
 /* Closes any designer window bound to `source`. Safe to call for sources with none. */
 void closeDesignerFor(obs_source_t *source);
 
@@ -134,6 +139,15 @@ public:
 	/* True once the bound source has been destroyed and the window should go away. */
 	bool sourceIsGone() const;
 
+	/*
+	 * Cancel, Escape and the close box all come through here. With changes not yet applied the
+	 * window asks what to do with them, rather than dropping a session's work on one keypress.
+	 */
+	void reject() override;
+
+protected:
+	void keyPressEvent(QKeyEvent *event) override;
+
 private:
 	void loadFromSource();
 	void writeToSource();
@@ -142,14 +156,26 @@ private:
 	void onSelectionChanged();
 	void onSectionEdited();
 
-	void duplicateSection();
-	void removeSection();
 	/*
-	 * Asks before a section goes, unless this window has been told not to. True when the delete
-	 * should go ahead.
+	 * Adds a section of `type` below the selection and puts its name up for editing in the list.
+	 * The name is asked for in place rather than in a dialog: Enter keeps the name it gives
+	 * itself, and Escape leaves the section added with that name.
 	 */
-	bool confirmRemoveSection(const Section &section);
+	void addSectionOfType(SectionType type);
+	/* Opens the add-section gallery under the Add button. */
+	void openAddGallery();
+	void duplicateSection();
+	/* Takes the section away at once and offers the way back in a toast, rather than asking first. */
+	void removeSection();
 	void moveSection(int delta);
+	/* Starts a rename in the list, on the selected row. */
+	void renameSelected();
+	void renameRow(int row, const QString &name);
+	void toggleRowVisibility(int row);
+	/* The right-click menu on a row, and the same actions behind the list's ⋯ button. */
+	void showSectionMenu(const QPoint &position);
+	/* Replaces the roll's sections with one of the built-in starting points; undoable. */
+	void startFromTemplate(int index);
 	void moveSectionTo(int from, int to);
 
 	/* Style presets live on the document, so the editors route their edits through here. */
@@ -178,6 +204,9 @@ private:
 	 * from answering for "Card the heading style".
 	 */
 	bool shouldEditLinkedPreset(const QString &name, QHash<QString, bool> *choices);
+
+	/* Hides the rows the filter leaves out, and the children of folded blocks. */
+	void applyRowVisibility();
 
 	/* Opens the library manager on this document. */
 	void openStyleLibrary();
@@ -217,6 +246,26 @@ private:
 
 	/* Commits the editor's current state into `document` at `currentPath`. */
 	void commitCurrentSection();
+
+	/*
+	 * Whether the roll differs from what was last applied, and the marks that say so: the dot
+	 * beside the Done button and the window title's asterisk.
+	 */
+	bool isDirty();
+	void refreshDirty();
+	/* Records the roll as it is now as the applied state. */
+	void markSaved();
+	/* Writes the roll to the source: commit, flush the library, write, mark saved. */
+	void applyChanges();
+
+	/* Plays the roll in the preview at its own speed, from wherever the scrubber is. */
+	void setPlaying(bool playing);
+	/* Shows the moment `seconds` into the roll in the preview, playing or not. */
+	void showPlaybackAt(double seconds);
+	/* Back to the whole roll laid out end to end. */
+	void stopPlayback();
+	/* How long the scrubber runs for: the roll's running time, or a sensible stand-in for "for ever". */
+	double playbackLength() const;
 
 	/*
 	 * Undo covers exactly what the designer owns -- sections and style presets -- because
@@ -321,8 +370,8 @@ private:
 		bool isValid() const { return index >= 0; }
 	};
 
-	/* How one row of the section list reads: its branch or fold arrow, its name, and its count. */
-	QString rowLabel(const SectionPath &path, const Section &section) const;
+	/* Writes what a row shows -- its name, kind, detail line, fold and visibility -- onto its item. */
+	void fillRowItem(QListWidgetItem *item, const SectionPath &path, const Section &section) const;
 
 	/* Folds a sticky block's children away in the list, and back. View state only; see Section. */
 	void toggleBlockFold(int row);
@@ -339,21 +388,6 @@ private:
 
 	/* Inserts `section` into the container `path` names, at `path.index`. Returns where it went. */
 	SectionPath insertSection(const SectionPath &path, const Section &section);
-
-	/*
-	 * Asks what the section about to be added is called, and answers false if the user backs out.
-	 *
-	 * A roll of forty sections is read in the list down the left, and a section that was never
-	 * named sits in it as "List (23)" until somebody thinks to go looking for the name field --
-	 * which is a row in the editor, three away from the type picker, and easy to never meet. The
-	 * one moment the name is worth asking for is the moment the section is made, so it is asked
-	 * for there and the field stays where it is for changing the answer later.
-	 *
-	 * An empty answer is a real answer: the section falls back to naming itself after what it
-	 * holds, which is what every section did before this dialog existed. Cancel is the only way
-	 * to end up with no section, so a misfired menu costs nothing.
-	 */
-	bool promptForSectionName(const QString &title, const QString &initial, QString *name);
 
 	/* Takes the section out of its container. */
 	void removeSectionAt(const SectionPath &path);
@@ -374,6 +408,10 @@ private:
 	std::shared_ptr<AnimatedLogoCache> animations = std::make_shared<AnimatedLogoCache>();
 	std::shared_ptr<PreviewSink> sink = std::make_shared<PreviewSink>();
 
+	/* The roll as it was last applied, which "unsaved changes" is measured against. */
+	DocumentSnapshot savedState;
+	bool dirty = false;
+
 	QVector<DocumentSnapshot> undoStack;
 	QVector<DocumentSnapshot> redoStack;
 	bool editBurstOpen = false;
@@ -393,8 +431,11 @@ private:
 	SectionListWidget *sectionList = nullptr;
 	QWidget *listPane = nullptr;
 	QLabel *sectionsLabel = nullptr;
+	QLineEdit *filterEdit = nullptr;
 	QWidget *listButtonRow = nullptr;
+	QToolButton *addButton = nullptr;
 	QToolButton *collapseButton = nullptr;
+	AddSectionGallery *gallery = nullptr;
 	bool sectionsCollapsed = false;
 	/* The width to come back to, taken the moment the list is folded away. */
 	int listExpandedWidth = 0;
@@ -408,20 +449,49 @@ private:
 	QToolButton *previewCollapseButton = nullptr;
 	bool previewCollapsed = false;
 	int previewExpandedWidth = 0;
+	SegmentedControl *zoomControl = nullptr;
 	/* Switches the layout overlay on; the boxes themselves come with every render. */
-	QCheckBox *layoutBoxesCheck = nullptr;
+	QToolButton *layoutBoxesButton = nullptr;
 	/* Runs the animated logos in the preview. Disabled when the roll holds none. */
-	QCheckBox *animateCheck = nullptr;
-	QLabel *durationLabel = nullptr;
+	QToolButton *animateButton = nullptr;
+
+	/* The preview's transport: play, stop, the scrubber and the time. */
+	QToolButton *playButton = nullptr;
+	QToolButton *stopButton = nullptr;
+	TimelineScrubber *scrubber = nullptr;
+	QLabel *timecodeLabel = nullptr;
+	QTimer *playTimer = nullptr;
+	QElapsedTimer playClock;
+	double playTime = 0.0;
+	bool playing = false;
+	/* The timeline of the layout on screen, which the transport plays. */
+	RollTimeline shownTimeline;
+
+	/* The toolbar: running time, anything that will not come out as designed, and saving. */
+	QLabel *durationPill = nullptr;
 	/*
 	 * Hidden unless something about the roll will not come out as designed on this machine: a
 	 * font that is not installed, artwork longer than an animated logo may be, a video logo in a
 	 * build that cannot decode one.
 	 */
-	QLabel *fontWarningLabel = nullptr;
-	QDialogButtonBox *buttons = nullptr;
-	QPushButton *undoButton = nullptr;
-	QPushButton *redoButton = nullptr;
+	QToolButton *warningChip = nullptr;
+	QStringList warnings;
+	bool fontWarnings = false;
+	QWidget *dirtyMark = nullptr;
+	QToolButton *undoButton = nullptr;
+	QToolButton *redoButton = nullptr;
+	QPushButton *applyButton = nullptr;
+	QPushButton *doneButton = nullptr;
+	UndoToast *toast = nullptr;
+
+	/* The list's actions, shared by the right-click menu, the ⋯ menu and their shortcuts. */
+	QAction *renameAction = nullptr;
+	QAction *duplicateAction = nullptr;
+	QAction *hideAction = nullptr;
+	QAction *moveUpAction = nullptr;
+	QAction *moveDownAction = nullptr;
+	QAction *removeAction = nullptr;
+	QAction *addSectionAction = nullptr;
 	/*
 	 * Renders are debounced so that typing into a text field does not re-rasterize the
 	 * entire strip on every keystroke.
@@ -444,12 +514,6 @@ private:
 	QHash<QString, bool> linkedEditChoices;
 	/* The same memory for the panels, in a keyspace of its own; see shouldEditLinkedPreset. */
 	QHash<QString, bool> linkedBackgroundEditChoices;
-	/*
-	 * Whether deleting a section still asks first. Per window, like the answers above: undo
-	 * already covers a delete, so this is a courtesy rather than the safety net, and a window
-	 * opened afresh asks again rather than leaving a setting switched off somewhere unfindable.
-	 */
-	bool askBeforeRemovingSection = true;
 };
 
 } // namespace closingtime

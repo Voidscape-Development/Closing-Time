@@ -86,6 +86,22 @@ public:
 	/* Scrolls so that `stripY` (in strip pixels) sits at the top of the visible area. */
 	void scrollToStripY(int stripY);
 
+	/*
+	 * How big the roll is drawn: fitted across the pane, or at one canvas pixel per screen pixel
+	 * -- the size text will really be -- panned sideways with a horizontal or shift scroll.
+	 */
+	enum class Zoom { Fit, Actual };
+	void setZoom(Zoom zoom);
+
+	/*
+	 * Shows the canvas as it looks at one moment of the roll playing: the strip where the
+	 * timeline has it, sticky blocks pinned, logos at their own clocks. The pane goes back to the
+	 * whole roll end to end with clearPlayback().
+	 */
+	void showPlaybackFrame(const RollFrame &frame);
+	void clearPlayback();
+	bool isShowingPlayback() const { return playbackActive; }
+
 	QSize sizeHint() const override;
 
 signals:
@@ -97,6 +113,8 @@ protected:
 	void wheelEvent(QWheelEvent *event) override;
 	void resizeEvent(QResizeEvent *event) override;
 	void mousePressEvent(QMouseEvent *event) override;
+	void mouseMoveEvent(QMouseEvent *event) override;
+	void leaveEvent(QEvent *event) override;
 
 private:
 	int canvasWidth() const;
@@ -109,6 +127,18 @@ private:
 	/* Height of the framed screenful at the top of the pane, in widget pixels. */
 	qreal onAirHeight() const;
 	int maxScroll() const;
+	/* Where the canvas's left edge is drawn, in widget pixels: inset when fitted, panned at 100%. */
+	int canvasLeft() const;
+	int maxPan() const;
+
+	/* The top-level section under a point in the pane, or -1. */
+	int sectionAt(const QPointF &position) const;
+	/* Where a section's box is on screen, in widget pixels; empty when it has none. */
+	QRectF sectionScreenRect(int section) const;
+	/* The selection's outline, and a fainter one round the section under the pointer. */
+	void paintSelection(QPainter &painter) const;
+	/* The pane while the roll is playing: one canvas, at the moment being shown. */
+	void paintPlayback(QPainter &painter, const QRect &canvasColumn);
 
 	/* What the pane shows, in device pixels, as draws. */
 	DrawList composeView(double clipBottomPixels) const;
@@ -129,7 +159,12 @@ private:
 	QColor background = QColor(0, 0, 0, 0);
 	bool layoutBoxesVisible = false;
 	int highlightedSection = -1;
+	int hoveredSection = -1;
 	int scroll = 0;
+	Zoom zoom = Zoom::Fit;
+	int pan = 0;
+	bool playbackActive = false;
+	RollFrame playbackFrame;
 
 	std::shared_ptr<ChunkPipeline> pipeline;
 

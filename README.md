@@ -16,8 +16,8 @@ part of it, so one house style dresses a whole roll.
 ## What it does
 
 Add a **Credits Marquee** source to a scene, open **Credits Designer**, and build the roll
-out of sections. The designer asks for a kind of section and then a couple of plain questions
-about it — a heading, with a subtitle, with a logo; a list of lines, pairs or images over so many
+out of sections. The designer's **+ Add section** gallery shows each kind of section as a small picture
+of itself, and the section then answers a couple of plain questions — a heading, with a subtitle, with a logo; a list of lines, pairs or images over so many
 columns — which between them cover every shape in the table below:
 
 | Section type | What it is |
@@ -149,8 +149,9 @@ preview as it is typed. A roll carries its own copy of every style it uses as we
 collection opened on a machine without the library still renders the way it was saved rather than
 unstyled, and editing a shared style from a roll asks whether you mean *this roll* or *all of
 them*. Renaming a shared style takes every roll bound to it along — the ones open at the time, and
-the scene collections that were not, when they next load. Sections reorder by dragging, edits are undoable (Ctrl+Z), and lists can be typed in directly or
-imported from a CSV/TSV file with a column-mapping step.
+the scene collections that were not, when they next load. Sections reorder by dragging, edits are undoable (Ctrl+Z), and lists can be typed in directly,
+pasted from a spreadsheet (Ctrl+V into the entry table), or imported from a CSV/TSV file with a
+column-mapping step.
 
 **Fonts travel with the roll.** A style names a font by family, and a family name means nothing on
 a machine that does not have that font — so the roll carries the font files themselves, inside the
@@ -224,7 +225,37 @@ lead-out padding, start behavior, looping, and the ending action.
   is over.
 
 The designer shows how long the roll runs, counting a closing card's hold, and clicking a
-section in its preview selects it.
+section in its preview selects it. Its preview can also **play the roll** at its real speed —
+sticky cards pinning and holding, logos animating — with a scrubber that marks every Action, and
+can zoom to 100% to check text at the size it goes to air.
+
+### Working in the designer
+
+- **Sections list.** Each row has a badge for its kind, a line of detail ("Bridged · 6 rows"), and
+  an eye to hide or show it. Spacers and Actions are drawn as thin markers. Filter the list with
+  Ctrl+F; right-click a row for everything that can be done to it.
+- **Adding and naming.** Ctrl+N or **+ Add section** opens the gallery; the new row opens for
+  renaming in place. Enter keeps the name it gives itself, and Escape keeps the section.
+- **Removing.** A removed section goes at once, with an **Undo** in the toast that appears.
+- **Saving.** Apply (Ctrl+S) sends changes to the source; Done (Ctrl+Enter) sends them and closes.
+  Closing with changes not yet applied asks whether to save them.
+- **Changed settings.** A dot on the Layout, Style or Background tab means something there differs
+  from a new section of that type.
+- **Starting points.** The **Roll** menu holds Fonts, the Style Library, import and export, and a
+  few templates to start a roll from.
+
+| Key | Does |
+|---|---|
+| Ctrl+N | Add section |
+| F2 / double-click | Rename |
+| Ctrl+D | Duplicate |
+| Delete | Remove (with undo toast) |
+| H | Hide or show in the roll |
+| Alt+↑ / Alt+↓ | Move section |
+| Ctrl+1 … Ctrl+4 | Content / Layout / Style / Background |
+| Ctrl+F | Filter sections |
+| Space | Play or pause the preview (from the list or preview) |
+| Ctrl+S / Ctrl+Enter | Apply / Done |
 
 ## Ending actions
 

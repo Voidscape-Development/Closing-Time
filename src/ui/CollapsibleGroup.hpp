@@ -20,13 +20,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QWidget>
 
-class QCheckBox;
 class QHBoxLayout;
 class QLayout;
 class QToolButton;
 class QVBoxLayout;
 
 namespace closingtime {
+
+class ToggleSwitch;
 
 /*
  * A named run of settings that folds away to its own title.
@@ -48,9 +49,17 @@ namespace closingtime {
  * signal, `toggled` and `expandedChanged`, so a caller listening for a document change is not woken
  * by somebody tidying the pane.
  *
- * A group starts folded. The fold state is per group and per window -- unfolding one keeps it
- * unfolded as the reader moves between sections -- and nothing about it is written to the document.
- * The checked state is a document setting and belongs to whoever put the checkbox there.
+ * A group starts open: the settings somebody came to the tab for are on screen without a click to
+ * find them. Folding one away is remembered on this machine once the group has been given a
+ * state key (see setStateKey), so the groups somebody never wants to see stay out of the way
+ * across sessions without anyone else's first look being a column of closed headings.
+ *
+ * A checkable group's fold follows its switch: switching it on opens the settings that have just
+ * started to apply, and switching it off folds them away. That makes the row one decision rather
+ * than two controls side by side that people had to learn the difference between. The arrow is
+ * still there for folding an applied group out of the way. Nothing about the fold is written to
+ * the document; the checked state is a document setting and belongs to whoever put the switch
+ * there.
  */
 class CollapsibleGroup : public QWidget {
 	Q_OBJECT
@@ -64,6 +73,7 @@ public:
 	void addLayout(QLayout *layout);
 
 	void setTitle(const QString &title);
+	QString title() const { return titleText; }
 	/*
 	 * A tooltip for the header row itself. Setting one on the group reaches only the strip of
 	 * it no child covers, which on an expanded group is almost nowhere -- and the title is the
@@ -73,6 +83,12 @@ public:
 
 	bool isExpanded() const;
 	void setExpanded(bool expanded);
+
+	/*
+	 * Names the group for the machine-wide memory of what is folded, and applies what was last
+	 * remembered under that name. Ignored by checkable groups, whose fold follows their switch.
+	 */
+	void setStateKey(const QString &key);
 
 	/*
 	 * Whether the group carries a checkbox, and what it says. A group without one is never off,
@@ -94,7 +110,8 @@ private:
 
 	QHBoxLayout *headerRow = nullptr;
 	/* Null until setCheckable(true); see the note on the two readings above. */
-	QCheckBox *enable = nullptr;
+	ToggleSwitch *enable = nullptr;
+	QString stateKey;
 	QToolButton *header = nullptr;
 	QWidget *body = nullptr;
 	QString titleText;

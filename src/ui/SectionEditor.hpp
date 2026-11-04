@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <QHash>
+#include <QIcon>
 #include <QWidget>
 
 #include "model/CreditsModel.hpp"
@@ -34,18 +35,23 @@ class QFormLayout;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
 class QSpinBox;
 class QTableWidget;
 class QTabWidget;
+class QTimer;
 class QToolButton;
 class QVBoxLayout;
 
 namespace closingtime {
 
 class ActionListEditor;
+class SegmentedControl;
+class SpacingDiagram;
+class ToggleSwitch;
 
 /*
  * The four tabs the section's settings are dealt out into.
@@ -146,6 +152,11 @@ private:
 	void notifyEdited();
 
 	QFormLayout *form = nullptr;
+	/* Font size and line spacing, which share a row; see the constructor. */
+	QWidget *sizeRow = nullptr;
+
+	/* Hides an outline's or shadow's settings while it is switched off. */
+	void applyEffectVisibility();
 
 	QComboBox *presetBox = nullptr;
 	QPushButton *savePresetButton = nullptr;
@@ -217,6 +228,11 @@ public:
 	/* And the same for the panels, into every background editor. */
 	void setBackgroundPresets(const QVector<BackgroundPreset> &presets);
 
+	/* Brings a tab to the front, when the section being edited has one. */
+	void showTab(EditorTab tab);
+	/* Puts the cursor in the section's name, all of it selected. */
+	void focusName();
+
 signals:
 	/* Emitted whenever the edited section changes in a way that affects the render. */
 	void changed();
@@ -242,6 +258,23 @@ private:
 	 */
 	void addRow(const QString &label, QWidget *field);
 	void setRowVisible(QWidget *field, bool visible);
+
+	/*
+	 * Marks the tabs whose settings differ from what a new section of this type starts with, so
+	 * somebody looking for "what did I change on this one?" sees where without opening every tab.
+	 */
+	void refreshChangedTabs();
+	/*
+	 * The one-line summary of each style on the Content tab: what the words will look like,
+	 * readable without leaving them. Each line opens its style on the Style tab.
+	 */
+	void refreshStyleSummary();
+	/* Says what to do in an entry table that has nothing in it yet. */
+	void refreshEntryEmptyHint();
+	/* Fills the entry table from tab-separated rows on the clipboard -- a spreadsheet copy. */
+	void pasteIntoEntries();
+	/* Paste and the empty-table hint both need to see the entry table's own events. */
+	bool eventFilter(QObject *watched, QEvent *event) override;
 
 	/*
 	 * Builds one tab and returns the layout its groups go into.
@@ -353,19 +386,36 @@ private:
 	QFormLayout *form = nullptr;
 	/* Which form each row's field belongs to, for setRowVisible. */
 	QHash<QWidget *, QFormLayout *> rowOwner;
+	/*
+	 * A field shown through another widget -- a combo standing behind a segmented control -- is
+	 * hidden and shown through that widget, so every caller of setRowVisible keeps naming the field.
+	 */
+	QHash<QWidget *, QWidget *> rowAlias;
 
 	/*
-	 * The handful of rows above the tab strip: what kind of section this is, what it is called,
-	 * and whether it is drawn.
+	 * The header above the tab strip: what kind of section this is, what it is called, whether it
+	 * is drawn, and the few switches that shape it.
 	 *
-	 * They stay out of the tabs because they are not settings of one job -- the type decides what
-	 * every tab holds, and the name is how the section is found again. A reader who had to leave
-	 * the tab they were working in to flip one of these would lose their place to change something
-	 * that governs all of them.
+	 * It stays out of the tabs because none of it is a setting of one job -- the type decides what
+	 * every tab holds, and the name is how the section is found again. It is kept compact on
+	 * purpose: the type is a line of text with its description in a tooltip, since changing a
+	 * section's type is rare and reading what it is should not cost the tabs a third of the pane.
 	 */
-	QFormLayout *headerForm = nullptr;
+	QLabel *typeBadge = nullptr;
+	QLabel *typeNameLabel = nullptr;
+	QLabel *typeInfo = nullptr;
+	QToolButton *changeTypeButton = nullptr;
+	QMenu *changeTypeMenu = nullptr;
+	QWidget *variantRow = nullptr;
+	QLabel *variantLabel = nullptr;
+	SegmentedControl *listContentSegments = nullptr;
 
 	QTabWidget *tabs = nullptr;
+	/* Each page's scroll area, so a summary line can bring a group on another page into view. */
+	QWidget *tabPages[kEditorTabCount] = {};
+	/* Re-reads which tabs differ from the defaults once a run of edits has settled. */
+	QTimer *changedTimer = nullptr;
+	QIcon changedIcon;
 	/* The layout each page's groups are added to, in EditorTab order. */
 	QVBoxLayout *tabLayouts[kEditorTabCount] = {};
 	/* Where each page's trailing spacer sits in its layout; see the note beside the one it added. */
@@ -386,21 +436,24 @@ private:
 	QFormLayout *typeSettingsForm = nullptr;
 	QFormLayout *placementForm = nullptr;
 
+	/*
+	 * Not on screen: the base type the header's "Change type" menu sets, kept as a combo so the
+	 * type is read and written in one place, with the signals the rest of the editor listens to.
+	 */
 	QComboBox *typeBox = nullptr;
 	/*
-	 * The switches that turn a base type into one of the document's own. A heading with a
-	 * subtitle and a logo is a Title, a subtitle and a logo -- three plain answers -- rather than
+	 * The chips that turn a base type into one of the document's own. A heading with a subtitle
+	 * and a logo is a Title, a subtitle and a logo -- three plain answers -- rather than
 	 * "Title w/ Subtitle & Logo" picked out of a list of ten headings.
 	 */
-	QCheckBox *typeSubtitle = nullptr;
-	QCheckBox *typeLogo = nullptr;
-	QCheckBox *typeLogoOnly = nullptr;
+	QToolButton *typeSubtitle = nullptr;
+	QToolButton *typeLogo = nullptr;
+	QToolButton *typeLogoOnly = nullptr;
+	/* Not on screen either: shown through `listContentSegments`. */
 	QComboBox *typeListContent = nullptr;
-	/* One line saying what the selected type is for, under the picker. */
-	QLabel *typeHelp = nullptr;
 
 	QLineEdit *labelEdit = nullptr;
-	QCheckBox *visibleBox = nullptr;
+	ToggleSwitch *visibleBox = nullptr;
 	QPlainTextEdit *textEdit = nullptr;
 	/* The second line of a "... w/ Subtitle" heading; a list's subtitles live in the entry table. */
 	QPlainTextEdit *subtitleEdit = nullptr;
@@ -475,6 +528,9 @@ private:
 	QSpinBox *subtitleGap = nullptr;
 	QComboBox *subtitleOrder = nullptr;
 
+	/* Owns the four spin boxes below it; see SpacingDiagram. */
+	SpacingDiagram *spacing = nullptr;
+	SegmentedControl *alignSegments = nullptr;
 	QSpinBox *paddingTop = nullptr;
 	QSpinBox *paddingBottom = nullptr;
 	QSpinBox *marginX = nullptr;
@@ -528,6 +584,11 @@ private:
 
 	QGroupBox *entriesGroup = nullptr;
 	QTableWidget *entryTable = nullptr;
+	QLabel *entryEmptyHint = nullptr;
+
+	/* The Content tab's "style at a glance" lines; rebuilt by refreshStyleSummary. */
+	QWidget *styleSummary = nullptr;
+	QVBoxLayout *styleSummaryLayout = nullptr;
 	/* Hidden for the entry types that have no logo path to set. */
 	QToolButton *setLogoButton = nullptr;
 
