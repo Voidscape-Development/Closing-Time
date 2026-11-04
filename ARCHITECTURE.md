@@ -56,6 +56,8 @@ src/
     Gradient.{hpp,cpp}     GradientSpec and its stops, shared by a text fill and a panel alike
     BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
     DividerArt.{hpp,cpp}   the table of divider shapes, and which of the three slots each serves
+    Divider.cpp            a divider's lanes and elements: saving, loading, reflecting, migrating
+    DividerDesigns.{hpp,cpp} finished dividers to start from, and which one a section still draws
     EndingAction.{hpp,cpp} ending-action config and execution
     StyleLibrary.{hpp,cpp} the machine-wide style library file, and reading it into a document
     FontBundle.{hpp,cpp}   the font files a document carries, and collecting them off the machine
@@ -160,7 +162,7 @@ stepping the entry within its own column rather than off it.
 | `TitleSubtitleList` | entry list of stacked text pairs | e.g. a position over the name that holds it; see below |
 | `LogoList` | entry list of logos, one column | |
 | `MultiTextList`, `MultiLogoList`, `MultiTitleSubtitleList` | entry list over `columns` columns | `fillAcross` picks row-major vs column-major |
-| `SectionDivider` | no entries; three piece stacks of its own | an ornamental rule composed from two ends, an arm and a middle; see below |
+| `SectionDivider` | no entries; lanes of lines and pieces of its own | an ornamental rule, symmetric by default; see below |
 | `Spacer` | nothing | a blank run of `spacerHeight` px |
 | `StickyBlock` | `children`: whole sections of its own | pins to the canvas while the roll runs past behind it; see below |
 | `Action` | `actions`: a list of actions, and `actionLine` | a marker with no height that runs its actions when it crosses a line on the canvas; see *Action sections* |
@@ -401,146 +403,118 @@ with nothing having to watch the file.
 
 ### Section dividers
 
-An ornamental rule is not one picture. Look at any sheet of them and the same anatomy repeats:
-an **end cap**, an **arm** running inward from it, something in the **middle**, then the whole
-thing mirrored. `SectionDivider` is built that way rather than as a list of finished dividers,
-because three slots drawn from one library of two dozen shapes is a great many more dividers
-than there are rows in the library — and adding a shape adds it to every divider that could use
-it rather than to one.
+A divider is **lanes of lines and pieces**. The model is `Divider` in `model/CreditsModel.hpp`,
+implemented in `model/Divider.cpp`:
 
-`model/DividerArt.{hpp,cpp}` is a table on the same pattern as `BridgeArt`, with one field the
-bridge table has no use for: **`roles`**, a mask of which slots a shape may be picked for. There
-are two roles rather than three, because an end and a middle turned out to be the same slot: both
-are a stack of pieces, so a shape that suits one suits the other, and keeping them apart only meant
-two lists that had to be argued about shape by shape. An arm stays its own role — it is the rule
-itself, tiled along a span, which is a different job from being drawn once at its own size.
+- A `DividerElement` is either a **line**, which stretches, or a **piece**, which is drawn once at
+  its own size: a shape from the library, a word set in the section's style, or an image. A line
+  takes a share of whatever room its lane has left over — its `weight` against the other lines' —
+  and fills it with a rule, a taper, a run of dots, or nothing (a line of `None` is plain space).
+- A `DividerLane` is a row of elements with a thickness, an inset at each end and a vertical nudge
+  of its own. Lanes stack top to bottom about one midline.
+- A `Divider` holds the lanes, whether it is `symmetric`, the gaps, and its own length and
+  alignment inside the content column.
 
-**An end is a stack, exactly as the middle is.** `dividerCap` and `dividerEndCap` are
-`QVector<DividerPiece>` like `dividerCenter`, so a diamond outside an arrowhead, or `MMXXVI` set
-against the rule, is an end as readily as it is a center. Nothing about it is a second
-implementation: one helper measures a run of pieces and one places it, and the three stacks differ
-only in where they are put and whether they are mirrored. A document that wrote an end as a single
-shape — which is every document there is — loads as the one-piece stack that draws the same
-divider, from keys of its own: a key that is a string in one document and an array in the next is a
-trap for every reader of either.
+There are no slots. An end, an arm and a middle are places in the row: an arrow capping a rule is
+`Arrow, Line`; a label leading one is `Text, Line`; diamonds at the thirds are
+`Line, Diamond, Line, Diamond, Line`. Where a piece sits along the rule is the weights of the lines
+either side of it rather than a setting of its own, which is what replaced the old center-position
+field. This one shape covers everything the fixed slots did and a good deal they could not:
+several ornaments along a line, a different end at each side, a word at one end only.
 
-Two things about the geometry are worth naming, because both are what let one number size a
-whole divider:
+**Symmetric is the default and the ordinary case.** Each lane's list is then its left half, outside
+in, and `Divider::drawnRow` returns the list followed by its reflection: the same elements in
+reverse, each with `flip` toggled. A piece written last can sit on the center line instead —
+`DividerLane::centerPiece`, on by default — and is then drawn once rather than either side of the
+axis, which is what a diamond in the middle of a rule wants; off, a pair meets in the middle.
+Switching symmetry off shows the list as the whole row, unchanged, so nothing is lost either way.
+A flip mirrors artwork; a word and an image are never set backwards, so for them a flip reflects
+the lean instead, which keeps a tilted year at one end the answering figure to the one at the
+other.
 
-**A cap is authored pointing outward along -x, and the right-hand end is that same stack
-mirrored.** Mirroring is a painter transform on the artwork rather than a second tile, so a cap
-cannot come out subtly different at the two ends of the same rule; the stack's own order reverses
-with it, so a lopsided end comes out symmetric. A word and a picture are deliberately *not*
-flipped, because mirrored type is a mistake rather than a design. `dividerMirrorEnds` is on by
-default and true of every ornamental rule that is not an arrow pointing somewhere; switching it
-off reveals `dividerEndCap`, which is *kept* either way so the toggle is non-destructive. Note that
-it says the two ends are the same *list*, not that the right-hand one is drawn unflipped: an end is
-always a mirror image of the way it is written, whichever list it came from. The
-same mirror applies to the right-hand **arm**, unconditionally: a taper running from a hairline
-up to full thickness, or a rule ticked at one edge of each tile, would otherwise point the same
-way on both sides and leave the divider lopsided. Mirroring a symmetric tile costs a transform
-and changes nothing, which is why it is not a property each shape has to remember to declare.
+**Each lane is laid out on its own** (`layoutDivider` in `RollRenderer.cpp`): pieces are measured
+at the lane's thickness, the joins between neighbours are worked out, and the lines share out what
+is left by weight. The shares are water-filled against each line's `minLength`; when the lane is
+too narrow for those minimums, the pieces marked `optional` are dropped first, all together, so a
+lane loses its flourishes before its rule is crushed. A lane with no weighted line to take up the
+slack is centered, and one too wide for itself overflows evenly either way. Lanes stack by their
+own thicknesses plus `laneGap`, and the divider's height is whatever everything in it actually
+covers, offsets and turned pieces included, so a section is always exactly as tall as what it
+draws.
 
-**A piece may be turned, and a turn moves nothing along the rule.** `DividerPiece::rotation` is
-degrees clockwise about the piece's own center, read for all three kinds — the artwork through a
-painter transform, a word and an image through the same transform wrapped around the helpers that
-draw them. What it deliberately does *not* do is re-measure: the piece keeps the width its
-untilted shape asked for, so its neighbors and the arms stay put while an angle is dialed in,
-and a wide shape turned a quarter round reaches out over the gaps beside it. Height is the one
-exception and has to be — a section is only as tall as it says it is, so the measured stack takes
-each piece's *swept* height and the divider grows to hold what it draws rather than cutting the
-corners off it. On a mirrored end the flip is applied outside the turn for artwork, and the angle
-itself is negated for a word or an image, which are not flipped: either way the two ends of a rule
-stay each other's reflection.
+**Joins.** Two pieces are held `pieceGap` apart; a line keeps `lineGap` clear of a piece beside it.
+Both reach below zero, where they push the parts into each other instead, bounded at half the
+narrower piece so nothing passes through anything. A line with `join` set runs under its
+neighbours as far as their middles, so a diamond sits *on* the line and an arrowhead closes it
+with no blunt end showing. Every tinted part of a divider is inked as one silhouette, so an overlap
+shows no seam.
 
-**Every shape declares its own height as a multiple of the rule it belongs to.** `height` in the
-table is that proportion — an arrowhead some four and a half times the rule, a center diamond
-three and a half — so `dividerThickness` scales all of it and an arrowhead stays an arrowhead
-when a divider is made heavier. The one exception is the **arm**, whose height is *always* the
-thickness whatever its row says: an arm is the rule, and a rule has no proportion to itself.
+**One ornament can break every lane.** A piece with `spanLanes` set cuts the other lanes' lines
+around itself, held clear by the line gap. The lines are laid out first as spans, the cuts are
+subtracted, and only then are the spans tiled, so a cut never leaves half a dot behind. Three
+different rules broken by one diamond is the figure this exists for.
 
-An arm has no fill setting, unlike a bridge. A bridge has three because the user is choosing how
-a leader sits between two words; an arm has two fixed ends and only one sensible answer, so a
-`Scale` shape covers its span exactly and a `Spread` shape lays whole tiles and shares the
-leftover out *between* them rather than at the ends, meeting the cap outside it and the center
-inside it.
+**Colors.** A piece or a line with `ownColor` set is inked in that color, keeping the divider's
+outline and shadow so it still belongs to the figure. `paintDividerArt` groups the tinted artwork
+by ink — the divider's own first, then one silhouette per distinct color — so a gradient or an
+outline still runs across everything that shares an ink rather than restarting at every part.
 
-**The middle is a list, not a choice.** `dividerCenter` is a `QVector<DividerPiece>`, each an
-ornament, a word or an image, drawn in order. The figures that actually turn up in the middle of
-a rule are compounds — a diamond with a dot either side of it, `PART II` between two curls — and
-offering a single slot would mean shipping every one of those as its own tile or making the user
-draw it. An empty list is the ordinary case rather than a degenerate one: it is the unbroken
-rule, and the two arms become one arm spanning the whole width, so a scaling shape is stretched
-once across it instead of twice across two halves. A piece that measures to nothing — an empty
-word, a logo that would not decode, an ornament whose file is missing — is dropped along with the
-gap that would have sat beside it, rather than left as a hole in the rule.
+Every shape declares its height as a multiple of the line it belongs to (`height` in the shape
+table), so a lane's thickness sizes everything on it and an arrowhead stays an arrowhead when a
+lane is made heavier. A line is the exception: it is drawn at exactly the lane's thickness, times
+its own `scale`.
 
-A word and an image in the center go through **exactly the helpers that draw a section's own
-title and its own logo**, which is why they can be there at all: they pick up the style's
-gradient, outline and shadow with no second implementation of any of it. That is also why the
-composition lives in `RollRenderer.cpp` beside the other section geometry while
-`DividerArtRenderer` handles only the artwork — the same split `prepareBridge`/`paintBridge`
-already make.
+**Loading an older document.** A divider written before lanes has no `divider` object, and
+`Divider::fromLegacy` builds the one its fixed slots describe, once, in the loader, so nothing past
+it ever sees the old shape. It is symmetric whenever the old divider was — mirrored ends, a centered
+middle, and a middle that reads the same both ways — with the end, the rule and the first half of
+the middle as the left half, and an odd middle's own center piece on the axis. Otherwise it is the
+whole row: the left end, a line weighted by the old middle position, the middle, a second line, and
+the old right end reversed and flipped as it was always drawn. Several old rules become that many
+lanes: the middle one carries the ends and ornaments, set to span lanes; the rest carry the rule
+alone, inset by their distance from the middle. An even count has no middle lane, so the ornaments
+ride on the one above the midline and are nudged down onto it. Every fallback matches the old
+loader's, so a section that never carried a key becomes the divider it was always drawn as.
 
-`dividerRules` runs two or more rules in parallel about the midline, and the caps and the center
-are drawn **once** across the whole stack rather than once per rule: three lines broken by one
-ornament is the deco figure, where three complete dividers touching is not. `dividerRuleInset`
-makes each rule shorter than the one nearer the midline by a fixed amount, so a stack tapers to
-a wedge; an even-numbered stack has no middle rule to measure from, so its two innermost sit half
-a step out and the figure stays symmetric either way.
+**Finished designs are a starting point, not a binding.** `model/DividerDesigns.{hpp,cpp}` holds
+twenty complete dividers — an arrow rule, a needle, three lines, a railway, a two-tone, a heading
+rule and more — each a `Divider` figure written the way the editor shows it. Applying one replaces
+the figure and keeps what is about the section rather than the figure: the divider's length,
+alignment and tint, and the section's style, padding and panels. Nothing is remembered, so retuning
+a design in a later release cannot move a divider somebody has already worked on.
+`sameDividerFigure` answers the other way round, which is how the editor's picker says truthfully
+whether a divider is still one of them; it skips what the figure does not consult (the lane gap
+with one lane, a built-in shape's leftover file), so a divider is not called changed over a number
+it cannot show. `Section::makeDefault` takes its divider from this table, so a new one is a design
+too.
 
-Ink comes from the **bridge's** override. `useBridgeStyle`/`bridgeStyle` are reused outright
-rather than duplicated under a divider name, because "color the artwork apart from the text" is
-one want with two names: a divider whose rule carries the title's gold sweep while its own label
-stays white is the same edit as yellow leader dots under white names. The designer retitles the
-group by section type, the way it already retitles the secondary style group.
+**A divider can draw itself on.** `Divider::reveal` sweeps it in from the center, the left or the
+right as it scrolls into frame. It is driven by the divider's *position on the canvas* rather than
+by a clock, so it looks the same at any scroll speed, paused, or scrubbed to by hand: it begins
+when the divider's middle rises past `revealStart` of the way down the canvas and is complete once
+it has risen a further `revealLength` of the canvas height. Both are shares of the frame rather than
+seconds, which also keeps them correct after a speed change — scroll speed is not part of the
+layout, so a time-based reveal would go stale without a rebuild.
 
-**The parts can be joined into one piece rather than merely set beside each other.** Every join in
-a divider used to be a gap, floored at zero, so a composed divider read as a row of separate marks
-however carefully the shapes were chosen. Two settings answer that, and they compose:
+None of it touches the picture. The layout gives a top-level divider's layer a `LayerReveal` — its
+own box, found by running the section's layout once more through a box collector, its bleed, and
+its anchor — and `composeFrame` cuts that layer's draws horizontally to the span drawn so far,
+cutting the source rectangle by the same share. Every consumer already executes draw items as
+target and source rectangles, so the GPU source, the designer's playback and a scrub all show the
+same reveal from one implementation. An animated image inside a revealing divider is cut with it.
+A view that is not the canvas — the designer's roll laid end to end — leaves `canvasHeight` at zero
+and shows every divider whole. The reveal is left out of the layer key, because changing it changes
+how much of the picture is shown, never the picture. A divider inside a sticky block is part of
+the block's picture and arrives with the block.
 
-- `dividerGap` and `dividerPieceGap` **reach below zero**, where they stop holding two parts apart
-  and push them into each other instead. That is not a second setting with its own name: a cap
-  overlapping its rule by six pixels is the same edit as one clearing it by six, and one spin box
-  running through zero is what says so. A piece join is bounded at half the narrower of the two
-  pieces it sits between — pieces may be pushed together, never through each other, since a stack
-  whose width counts *down* as the setting goes up is not a design anybody asked for. The bound is
-  worked out once, in the measure pass, and carried on `MeasuredStack::gaps` to the place pass:
-  two passes computing it separately would be two chances to disagree about a width the section
-  below is positioned from.
-- `dividerConnect` **runs the rule the whole way through**. One unbroken arm from the middle of one
-  end cap to the middle of the other, passing behind the center stack rather than breaking either
-  side of it, so a diamond sits *on* the line the way an ornamental rule is actually composed. The
-  middle of the outermost piece rather than the stack's outer edge, because that point is inside
-  every cap's silhouette whatever the cap is — run to the edge instead and the rule pokes a blunt
-  nose out of a tapering arrowhead. `dividerGap` is not consulted while it is on, and the designer
-  takes the row away with it.
+**Saved dividers live in the machine-wide library** alongside styles and backgrounds, as a
+`divider_presets` array in the same file. A saved divider is a copy rather than a binding — picking
+one writes its figure into the section exactly as a built-in design does — so unlike a style it
+needs no rename trail: no document holds its name. The design picker lists the built-in designs and
+then the saved ones under a heading of their own, rebuilt whenever the library's serial moves, and
+names a divider after the saved design it matches when no built-in one does.
 
-None of this needed new painting machinery, which is the point: the silhouette below is what makes
-an overlap union seamlessly instead of showing a seam, a doubled outline or a restarted gradient.
-What it did need was the arms placed into `DividerLayout::art` **before** the stacks rather than
-after, so a piece is drawn over the rule it sits on. That is invisible for tinted artwork — it all
-goes into the one silhouette — but a custom picture left in its own colors is painted straight to
-the strip, and a rule running across the front of it is not the ornament anybody placed.
-
-Whatever a join is set to, the arms are held inside the section's own box. A setting somebody can
-drag to its end is one that will be, and past that edge the rule paints over its neighbors.
-
-Every tinted part of a divider is rasterized into **one** silhouette and inked once — not part by
-part — so an outline surrounds the divider rather than each diamond in it, and one gradient runs
-the whole way across instead of restarting at every piece. That is what `render/SvgArt.{hpp,cpp}`
-exists for: the tile cache and the paint-through-ink path (shadow, grown outline, gradient
-stencil) were lifted out of `BridgeArtRenderer` so both callers ink identically rather than by
-two implementations that agree today. `paintInkedArt` takes a callback that draws the silhouette,
-which is what lets the bridge hand over a run of tiles and the divider hand over a whole figure
-made of different artwork.
-
-Every load-time fallback is `None` — a divider whose keys a document does not carry draws the
-plainest thing the library can, rather than whatever happens to sit first in the table — except
-the arm, where `None` would mean a divider with no rule in it at all, so that one falls back to
-`Rule`.
-
-### Title and subtitle rows
+### Title and subtitle rows### Title and subtitle rows
 
 A `TitleSubtitleList` entry is two texts stacked rather than two texts on a line: `text` above
 `secondaryText`, drawn in the section's primary and secondary styles respectively. It is the
@@ -1399,8 +1373,8 @@ in, place it, ink it, put something behind it — and each is a whole answer on 
 is untouched by this: a tab is where a control is drawn and nothing else.
 
 *Content* holds what the section says, and the tables it says it through: the entry table for a
-list, the divider's three piece stacks for a divider (a divider has no words, so those stacks *are*
-its content, and its Content tab holds them alone). *Layout* holds the type's own settings and the
+list, the divider editor for a divider (a divider has no words of its own, so its figure *is* its
+content, and its Content tab holds that alone). *Layout* holds the type's own settings and the
 placement rows. *Style* holds the up-to-five `StyleEditor`s. *Background* holds the eight panel
 slots.
 
@@ -1488,8 +1462,7 @@ so there is nothing later to ask — and which rows carry an arrow is marked on 
 list knowing nothing about what a section is.
 
 **A table can be taken out into a window of its own.** The editor pane is a third of a designer
-wide and a cast list is two hundred rows long, so the entry table and each of the divider's three
-piece tables carry a *Bigger...* button that opens the table itself — reparented into a modal
+wide and a cast list is two hundred rows long, so the entry table carries a *Bigger...* button that opens the table itself — reparented into a modal
 dialog sized to most of the screen, then put back where it came from when the dialog closes. The
 widget moves rather than a copy of it: every signal, selection and half-typed cell stays exactly as
 it was, where a second table filled from the first would have to be kept in step and would hand
@@ -1901,11 +1874,25 @@ same reason: reporting it would send the user after a font nothing uses.
   card follows another.
 - A bridge can be nothing at all — two columns of text held apart by a plain gap — and a bridged
   row can carry a subtitle under each of its two sides, each in a style of its own.
-- A divider's ends are the same stack of pieces its middle has always been, from the same library
-  of shapes: an arrowhead can break a rule as well as cap one, and a word can cap one as well as
-  break one.
-- A divider's parts can be joined into one figure rather than set beside each other: the rule runs
-  the whole way through, and every gap in a divider reaches below zero to push two parts together.
+- Section dividers are rebuilt around lanes of lines and pieces. A divider is one or more lanes,
+  each its own line with its own rule, thickness, inset and parts, so three lines can be three
+  different lines; a piece can break every lane at once. Within a lane, lines share the room by
+  weight, so where a piece sits is just the lines either side of it, and any number of pieces can
+  sit anywhere along a rule. Dividers are symmetric by default — the left half is designed and the
+  right is its reflection — and can be laid out freely when not. Any part can be drawn in a color
+  of its own, nudged off the line, flipped, turned, given a minimum length, or marked to be dropped
+  when there is no room; the divider itself has a length and a placement. Older dividers are
+  brought into lanes on load and draw as they did.
+- A divider can draw itself on as it scrolls into frame — from the center, the left or the right —
+  placed by where it is on the frame, so it looks the same at any speed and when scrubbed. The
+  editor's preview plays it.
+- Dividers can be saved to the machine-wide library and picked again in any roll on the machine;
+  saved ones are renamed and deleted from the same menu.
+- The divider editor is built around dragging. A live preview drawn by the real renderer sits over
+  a palette of every line, shape, word and image; parts are dragged onto a lane, dragged to reorder,
+  dragged back onto the palette to remove, and a line's edge is dragged to give it more of the
+  room. The reflected half of a symmetric lane is shown faded past a mirror line. Lanes are tabs,
+  and whatever is selected is edited beside them. Twenty finished designs start it off.
 - The section editor's style groups fold away like the rows above them, and a group can now be both
   switched off and folded — the checkbox and the disclosure triangle side by side, saying different
   things.
@@ -2037,27 +2024,54 @@ outline as the text either side of it; and a 30 px blur straddling the 2048 px t
 where the summed alpha of the rows either side of the boundary has to stay continuous rather
 than dropping to zero on one side.
 
-Section dividers were validated offscreen the same way, over roughly four thousand checks: the
-`obs_data` round trip for every new field and every kind of center piece, including through the
-designer's JSON export, and with a stored zero for each of the three gaps told apart from a
-missing key; a section written before dividers existed loading with `None` in both end slots,
-`Rule` in the arm, mirrored ends, one rule, an empty center and a drawable thickness; every
-built-in shape in every slot it serves, crossed against every other, checking measure/render
-agreement and that nothing is drawn outside the content box or into the padding; a stack of one
-to five rules drawing one run of rows per rule, symmetric about its midline and never widening
-outward; custom artwork taking the section's color with `dividerTint` on and keeping its own
-with it off, and a missing file leaving the rest of the divider drawn; and the degenerate cases
-— a divider with no cap, no arm and no center, one narrower than its own parts, one whose only
-center piece is an empty word, and a hidden one taking no height at all.
+Section dividers were validated offscreen the same way. The model: every field of every element of
+two lanes through the `obs_data` round trip and the designer's JSON export, compared whole; stored
+zeroes told apart from missing keys; a hand-written file with fifty lanes, negative thicknesses and
+an unbounded join clamped to something drawable; an empty lane list loading as one empty lane. The
+migration: an absent divider becoming one plain line; single old cap shapes becoming the first and
+last parts of a non-symmetric row, the far one flipped; a whole old divider — mirrored arrows, a
+dot-diamond-dot middle, three tapering rules — becoming a symmetric three-lane divider whose middle
+lane is the half-row with the diamond on the axis and whose outer lanes are inset rules broken by
+its ornaments; the old default divider recognized as the Arrow Rule design and drawing symmetric;
+and an old middle slid to one end becoming a row the word leads.
 
-Joining the parts was checked the same way, and by the absence it is for: a composed divider held
-apart has columns with no ink in them, and the same divider joined has none — the figure staying
-exactly as wide and as tall either way, since a section that grew when its parts were joined would
-move everything under it, and the end gap making no difference at all once it is not consulted.
-Overlap was measured on a center stack with no arm drawn, where the ink *is* the stack's width:
-three equal diamonds opening by exactly the gap asked for, and an unbounded overlap taking back
-exactly one piece width across the two joins rather than however much was typed. A join dragged to
-its far end leaves no ink outside the section's own box.
+The layout, by its ink: a symmetric divider inking the same columns at both ends, and the same list
+not reflected being lopsided; a center piece drawn once on the axis and a pair either side of it;
+a word drawn the right way round at both ends of a symmetric divider and counted towards the roll's
+fonts; a lone line reaching both edges and pieces that measure to nothing leaving no hole; space
+holding room open while drawing nothing; equal weights centering a piece, one to three putting it a
+quarter of the way along, and a piece written first or last leading or closing the rule without the
+height moving; an optional flourish dropped when a lane's minimum lengths do not fit; a joined line
+leaving no empty columns where a held-apart one does, at the same width and height, and a join
+dragged to its far end staying inside the box; three lanes drawing three separate bands of their own
+thicknesses, inset lanes starting further in, and a piece in one lane not moving another; a
+spanning piece cutting the other lanes around itself; a piece and a word in colors of their own
+drawn in them while the rule keeps the divider's ink; turned and offset pieces growing the divider
+to hold them; a divider of half the width placed left, centered and right; every shape as a piece
+and every line drawn inside its box; and every design picked onto a divider set up as something
+else, keeping the section's own length, alignment, tint, padding and style, drawing inside its box,
+and reloading as the same design.
+
+The draw-on was checked through the compositor itself: nothing of a revealing divider drawn below its
+start line; halfway through its length, half of it drawn and centered on its own middle when it
+grows from the center, or starting at its left edge when drawn from the left; the whole picture
+uncut once complete; every divider whole in a view that is not the canvas; a divider with no reveal
+drawn whole as soon as it is on the canvas; a reveal leaving the picture's key unchanged; and the
+reveal saved and loaded. Saved dividers were checked through the library file: every field of a
+two-lane, two-color, non-symmetric, revealing divider read back exactly beside the styles; a save
+under a taken name replacing it; an empty name refused; a rename onto a taken name doing nothing;
+renames and removals reaching the file; and a hand-edited file's unnamed and duplicate entries
+dropped.
+
+The editor was driven offscreen as well: a part dropped onto the track through a real drag-enter,
+drag-move and drop landing where it was dropped; moving it, clicking a palette tile to add after the
+selection, and dropping chips back on the palette to remove them; the design picker falling back to
+"your own design" on an edit and naming the design again when the edit was undone; a line's edge
+dragged to a new weight; a color, a new lane and a lane's own thickness set from the inspector;
+symmetry switched off; a round trip through the section editor keeping the divider and the
+selected lane; Delete removing the selected part; a saved divider appearing in the picker and naming
+the divider it matches, and being picked back after a built-in design; and a reveal surviving a
+design pick.
 
 Row geometry and the section box were checked the same way, against the previous build as well
 as the new one so that each case is known to fail before it passes: every bridged row staying on

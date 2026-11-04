@@ -48,6 +48,8 @@ class QVBoxLayout;
 
 namespace closingtime {
 
+class DividerEditor;
+
 class ActionListEditor;
 class SegmentedControl;
 class SpacingDiagram;
@@ -69,21 +71,6 @@ class ToggleSwitch;
 enum class EditorTab { Content, Layout, Style, Background };
 
 constexpr int kEditorTabCount = 4;
-
-/*
- * Which of a divider's three piece stacks an editor is acting on.
- *
- * They are the same kind of list -- an end and a middle both hold `DividerPiece`s -- so one table
- * implementation serves all three and this is what says which one a call means. The order is the
- * order they are drawn in, which is also the order the tabs read in.
- */
-enum class PieceSlot { LeftEnd, Center, RightEnd };
-
-constexpr int kPieceSlotCount = 3;
-
-/* The stack a slot names, on a section. */
-const QVector<DividerPiece> &dividerPieces(const Section &section, PieceSlot slot);
-QVector<DividerPiece> &dividerPieces(Section &section, PieceSlot slot);
 
 /*
  * Everything one TextStyle carries: font, color and alignment, plus how the glyphs are
@@ -340,25 +327,6 @@ private:
 	void writeEntriesToTable(const Section &source);
 
 	/*
-	 * The divider's center stack. Unlike the entry table these go through the model rather than
-	 * shuffling cells: the rows carry combo boxes, which QTableWidget::takeItem knows nothing
-	 * about, and rebuilding from a reordered vector cannot leave a row's widgets behind while
-	 * its text moves.
-	 */
-	void writePiecesToTable(PieceSlot slot, const Section &source);
-	void readPiecesFromTable(PieceSlot slot, Section *target) const;
-	void addPiece(PieceSlot slot);
-	void removeSelectedPieces(PieceSlot slot);
-	void movePiece(PieceSlot slot, int delta);
-	void browseForPieceFile(PieceSlot slot);
-	/* Shows the fields that apply to the piece in `row` and hides the rest. */
-	void applyPieceRowVisibility(PieceSlot slot, int row);
-	/* True when any piece of any of the three stacks draws its artwork from a file. */
-	bool dividerUsesFile() const;
-
-	QTableWidget *pieceTable(PieceSlot slot) const { return pieceTables[static_cast<int>(slot)]; }
-
-	/*
 	 * Opens one of the editor's tables in a window of its own for as long as it is wanted there,
 	 * and puts it back where it came from afterwards.
 	 *
@@ -377,8 +345,6 @@ private:
 	void browseForSectionLogo();
 	void browseForEntryLogo();
 	void browseForBridgeSvg();
-	/* Points `target` at a file the user picks, for any of the divider's three artwork slots. */
-	void browseForDividerSvg(QLineEdit *target);
 
 	void emitChanged();
 
@@ -502,28 +468,8 @@ private:
 	/* Bridged rows only: draw a second line under each side of every row. */
 	QCheckBox *rowSubtitles = nullptr;
 
-	QCheckBox *dividerMirrorEnds = nullptr;
-	/* Runs the rule through the ends and the center rather than stopping at them. */
-	QCheckBox *dividerConnect = nullptr;
-	QComboBox *dividerArm = nullptr;
-	QLineEdit *dividerArmSvgPath = nullptr;
-	QSpinBox *dividerThickness = nullptr;
-	QSpinBox *dividerGap = nullptr;
-	QSpinBox *dividerPieceGap = nullptr;
-	QSpinBox *dividerRules = nullptr;
-	QSpinBox *dividerRuleGap = nullptr;
-	QSpinBox *dividerRuleInset = nullptr;
-	QCheckBox *dividerTint = nullptr;
-
-	/*
-	 * The divider's three piece stacks, in PieceSlot order. One table each rather than one table
-	 * and a selector, because they are the same kind of list and the tabs are what say so -- and
-	 * because the right-hand end's tab can simply be taken away while the ends are mirrored.
-	 */
-	QGroupBox *dividerPiecesGroup = nullptr;
-	QTabWidget *pieceTabs = nullptr;
-	QTableWidget *pieceTables[kPieceSlotCount] = {};
-	QToolButton *pieceFileButtons[kPieceSlotCount] = {};
+	/* Everything about a Section Divider: see DividerEditor. */
+	DividerEditor *dividerEditor = nullptr;
 
 	QSpinBox *columns = nullptr;
 	QSpinBox *columnGap = nullptr;

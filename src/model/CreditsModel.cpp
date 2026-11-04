@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/CreditsModel.hpp"
 
+#include "model/DividerDesigns.hpp"
 #include "model/StyleLibrary.hpp"
 
 #include <obs.hpp>
@@ -91,17 +92,6 @@ const SectionTypeInfo kSectionTypes[] = {
 	{SectionType::StickyBlock, "sticky_block", "Sticky Ending Block", false, false, false, false, false},
 	/* A marker with no content at all: it is the actions it runs. */
 	{SectionType::Action, "action", "Action", false, false, false, false, false},
-};
-
-/* Listed in the order the divider's center-piece picker presents them. */
-const struct {
-	DividerPiece::Kind kind;
-	const char *id;
-	const char *name;
-} kDividerPieceKinds[] = {
-	{DividerPiece::Kind::Ornament, "ornament", "Ornament"},
-	{DividerPiece::Kind::Text, "text", "Text"},
-	{DividerPiece::Kind::Logo, "logo", "Logo"},
 };
 
 const SectionTypeInfo &sectionTypeInfo(SectionType type)
@@ -279,48 +269,6 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 		used.append(BackgroundSlot::Bridge);
 
 	return used;
-}
-
-const char *dividerPieceKindId(DividerPiece::Kind kind)
-{
-	for (const auto &info : kDividerPieceKinds) {
-		if (info.kind == kind)
-			return info.id;
-	}
-	return kDividerPieceKinds[0].id;
-}
-
-DividerPiece::Kind dividerPieceKindFromId(const char *id, DividerPiece::Kind fallback)
-{
-	if (!id)
-		return fallback;
-
-	for (const auto &info : kDividerPieceKinds) {
-		if (strcmp(info.id, id) == 0)
-			return info.kind;
-	}
-	return fallback;
-}
-
-const char *dividerPieceKindName(DividerPiece::Kind kind)
-{
-	for (const auto &info : kDividerPieceKinds) {
-		if (info.kind == kind)
-			return info.name;
-	}
-	return kDividerPieceKinds[0].name;
-}
-
-const QVector<DividerPiece::Kind> &allDividerPieceKinds()
-{
-	static const QVector<DividerPiece::Kind> kinds = [] {
-		QVector<DividerPiece::Kind> result;
-		result.reserve(static_cast<int>(std::size(kDividerPieceKinds)));
-		for (const auto &info : kDividerPieceKinds)
-			result.append(info.kind);
-		return result;
-	}();
-	return kinds;
 }
 
 SectionTypeSwitches decomposeSectionType(SectionType type)
@@ -903,38 +851,6 @@ void Entry::load(obs_data_t *data)
 		logo.load(logoData);
 }
 
-void DividerPiece::save(obs_data_t *data) const
-{
-	obs_data_set_string(data, "kind", dividerPieceKindId(kind));
-	obs_data_set_string(data, "shape", dividerShapeId(shape));
-	obs_data_set_string(data, "svg", svgPath.toUtf8().constData());
-	obs_data_set_double(data, "scale", scale);
-	obs_data_set_double(data, "rotation", rotation);
-	obs_data_set_string(data, "text", text.toUtf8().constData());
-
-	OBSDataAutoRelease logoData = obs_data_create();
-	logo.save(logoData);
-	obs_data_set_obj(data, "logo", logoData);
-}
-
-void DividerPiece::load(obs_data_t *data)
-{
-	kind = dividerPieceKindFromId(obs_data_get_string(data, "kind"), DividerPiece::Kind::Ornament);
-	shape = dividerShapeFromId(obs_data_get_string(data, "shape"), DividerShape::Diamond);
-	svgPath = QString::fromUtf8(obs_data_get_string(data, "svg"));
-	/* A scale of zero draws nothing at all, which no stored piece ever means. */
-	scale = obs_data_get_double(data, "scale");
-	if (scale <= 0.0)
-		scale = 1.0;
-	/* Absent from anything written before pieces could be turned, which read as untilted. */
-	rotation = obs_data_get_double(data, "rotation");
-	text = QString::fromUtf8(obs_data_get_string(data, "text"));
-
-	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");
-	if (logoData)
-		logo.load(logoData);
-}
-
 const BackgroundPanel &Section::background(BackgroundSlot slot) const
 {
 	for (const SectionBackground &entry : backgrounds) {
@@ -1010,17 +926,15 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_string(data, "bridge_row_align", hAlignId(bridgeRowAlign));
 	obs_data_set_bool(data, "bridge_span_empty", bridgeSpanEmpty);
 	obs_data_set_bool(data, "row_subtitles", rowSubtitles);
-	obs_data_set_bool(data, "divider_mirror_ends", dividerMirrorEnds);
-	obs_data_set_string(data, "divider_arm", dividerShapeId(dividerArm));
-	obs_data_set_string(data, "divider_arm_svg", dividerArmSvg.toUtf8().constData());
-	obs_data_set_double(data, "divider_thickness", dividerThickness);
-	obs_data_set_double(data, "divider_gap", dividerGap);
-	obs_data_set_double(data, "divider_piece_gap", dividerPieceGap);
-	obs_data_set_bool(data, "divider_connect", dividerConnect);
-	obs_data_set_int(data, "divider_rules", dividerRules);
-	obs_data_set_double(data, "divider_rule_gap", dividerRuleGap);
-	obs_data_set_double(data, "divider_rule_inset", dividerRuleInset);
-	obs_data_set_bool(data, "divider_tint", dividerTint);
+	/*
+	 * Under one object of its own, which is how an older reader tells a divider in the new shape
+	 * from one written with the fixed slots: see Divider::fromLegacy.
+	 */
+	{
+		OBSDataAutoRelease dividerData = obs_data_create();
+		divider.save(dividerData);
+		obs_data_set_obj(data, "divider", dividerData);
+	}
 	obs_data_set_int(data, "columns", columns);
 	obs_data_set_int(data, "column_gap", columnGap);
 	obs_data_set_int(data, "entry_gap", entryGap);
@@ -1093,29 +1007,6 @@ void Section::save(obs_data_t *data) const
 			static_cast<const QVector<Entry> *>(context)->at(index).save(item);
 		},
 		&entries);
-
-	const auto savePieces = [data](const char *key, const QVector<DividerPiece> &pieces) {
-		saveArray(
-			data, key, pieces.size(),
-			[](obs_data_t *item, int index, const void *context) {
-				static_cast<const QVector<DividerPiece> *>(context)->at(index).save(item);
-			},
-			&pieces);
-	};
-
-	/*
-	 * The key keeps the spelling it was first written with. Every scene collection already saved
-	 * holds "divider_centre", and renaming the key to match the field would quietly drop the
-	 * middle of every divider in them -- a rename worth nothing against a stack of art lost.
-	 */
-	savePieces("divider_centre", dividerCenter);
-	/*
-	 * Under keys of their own rather than the "divider_cap"/"divider_end_cap" a single shape was
-	 * written to: those still have to be readable as what they were, and a key that is a string
-	 * in one document and an array in the next is a trap for every reader of either.
-	 */
-	savePieces("divider_cap_pieces", dividerCap);
-	savePieces("divider_end_cap_pieces", dividerEndCap);
 
 	/*
 	 * Written only when there are any, for the same reason the children are: a section with no
@@ -1204,42 +1095,6 @@ void Section::load(obs_data_t *data)
 	bridgeSplit = obs_data_has_user_value(data, "bridge_split") ? obs_data_get_double(data, "bridge_split") : 0.5;
 	bridgeSplit = std::clamp(bridgeSplit, 0.0, 1.0);
 
-	/*
-	 * None is the fallback for every slot a document does not carry, so a section that predates
-	 * dividers -- or a divider saved before a shape existed -- loads as the plainest thing the
-	 * library can draw rather than as whatever happens to sit first in the table. The arm is the
-	 * exception: an arm of None is a divider with no rule in it at all, which is never what a
-	 * missing key means, so that one falls back to the plain rule.
-	 */
-	dividerMirrorEnds = obs_data_has_user_value(data, "divider_mirror_ends")
-				    ? obs_data_get_bool(data, "divider_mirror_ends")
-				    : true;
-	dividerArm = dividerShapeFromId(obs_data_get_string(data, "divider_arm"), DividerShape::Rule);
-	dividerArmSvg = QString::fromUtf8(obs_data_get_string(data, "divider_arm_svg"));
-
-	/* A thickness of zero would draw nothing at all, which no document ever means. */
-	dividerThickness = obs_data_get_double(data, "divider_thickness");
-	if (dividerThickness <= 0.0)
-		dividerThickness = 4.0;
-
-	/*
-	 * 0 is a legitimate gap for both of these -- a cap butted against its arm, a run of
-	 * ornaments touching -- so a missing key has to be told apart from a stored zero rather
-	 * than inferred from the value.
-	 */
-	dividerGap = obs_data_has_user_value(data, "divider_gap") ? obs_data_get_double(data, "divider_gap") : 12.0;
-	dividerPieceGap = obs_data_has_user_value(data, "divider_piece_gap")
-				  ? obs_data_get_double(data, "divider_piece_gap")
-				  : 10.0;
-	/* Absent in every document written before the parts could be joined, which drew them apart. */
-	dividerConnect = obs_data_get_bool(data, "divider_connect");
-	dividerRuleGap =
-		obs_data_has_user_value(data, "divider_rule_gap") ? obs_data_get_double(data, "divider_rule_gap") : 6.0;
-	dividerRules = static_cast<int>(obs_data_get_int(data, "divider_rules"));
-	dividerRuleInset = obs_data_get_double(data, "divider_rule_inset");
-	/* Absent in documents that predate custom art, whose built-in shapes are tinted regardless. */
-	dividerTint = obs_data_has_user_value(data, "divider_tint") ? obs_data_get_bool(data, "divider_tint") : true;
-
 	columns = static_cast<int>(obs_data_get_int(data, "columns"));
 	columnGap = static_cast<int>(obs_data_get_int(data, "column_gap"));
 	entryGap = static_cast<int>(obs_data_get_int(data, "entry_gap"));
@@ -1319,20 +1174,6 @@ void Section::load(obs_data_t *data)
 
 	if (columns < 1)
 		columns = 1;
-	/* One rule is a divider; none is nothing at all, and the stack is bounded for the same
-	 * reason the tile runs are -- a rule count read off a file decides how much gets drawn. */
-	dividerRules = std::clamp(dividerRules, 1, 16);
-	/*
-	 * Both of these may be negative -- that is a join rather than a gap, and is how the parts of
-	 * a divider are made to touch. Bounded on that side only, and at the same figure the
-	 * designer's spin boxes offer, so a value read off a file cannot ask for an overlap wider
-	 * than any divider it could sit in. The layout still holds the arms inside the section's own
-	 * box whatever arrives here.
-	 */
-	dividerGap = std::max(-kMaxDividerJoin, dividerGap);
-	dividerPieceGap = std::max(-kMaxDividerJoin, dividerPieceGap);
-	dividerRuleGap = std::max(0.0, dividerRuleGap);
-	dividerRuleInset = std::max(0.0, dividerRuleInset);
 	if (spacerHeight < 0)
 		spacerHeight = 0;
 	if (entryGap < 0)
@@ -1405,52 +1246,18 @@ void Section::load(obs_data_t *data)
 		}
 	}
 
-	const auto loadPieces = [data](const char *key, QVector<DividerPiece> *into) {
-		into->clear();
-
-		OBSDataArrayAutoRelease array = obs_data_get_array(data, key);
-		if (!array)
-			return false;
-
-		const size_t count = obs_data_array_count(array);
-		into->reserve(static_cast<int>(count));
-		for (size_t i = 0; i < count; ++i) {
-			OBSDataAutoRelease item = obs_data_array_item(array, i);
-			DividerPiece piece;
-			piece.load(item);
-			into->append(piece);
-		}
-		return true;
-	};
-
-	/* British-spelled on purpose; see the note beside the matching save. */
-	loadPieces("divider_centre", &dividerCenter);
-
 	/*
-	 * An end written as a single shape -- every document from before an end was a stack -- is
-	 * read back as the one-piece stack it is. None is the fallback there for the reason it is
-	 * everywhere else in a divider, and a `None` end is simply an end with nothing on it, so it
-	 * migrates to an empty list rather than to a piece that draws nothing.
+	 * A divider in the shape it is written in now, or -- for every document from before lanes --
+	 * the divider its fixed slots describe, built once here so nothing past the loader ever sees
+	 * the old shape.
 	 */
-	const auto loadEnd = [&](const char *key, const char *legacyShape, const char *legacyFile,
-				 QVector<DividerPiece> *into) {
-		if (loadPieces(key, into))
-			return;
-
-		const DividerShape shape =
-			dividerShapeFromId(obs_data_get_string(data, legacyShape), DividerShape::None);
-		if (dividerShapeIsEmpty(shape))
-			return;
-
-		DividerPiece piece;
-		piece.kind = DividerPiece::Kind::Ornament;
-		piece.shape = shape;
-		piece.svgPath = QString::fromUtf8(obs_data_get_string(data, legacyFile));
-		into->append(piece);
-	};
-
-	loadEnd("divider_cap_pieces", "divider_cap", "divider_cap_svg", &dividerCap);
-	loadEnd("divider_end_cap_pieces", "divider_end_cap", "divider_end_cap_svg", &dividerEndCap);
+	{
+		OBSDataAutoRelease dividerData = obs_data_get_obj(data, "divider");
+		if (dividerData)
+			divider.load(dividerData);
+		else
+			divider = Divider::fromLegacy(data);
+	}
 
 	backgrounds.clear();
 	OBSDataArrayAutoRelease backgroundArray = obs_data_get_array(data, "backgrounds");
@@ -1639,16 +1446,12 @@ Section Section::makeDefault(SectionType type)
 		 * diamond with a dot either side of it. Deliberately a compound rather than a
 		 * single ornament, because the first thing anyone does with a new divider is take a
 		 * piece out or put one in, and starting from three shows that the center is a list.
+		 *
+		 * Taken from the design table rather than written out here, so the designer's design
+		 * picker names what a new divider is instead of calling it the section's own.
 		 */
-		section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Arrow, {}, 1.0, {}, {}}};
-		section.dividerArm = DividerShape::Rule;
-		section.dividerThickness = 5.0;
-		section.dividerCenter.append(
-			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}});
-		section.dividerCenter.append(
-			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 1.0, {}, {}});
-		section.dividerCenter.append(
-			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}});
+		if (const DividerDesign *design = findDividerDesign("arrow_rule"))
+			applyDividerDesign(section, *design);
 		/*
 		 * Narrower than the canvas and generously padded, because a divider that runs edge to
 		 * edge and sits tight against the text above it reads as a border rather than as a
@@ -1763,12 +1566,25 @@ QString Section::displayLabel() const
 		 * list at a glance is a word they typed into it. Everything else falls back to the
 		 * type and the rule it is drawn from, which at least tells two dividers apart.
 		 */
-		for (const DividerPiece &piece : dividerCenter) {
-			if (piece.kind == DividerPiece::Kind::Text && !piece.text.isEmpty())
-				return piece.text;
+		const QString word = divider.firstText();
+		if (!word.isEmpty())
+			return word;
+
+		DividerShape line = DividerShape::None;
+		for (const DividerLane &lane : divider.lanes) {
+			for (const DividerElement &element : lane.elements) {
+				if (element.isLine() && !dividerShapeIsEmpty(element.lineShape)) {
+					line = element.lineShape;
+					break;
+				}
+			}
+			if (line != DividerShape::None)
+				break;
 		}
-		return QStringLiteral("%1 (%2)").arg(QString::fromUtf8(sectionTypeName(type)),
-						     QString::fromUtf8(dividerShapeName(dividerArm)));
+		return line == DividerShape::None
+			       ? QString::fromUtf8(sectionTypeName(type))
+			       : QStringLiteral("%1 (%2)").arg(QString::fromUtf8(sectionTypeName(type)),
+							       QString::fromUtf8(dividerShapeName(line)));
 	}
 
 	case SectionType::Spacer:
@@ -2181,16 +1997,7 @@ QVector<FontUse> Document::usedFonts() const
 		 * than assumed: reporting a font for a roll whose every divider is pure artwork
 		 * would send the user hunting for a substitution that never happened.
 		 */
-		const auto holdsWord = [](const QVector<DividerPiece> &pieces) {
-			return std::any_of(pieces.cbegin(), pieces.cend(), [](const DividerPiece &piece) {
-				return piece.kind == DividerPiece::Kind::Text && !piece.text.isEmpty();
-			});
-		};
-
-		/* Any of the three stacks can hold a word, so all three are asked. */
-		const bool dividerText = section.type == SectionType::SectionDivider &&
-					 (holdsWord(section.dividerCenter) || holdsWord(section.dividerCap) ||
-					  holdsWord(section.dividerEndCap));
+		const bool dividerText = section.type == SectionType::SectionDivider && section.divider.hasText();
 
 		if (!sectionUsesText(section.type) && !dividerText)
 			return;

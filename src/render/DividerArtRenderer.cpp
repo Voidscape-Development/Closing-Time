@@ -77,7 +77,7 @@ void renderTile(QPainter *painter, QSvgRenderer *renderer, const QRectF &rect, b
  * itself while the piece stands square and its corners' swept extent once it does not.
  *
  * Only ever asked of the silhouette the tinted pieces are inked through, never of the layout: a
- * turned piece reaches past the room it was given on purpose (see DividerPiece::rotation), and a
+ * turned piece reaches past the room it was given on purpose (see DividerElement::rotation), and a
  * stencil cut to the untilted rect would take the corners off it.
  */
 QRectF placementBounds(const DividerArtPlacement &piece)
@@ -93,14 +93,14 @@ QRectF placementBounds(const DividerArtPlacement &piece)
 	return turn.mapRect(piece.rect);
 }
 
-/* True when this piece is painted through the section's ink rather than in its own colors. */
-bool isTinted(const DividerArtPlacement &piece, const Section &section)
+/* True when this piece is painted through the divider's ink rather than in its own colors. */
+bool isTinted(const DividerArtPlacement &piece, bool tint)
 {
 	/*
 	 * The built-in shapes are drawn white precisely so they can be used as a stencil, so they
 	 * are always tinted. Only a file the user supplied has colors of its own worth keeping.
 	 */
-	return !dividerShapeUsesFile(piece.shape) || section.dividerTint;
+	return !dividerShapeUsesFile(piece.shape) || tint;
 }
 
 } // namespace
@@ -182,8 +182,16 @@ QVector<QRectF> layoutDividerArm(DividerShape shape, const QString &file, Divide
 	return tiles;
 }
 
-void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art, const Section &section,
-		     const TextStyle &style, DividerArtCache *cache, const QRectF &fillBox)
+TextStyle dividerInkIn(const TextStyle &style, const QColor &color)
+{
+	TextStyle ink = style;
+	ink.fill = TextFill::Solid;
+	ink.color = color;
+	return ink;
+}
+
+void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art, bool tint, const TextStyle &style,
+		     DividerArtCache *cache, const QRectF &fillBox)
 {
 	if (!painter || !cache || art.isEmpty())
 		return;
@@ -194,37 +202,51 @@ void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art,
 	 * outline to trace it.
 	 */
 	for (const DividerArtPlacement &piece : art) {
-		if (isTinted(piece, section))
+		if (isTinted(piece, tint))
 			continue;
 
 		if (QSvgRenderer *renderer = cache->get(piece.shape, piece.file))
 			renderTile(painter, renderer, piece.rect, piece.mirrored, piece.rotation);
 	}
 
-	QRectF bounds;
+	/*
+	 * Everything tinted in one ink is one silhouette, inked once, so the outline surrounds the
+	 * divider rather than each diamond in it and one gradient runs the whole way across. A part in
+	 * a color of its own is the exception the user asked for: each such color is a silhouette of
+	 * its own, painted after the divider's ink so it sits on top of the rule it is set on.
+	 */
+	QVector<QColor> inks = {QColor()};
 	for (const DividerArtPlacement &piece : art) {
-		if (isTinted(piece, section)) {
-			const QRectF box = placementBounds(piece);
-			bounds = bounds.isNull() ? box : bounds.united(box);
-		}
+		if (piece.ownColor && isTinted(piece, tint) && !inks.contains(piece.color))
+			inks.append(piece.color);
 	}
 
-	if (bounds.isEmpty())
-		return;
+	for (int index = 0; index < inks.size(); ++index) {
+		const bool own = index > 0;
+		const QColor color = inks.at(index);
+		const auto belongs = [&](const DividerArtPlacement &piece) {
+			return isTinted(piece, tint) && piece.ownColor == own && (!own || piece.color == color);
+		};
 
-	/*
-	 * Everything tinted at once, so the outline surrounds the divider rather than each diamond
-	 * in it and one gradient runs the whole way across.
-	 */
-	paintInkedArt(painter, bounds, style, fillBox, [&](QPainter *target) {
+		QRectF bounds;
 		for (const DividerArtPlacement &piece : art) {
-			if (!isTinted(piece, section))
-				continue;
-
-			if (QSvgRenderer *renderer = cache->get(piece.shape, piece.file))
-				renderTile(target, renderer, piece.rect, piece.mirrored, piece.rotation);
+			if (belongs(piece)) {
+				const QRectF box = placementBounds(piece);
+				bounds = bounds.isNull() ? box : bounds.united(box);
+			}
 		}
-	});
+		if (bounds.isEmpty())
+			continue;
+
+		paintInkedArt(painter, bounds, own ? dividerInkIn(style, color) : style, fillBox, [&](QPainter *target) {
+			for (const DividerArtPlacement &piece : art) {
+				if (!belongs(piece))
+					continue;
+				if (QSvgRenderer *renderer = cache->get(piece.shape, piece.file))
+					renderTile(target, renderer, piece.rect, piece.mirrored, piece.rotation);
+			}
+		});
+	}
 }
 
 } // namespace closingtime

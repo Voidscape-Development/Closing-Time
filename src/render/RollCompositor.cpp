@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "render/RollCompositor.hpp"
 
+#include <limits>
+
 #include <QPainter>
 #include <QtMath>
 
@@ -33,7 +35,8 @@ namespace {
  * right place too.
  */
 void addDraw(DrawList *list, const ComposeView &view, const DrawSource &source, const QRectF &target,
-	     const QRectF &sourceRect, double alpha)
+	     const QRectF &sourceRect, double alpha, double clipLeft = -std::numeric_limits<double>::infinity(),
+	     double clipRight = std::numeric_limits<double>::infinity())
 {
 	if (target.isEmpty() || sourceRect.isEmpty() || alpha <= 0.0)
 		return;
@@ -43,14 +46,47 @@ void addDraw(DrawList *list, const ComposeView &view, const DrawSource &source, 
 	if (bottom <= top)
 		return;
 
+	/* Cut across as well when asked -- a divider part way through drawing itself on. */
+	const double left = std::max(target.left(), clipLeft);
+	const double right = std::min(target.right(), clipRight);
+	if (right <= left)
+		return;
+
 	const double perRow = sourceRect.height() / target.height();
+	const double perColumn = sourceRect.width() / target.width();
 	DrawItem item;
 	item.source = source;
-	item.target = QRectF(target.left(), top, target.width(), bottom - top);
-	item.sourceRect = QRectF(sourceRect.left(), sourceRect.top() + (top - target.top()) * perRow,
-				 sourceRect.width(), (bottom - top) * perRow);
+	item.target = QRectF(left, top, right - left, bottom - top);
+	item.sourceRect = QRectF(sourceRect.left() + (left - target.left()) * perColumn,
+				 sourceRect.top() + (top - target.top()) * perRow, (right - left) * perColumn,
+				 (bottom - top) * perRow);
 	item.alpha = std::min(1.0, alpha);
 	list->append(item);
+}
+
+/*
+ * The columns of the view a layer may be drawn into, as {clipLeft, clipRight}: everything, unless it
+ * is a divider drawing itself on, which shows only the span drawn so far -- worked out from where its
+ * middle is on the canvas. Only a view that is the canvas has a "so far": the roll laid end to end
+ * shows every divider whole. Returns false when nothing of it is drawn yet.
+ */
+bool revealClip(const RollLayer &layer, const ComposeView &view, double *clipLeft, double *clipRight)
+{
+	*clipLeft = -std::numeric_limits<double>::infinity();
+	*clipRight = std::numeric_limits<double>::infinity();
+	if (!layer.reveal.active() || view.canvasHeight <= 0.0 || view.blocks != ComposeView::Blocks::Timeline)
+		return true;
+
+	const double anchorY = view.stripTop + layer.reveal.anchor * view.scale;
+	const double progress = layer.reveal.progress(anchorY, view.canvasHeight);
+	if (progress <= 0.0)
+		return false;
+	if (progress < 1.0) {
+		const QPair<double, double> span = layer.reveal.drawnSpan(progress);
+		*clipLeft = span.first * view.scale;
+		*clipRight = span.second * view.scale;
+	}
+	return true;
 }
 
 /* Every chunk of one layer, with the layer's origin at `originTop` view pixels. */
@@ -59,6 +95,11 @@ void emitLayer(DrawList *list, const RollLayout &layout, int layerIndex, double 
 {
 	const RollLayer &layer = layout.layers.at(layerIndex);
 	const double width = qCeil(layer.width * view.scale);
+
+	double clipLeft = 0.0;
+	double clipRight = 0.0;
+	if (!revealClip(layer, view, &clipLeft, &clipRight))
+		return;
 
 	for (int chunk = 0; chunk < layer.chunkCount(); ++chunk) {
 		const ChunkRows rows = chunkRows(layer, chunk, view.scale);
@@ -72,7 +113,7 @@ void emitLayer(DrawList *list, const RollLayout &layout, int layerIndex, double 
 		source.layer = layerIndex;
 		source.chunk = chunk;
 		addDraw(list, view, source, QRectF(0.0, top, width, rows.height), QRectF(0.0, 0.0, width, rows.height),
-			alpha);
+			alpha, clipLeft, clipRight);
 	}
 }
 
@@ -89,6 +130,20 @@ void emitLogo(DrawList *list, const RollLayout &layout, const RollFrame &frame, 
 	if (frameIndex < 0 || frameIndex >= placement.animation->frames.size())
 		return;
 
+	/* An animated image in a divider drawing itself on is cut with the rest of it. */
+	double clipLeft = -std::numeric_limits<double>::infinity();
+	double clipRight = std::numeric_limits<double>::infinity();
+	if (placement.block < 0) {
+		for (const RollLayer &layer : layout.layers) {
+			if (layer.kind == RollLayer::Kind::Section && layer.section == placement.section &&
+			    layer.reveal.active()) {
+				if (!revealClip(layer, view, &clipLeft, &clipRight))
+					return;
+				break;
+			}
+		}
+	}
+
 	const qreal scale = view.scale;
 	/* A logo is placed in strip space; its owner's origin is where that space starts, here. */
 	const double top = originTop + (placement.rect.top() - originStripTop) * scale;
@@ -103,7 +158,7 @@ void emitLogo(DrawList *list, const RollLayout &layout, const RollFrame &frame, 
 		addDraw(list, view, source,
 			QRectF(at.x() * scale, top + placement.shadowOffset.y() * scale, shadow.width() * scale,
 			       shadow.height() * scale),
-			QRectF(QPointF(0, 0), shadow.size()), alpha);
+			QRectF(QPointF(0, 0), shadow.size()), alpha, clipLeft, clipRight);
 	}
 
 	const QImage &image = placement.animation->frames.at(frameIndex).image;
@@ -114,7 +169,7 @@ void emitLogo(DrawList *list, const RollLayout &layout, const RollFrame &frame, 
 	addDraw(list, view, source,
 		QRectF(placement.rect.left() * scale, top, placement.rect.width() * scale,
 		       placement.rect.height() * scale),
-		QRectF(QPointF(0, 0), image.size()), alpha);
+		QRectF(QPointF(0, 0), image.size()), alpha, clipLeft, clipRight);
 }
 
 } // namespace
@@ -127,6 +182,7 @@ ComposeView ComposeView::canvas(const RollFrame &frame, int canvasHeight)
 	view.clipTop = 0.0;
 	view.clipBottom = canvasHeight;
 	view.blocks = Blocks::Timeline;
+	view.canvasHeight = canvasHeight;
 	return view;
 }
 

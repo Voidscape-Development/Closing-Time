@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "harness/Fixtures.hpp"
 #include "harness/Harness.hpp"
+#include "harness/Probe.hpp"
 
 #include "model/CreditsModel.hpp"
 
@@ -60,27 +61,62 @@ Section distinctive(SectionType type)
 	section.bridgeSpanEmpty = true;
 	section.bridgeMinGap = 33.5;
 	section.rowSubtitles = true;
-	section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 2.25, {}, {}, 37.5},
-			      DividerPiece{DividerPiece::Kind::Text,
-					   DividerShape::None,
-					   {},
-					   1.0,
-					   QStringLiteral("MMXXVI"),
-					   {},
-					   -12.0}};
-	section.dividerMirrorEnds = false;
-	section.dividerEndCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}}};
-	section.dividerArm = DividerShape::Rule;
-	section.dividerThickness = 6.5;
-	section.dividerConnect = true;
-	section.dividerGap = 15.5;
-	section.dividerPieceGap = 9.5;
-	section.dividerRules = 3;
-	section.dividerRuleGap = 8.5;
-	section.dividerRuleInset = 12.5;
-	section.dividerTint = false;
-	section.dividerCenter = {
-		DividerPiece{DividerPiece::Kind::Text, DividerShape::Diamond, {}, 1.5, QStringLiteral("PART II"), {}}};
+	{
+		/* One of everything a divider element can carry, across two lanes. */
+		DividerElement shape;
+		shape.kind = DividerElement::Kind::Shape;
+		shape.shape = DividerShape::Custom;
+		shape.svgPath = QStringLiteral("/art/piece.svg");
+		shape.scale = 2.25;
+		shape.rotation = 37.5;
+		shape.offsetY = -3.5;
+		shape.flip = true;
+		shape.spanLanes = true;
+		shape.optional = true;
+		shape.ownColor = true;
+		shape.color = QColor(12, 34, 56, 200);
+
+		DividerElement line;
+		line.kind = DividerElement::Kind::Line;
+		line.lineShape = DividerShape::Dots;
+		line.weight = 2.5;
+		line.minLength = 40.0;
+		line.join = true;
+		line.scale = 1.5;
+
+		DividerElement space = line;
+		space.lineShape = DividerShape::None;
+
+		DividerElement word;
+		word.kind = DividerElement::Kind::Text;
+		word.text = QStringLiteral("PART II");
+		word.rotation = -12.0;
+
+		DividerElement image;
+		image.kind = DividerElement::Kind::Image;
+		image.logo.path = QStringLiteral("/art/mark.png");
+		image.logo.maxHeight = 61;
+
+		DividerLane first;
+		first.elements = {shape, line, space, word, image};
+		first.thickness = 6.5;
+		first.inset = 12.5;
+		first.offsetY = 2.5;
+		first.centerPiece = false;
+
+		DividerLane second;
+		second.elements = {line};
+		second.thickness = 1.5;
+
+		section.divider.lanes = {first, second};
+		section.divider.symmetric = false;
+		section.divider.laneGap = 8.5;
+		section.divider.pieceGap = -9.5;
+		section.divider.lineGap = 15.5;
+		section.divider.length = 0.4;
+		section.divider.align = HAlign::Right;
+		section.divider.tint = false;
+	}
 	section.columns = 4;
 	section.columnGap = 37;
 	section.fillAcross = true;
@@ -193,31 +229,8 @@ void compare(const Section &loaded, const Section &original)
 	check(loaded.bridgeSpanEmpty == original.bridgeSpanEmpty, "bridgeSpanEmpty");
 	checkNear(loaded.bridgeMinGap, original.bridgeMinGap, 0.001, "bridgeMinGap");
 	check(loaded.rowSubtitles == original.rowSubtitles, "rowSubtitles");
-	checkEq(loaded.dividerCap.size(), original.dividerCap.size(), "dividerCap size");
-	for (int i = 0; i < std::min(loaded.dividerCap.size(), original.dividerCap.size()); ++i) {
-		const DividerPiece &piece = loaded.dividerCap.at(i);
-		const DividerPiece &was = original.dividerCap.at(i);
-		check(piece.kind == was.kind, QStringLiteral("dividerCap %1 kind").arg(i));
-		check(piece.shape == was.shape, QStringLiteral("dividerCap %1 shape").arg(i));
-		checkNear(piece.scale, was.scale, 0.001, QStringLiteral("dividerCap %1 scale").arg(i));
-		checkNear(piece.rotation, was.rotation, 0.001, QStringLiteral("dividerCap %1 rotation").arg(i));
-		checkEq(piece.text, was.text, QStringLiteral("dividerCap %1 text").arg(i));
-	}
-	check(loaded.dividerMirrorEnds == original.dividerMirrorEnds, "dividerMirrorEnds");
-	checkEq(loaded.dividerEndCap.size(), original.dividerEndCap.size(), "dividerEndCap size");
-	if (!loaded.dividerEndCap.isEmpty() && !original.dividerEndCap.isEmpty())
-		check(loaded.dividerEndCap.first().shape == original.dividerEndCap.first().shape,
-		      "dividerEndCap shape");
-	check(loaded.dividerArm == original.dividerArm, "dividerArm");
-	checkNear(loaded.dividerThickness, original.dividerThickness, 0.001, "dividerThickness");
-	check(loaded.dividerConnect == original.dividerConnect, "dividerConnect");
-	checkNear(loaded.dividerGap, original.dividerGap, 0.001, "dividerGap");
-	checkNear(loaded.dividerPieceGap, original.dividerPieceGap, 0.001, "dividerPieceGap");
-	checkEq(loaded.dividerRules, original.dividerRules, "dividerRules");
-	checkNear(loaded.dividerRuleGap, original.dividerRuleGap, 0.001, "dividerRuleGap");
-	checkNear(loaded.dividerRuleInset, original.dividerRuleInset, 0.001, "dividerRuleInset");
-	check(loaded.dividerTint == original.dividerTint, "dividerTint");
-	checkEq(loaded.dividerCenter.size(), original.dividerCenter.size(), "dividerCenter size");
+	/* Compared whole: every field of every element of every lane, with nothing left to a default. */
+	check(loaded.divider == original.divider, "divider");
 	checkEq(loaded.columns, original.columns, "columns");
 	checkEq(loaded.columnGap, original.columnGap, "columnGap");
 	check(loaded.fillAcross == original.fillAcross, "fillAcross");
@@ -356,10 +369,18 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	checkNear(legacy.bridgeSplit, 0.5, 0.001, "bridgeSplit falls back to an even split");
 	checkEq(legacy.contentOffsetX, 0, "a section from before the nudge sits where its box puts it");
 	checkEq(legacy.indentStep, 24, "and its entries tab by the documented step rather than by nothing");
-	check(legacy.dividerCap.isEmpty(), "an absent divider cap is an end with nothing on it");
-	check(legacy.dividerArm == DividerShape::Rule, "an absent divider arm is the plain rule, not None");
-	check(legacy.dividerMirrorEnds, "divider ends are mirrored by default");
-	check(!legacy.dividerConnect, "and its parts are drawn apart, which is the divider it was written as");
+	/* An absent divider is the plainest one: a single lane with a plain rule across it. */
+	checkEq(legacy.divider.lanes.size(), 1, "an absent divider has one lane");
+	if (!legacy.divider.lanes.isEmpty()) {
+		const DividerLane &lane = legacy.divider.lanes.first();
+		checkEq(lane.elements.size(), 1, "holding one element");
+		check(!lane.elements.isEmpty() && lane.elements.first().isLine() &&
+			      lane.elements.first().lineShape == DividerShape::Rule,
+		      "a plain rule, not None");
+		check(lane.elements.isEmpty() || !lane.elements.first().join,
+		      "drawn apart, which is the divider it was written as");
+	}
+	check(legacy.divider.symmetric, "and symmetric by default");
 	check(legacy.children.empty(), "a section from before sticky blocks holds nothing");
 	check(legacy.stickyAnchor == StickyAnchor::Center, "a sticky block pins by its middle unless told otherwise");
 	checkNear(legacy.stickyCanvasPosition, 0.5, 0.001, "halfway down the frame");
@@ -368,12 +389,12 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	check(legacy.stickyEntrance == StickyEntrance::WithRoll,
 	      "a block from before there was a choice arrives with the roll, as its author saw it");
 	checkNear(legacy.stickyFadeIn, 0.75, 0.001, "and carries a fade for the entrance it does not use yet");
-	checkEq(legacy.dividerRules, 1, "a divider has at least one rule");
 	checkNear(legacy.sectionWidth, 1.0, 0.001, "sectionWidth falls back to the full canvas");
 
 	/*
 	 * An end written as a single shape, which is every document from before an end was a stack.
-	 * It has to come back as the one-piece stack that draws the same divider.
+	 * With different ends it cannot be symmetric, so it comes back as the whole row: the arrow, the
+	 * rule, and the far end flipped round to point outward, as it was always drawn.
 	 */
 	OBSDataAutoRelease oldEnds = obs_data_create();
 	obs_data_set_string(oldEnds, "type", "section_divider");
@@ -385,17 +406,69 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	Section migrated;
 	migrated.load(oldEnds);
 
-	checkEq(migrated.dividerCap.size(), 1, "a single cap shape migrates to one piece");
-	if (!migrated.dividerCap.isEmpty()) {
-		check(migrated.dividerCap.first().kind == DividerPiece::Kind::Ornament, "and it is an ornament");
-		check(migrated.dividerCap.first().shape == DividerShape::Arrow, "carrying the shape it named");
-		checkNear(migrated.dividerCap.first().scale, 1.0, 0.001, "at its own size");
-		checkNear(migrated.dividerCap.first().rotation, 0.0, 0.001, "and standing square");
+	check(!migrated.divider.symmetric, "different ends make a divider that is not symmetric");
+	checkEq(migrated.divider.lanes.size(), 1, "one rule is one lane");
+	if (migrated.divider.lanes.size() == 1 && migrated.divider.lanes.first().elements.size() == 3) {
+		const QVector<DividerElement> &row = migrated.divider.lanes.first().elements;
+		check(row.at(0).kind == DividerElement::Kind::Shape && row.at(0).shape == DividerShape::Arrow,
+		      "the single cap shape is the first piece");
+		checkNear(row.at(0).scale, 1.0, 0.001, "at its own size");
+		check(!row.at(0).flip, "pointing outward to the left as written");
+		check(row.at(1).isLine(), "then the rule");
+		check(row.at(2).shape == DividerShape::Custom, "then the far end, keeping its custom shape");
+		checkEq(row.at(2).svgPath, QStringLiteral("/art/end.svg"), "and its file");
+		check(row.at(2).flip, "flipped to point outward to the right");
+	} else {
+		check(false, "the migrated row is an end, a rule and an end");
 	}
-	checkEq(migrated.dividerEndCap.size(), 1, "so does the far end");
-	if (!migrated.dividerEndCap.isEmpty()) {
-		check(migrated.dividerEndCap.first().shape == DividerShape::Custom, "keeping its custom shape");
-		checkEq(migrated.dividerEndCap.first().svgPath, QStringLiteral("/art/end.svg"), "and its file");
+
+	/*
+	 * A whole old divider: mirrored arrow ends, a palindromic middle of three, three rules tapering
+	 * by an inset. It is symmetric, its middle lane carries the half-row with the diamond on the
+	 * axis, and the outer lanes carry the rule alone, inset, broken by the ornaments.
+	 */
+	{
+		OBSDataAutoRelease old = obs_data_create();
+		obs_data_set_string(old, "type", "section_divider");
+		obs_data_set_string(old, "divider_cap", "arrow");
+		obs_data_set_double(old, "divider_thickness", 5.0);
+		obs_data_set_int(old, "divider_rules", 3);
+		obs_data_set_double(old, "divider_rule_inset", 20.0);
+		obs_data_set_double(old, "divider_rule_gap", 7.0);
+		OBSDataArrayAutoRelease center = obs_data_array_create();
+		for (const char *shape : {"dot", "diamond", "dot"}) {
+			OBSDataAutoRelease piece = obs_data_create();
+			obs_data_set_string(piece, "kind", "ornament");
+			obs_data_set_string(piece, "shape", shape);
+			obs_data_array_push_back(center, piece);
+		}
+		obs_data_set_array(old, "divider_centre", center);
+
+		Section whole;
+		whole.load(old);
+		whole.visible = true;
+		const Divider &d = whole.divider;
+		check(d.symmetric, "a mirrored, centered, palindromic divider stays symmetric");
+		checkEq(d.lanes.size(), 3, "three rules are three lanes");
+		checkNear(d.laneGap, 7.0, 0.001, "spaced by the old rule gap");
+		if (d.lanes.size() == 3) {
+			const QVector<DividerElement> &half = d.lanes.at(1).elements;
+			checkEq(half.size(), 4, "the middle lane is the arrow, the rule, a dot and the diamond");
+			if (half.size() == 4) {
+				check(half.at(3).shape == DividerShape::Diamond, "the diamond last, on the axis");
+				check(half.at(0).spanLanes && half.at(3).spanLanes, "its pieces break the other lanes");
+			}
+			check(d.lanes.at(1).centerPiece, "and drawn once there");
+			checkNear(d.lanes.at(0).inset, 20.0, 0.001, "the outer lanes are inset by the old taper");
+			checkNear(d.lanes.at(1).inset, 0.0, 0.001, "and the middle one is not");
+			checkEq(d.lanes.at(0).elements.size(), 1, "an outer lane is the rule alone");
+			checkNear(d.lanes.at(0).thickness, 5.0, 0.001, "at the old thickness");
+			checkEq(d.drawnRow(d.lanes.at(1)).size(), 7,
+				"drawn as arrow, rule, dot, diamond, dot, rule, arrow");
+		}
+
+		/* And it draws: the migrated divider is as tall as the tallest thing in it, inside its box. */
+		check(measure(documentWith(whole)) > 0, "the migrated divider draws");
 	}
 
 	/*
@@ -406,9 +479,9 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	zeroed.subtitleGap = 0;
 	zeroed.bridgeGap = 0.0;
 	zeroed.bridgeSplit = 0.0;
-	zeroed.dividerGap = 0.0;
-	zeroed.dividerPieceGap = 0.0;
-	zeroed.dividerRuleGap = 0.0;
+	zeroed.divider.lineGap = 0.0;
+	zeroed.divider.pieceGap = 0.0;
+	zeroed.divider.laneGap = 0.0;
 
 	OBSDataAutoRelease data = obs_data_create();
 	zeroed.save(data);
@@ -419,9 +492,9 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	checkEq(reloaded.subtitleGap, 0, "a stored subtitleGap of zero stays zero");
 	checkNear(reloaded.bridgeGap, 0.0, 0.001, "a stored bridgeGap of zero stays zero");
 	checkNear(reloaded.bridgeSplit, 0.0, 0.001, "a stored bridgeSplit of zero stays zero");
-	checkNear(reloaded.dividerGap, 0.0, 0.001, "a stored dividerGap of zero stays zero");
-	checkNear(reloaded.dividerPieceGap, 0.0, 0.001, "a stored dividerPieceGap of zero stays zero");
-	checkNear(reloaded.dividerRuleGap, 0.0, 0.001, "a stored dividerRuleGap of zero stays zero");
+	checkNear(reloaded.divider.lineGap, 0.0, 0.001, "a stored line gap of zero stays zero");
+	checkNear(reloaded.divider.pieceGap, 0.0, 0.001, "a stored piece gap of zero stays zero");
+	checkNear(reloaded.divider.laneGap, 0.0, 0.001, "a stored lane gap of zero stays zero");
 
 	/* Values that would break the renderer are clamped rather than trusted off the file. */
 	OBSDataAutoRelease hostile = obs_data_create();
@@ -437,17 +510,52 @@ CT_SUITE(persistence_legacy, "Documents written before a field existed, and stor
 	Section clamped;
 	clamped.load(hostile);
 
-	check(clamped.dividerRules >= 1 && clamped.dividerRules <= 16, "a rule count off a file is bounded");
+	check(clamped.divider.lanes.size() >= 1 && clamped.divider.lanes.size() <= kMaxDividerLanes,
+	      "a rule count off a file is bounded");
 	check(clamped.columns >= 1, "a column count off a file is at least one");
-	check(clamped.dividerThickness > 0.0, "a thickness off a file is drawable");
+	check(!clamped.divider.lanes.isEmpty() && clamped.divider.lanes.first().thickness > 0.0,
+	      "a thickness off a file is drawable");
 	check(clamped.sectionWidth <= 1.0, "a section width off a file is a real share");
 	check(clamped.entryGap >= 0, "an entry gap off a file is not negative");
 	/*
 	 * A join is allowed to be negative -- that is what makes the parts touch -- so what is
 	 * bounded is how far, not which side of zero.
 	 */
-	check(clamped.dividerGap >= -kMaxDividerJoin, "a join off a file cannot overlap without bound");
-	check(clamped.dividerPieceGap >= -kMaxDividerJoin, "and neither can a piece join");
+	check(clamped.divider.lineGap >= -kMaxDividerJoin, "a join off a file cannot overlap without bound");
+	check(clamped.divider.pieceGap >= -kMaxDividerJoin, "and neither can a piece join");
+
+	/* The same of a divider in the new shape, written by hand. */
+	OBSDataAutoRelease hostileNew = obs_data_create();
+	obs_data_set_string(hostileNew, "type", "section_divider");
+	OBSDataAutoRelease hostileDivider = obs_data_create();
+	OBSDataArrayAutoRelease manyLanes = obs_data_array_create();
+	for (int i = 0; i < 50; ++i) {
+		OBSDataAutoRelease lane = obs_data_create();
+		obs_data_set_double(lane, "thickness", -5.0);
+		obs_data_array_push_back(manyLanes, lane);
+	}
+	obs_data_set_array(hostileDivider, "lanes", manyLanes);
+	obs_data_set_double(hostileDivider, "length", 40.0);
+	obs_data_set_double(hostileDivider, "line_gap", -1e12);
+	obs_data_set_obj(hostileNew, "divider", hostileDivider);
+
+	Section clampedNew;
+	clampedNew.load(hostileNew);
+	checkEq(clampedNew.divider.lanes.size(), kMaxDividerLanes, "a lane count off a file is bounded");
+	check(clampedNew.divider.lanes.first().thickness > 0.0, "every lane is drawable");
+	check(clampedNew.divider.length <= 1.0, "a length off a file is a real share");
+	check(clampedNew.divider.lineGap >= -kMaxDividerJoin, "and a join is bounded");
+
+	/* A divider with no lanes at all is still given one to put something in. */
+	OBSDataAutoRelease empty = obs_data_create();
+	obs_data_set_string(empty, "type", "section_divider");
+	OBSDataAutoRelease emptyDivider = obs_data_create();
+	OBSDataArrayAutoRelease noLanes = obs_data_array_create();
+	obs_data_set_array(emptyDivider, "lanes", noLanes);
+	obs_data_set_obj(empty, "divider", emptyDivider);
+	Section emptied;
+	emptied.load(empty);
+	checkEq(emptied.divider.lanes.size(), 1, "an empty lane list loads as one empty lane");
 }
 
 CT_SUITE(fonts_store, "Bundled fonts are written compressed and decoded once")

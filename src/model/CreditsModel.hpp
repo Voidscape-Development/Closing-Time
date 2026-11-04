@@ -489,11 +489,15 @@ constexpr double kMaxLogoSpeed = 8.0;
 
 /*
  * How far a divider's parts may be pushed into each other, in pixels -- the far end of
- * Section::dividerGap and Section::dividerPieceGap once they are allowed to go negative. Shared by
- * the loader and the designer's spin boxes, so a document cannot arrive asking for an overlap the
- * window has no way to type.
+ * Divider::lineGap and Divider::pieceGap once they are allowed to go negative. Shared by the loader
+ * and the designer's spin boxes, so a document cannot arrive asking for an overlap the window has
+ * no way to type.
  */
 constexpr double kMaxDividerJoin = 2048.0;
+/* How many lanes a divider may stack. A count read off a file decides how much gets drawn. */
+constexpr int kMaxDividerLanes = 16;
+/* How many elements one lane may hold, for the same reason. */
+constexpr int kMaxDividerElements = 256;
 
 struct LogoPlayback {
 	/* Repeat for as long as the logo is on screen, rather than holding the last frame. */
@@ -596,77 +600,227 @@ struct Entry {
 };
 
 /*
- * One item in the middle of a Section Divider, between the two arms.
+ * One element of a Section Divider: something set along the line.
  *
- * The center is a list rather than a single choice because the shapes that turn up there in
- * practice are compounds: a diamond with a dot either side of it, a word flanked by two
- * ornaments, a monogram between a pair of curls. Offering one slot would mean either shipping
- * every one of those combinations as its own tile, or drawing them by hand in a file; a list of
- * small pieces builds them out of parts the plugin already has and keeps each one adjustable.
+ * There are two sorts, and the whole of a divider is a row of them:
  *
- * An empty list is the ordinary case, not a degenerate one: it is the unbroken rule.
+ *   - A *line* stretches. It takes a share of whatever room the row has left over -- its
+ *     `weight` against the other lines' -- and fills it with a rule, a taper, a run of dots, or
+ *     nothing at all (a line of `DividerShape::None` is plain space).
+ *   - Everything else is a *piece*, drawn once at its own size: a shape from the library, a word
+ *     set in the section's style, or an image.
+ *
+ * That is all a divider needs. The fixed slots there used to be -- an end, an arm, a center, a
+ * second end -- are just places in the row: an arrow capping a rule is `Arrow, Line`; a heading
+ * leading one is `Text, Line`; diamonds at the thirds are `Line, Diamond, Line, Diamond, Line`.
+ * Where a piece sits along the rule is the weights of the lines either side of it rather than a
+ * setting of its own.
+ *
+ * Fields are kept whatever the kind, so switching an element from one kind to another and back
+ * hands back what it held: a line remembers its rule while it is a diamond, a word its text while
+ * it is a picture.
  */
-struct DividerPiece {
+struct DividerElement {
 	enum class Kind {
-		/* A shape from the built-in library, or a file when `shape` is Custom. */
-		Ornament,
+		/* A shape from the library, or the user's own SVG when `shape` is Custom. */
+		Shape,
 		/* A word set in the section's own style -- `PART II`, `MMXXVI`. */
 		Text,
-		Logo,
+		Image,
+		/* Stretches to fill: see the note above. */
+		Line,
 	};
 
-	Kind kind = Kind::Ornament;
+	Kind kind = Kind::Shape;
 
-	/* Ornament pieces only. */
+	/* Shape elements: which shape, and the file when it is Custom. */
 	DividerShape shape = DividerShape::Diamond;
-	/* Ornament pieces whose shape is Custom: absolute path to the artwork. */
 	QString svgPath;
-	/*
-	 * Ornament pieces only: a multiplier on the height the shape's table row asks for, so a
-	 * run of three diamonds can have a larger one in the middle without a second Diamond in
-	 * the library. Text takes its size from the section's style and a logo from its own
-	 * `maxHeight`, both of which are already a size the user set, so neither reads this.
-	 */
-	double scale = 1.0;
 
-	/* Text pieces only. */
+	/* Line elements: what the line is drawn with (None is empty space), and the file when Custom. */
+	DividerShape lineShape = DividerShape::Rule;
+	QString lineSvgPath;
+
+	/* Text elements. */
 	QString text;
-	/* Logo pieces only. */
+	/* Image elements. */
 	LogoRef logo;
 
 	/*
-	 * How far the piece is turned, in degrees clockwise, about its own center. Read for every
-	 * kind: an arrowhead stood on end, a year set sideways, a mark tilted to match it.
-	 *
-	 * Turned where it stands rather than turned and re-measured: along the rule a piece keeps
-	 * the room its untilted shape took, so its neighbors and the arms keep still while the angle
-	 * is dialed in. A wide shape turned a quarter of the way round therefore reaches out over
-	 * the gaps beside it, which is what makes an angle something that can be nudged rather than
-	 * something that shuffles the whole divider every time it moves.
-	 *
-	 * Its height is the exception, and has to be: the divider grows to hold whatever its parts
-	 * sweep out, because a section is only as tall as it says it is and a square set on its
-	 * corner would otherwise have the corners cut off by the section below.
-	 *
-	 * A mirrored end turns the other way with the rest of the flip -- see placeDividerStack --
-	 * so the two ends of a rule stay each other's reflection.
+	 * A multiplier: on the size a shape's table row asks for beside a rule of its lane's thickness,
+	 * or on the thickness itself for a line, so a run of dots can be heavier than the rule beside
+	 * it. A word is sized by the style and an image by its own `maxHeight`, so neither reads this.
+	 */
+	double scale = 1.0;
+
+	/*
+	 * Degrees clockwise about the element's own center, for pieces. It keeps the room its untilted
+	 * shape took along the line, so its neighbors stay still while an angle is dialed in; the
+	 * divider grows to hold whatever height it sweeps out.
 	 */
 	double rotation = 0.0;
+	/* Pixels below the lane's midline (negative is above), for any element. */
+	double offsetY = 0.0;
+	/*
+	 * Drawn mirrored left to right. Artwork is flipped; a word and an image are never set
+	 * backwards, so for them a flip turns the lean the other way instead. The mirrored half of a
+	 * symmetric divider is this same flag set on the copies, which is why the two halves of a rule
+	 * come out each other's reflection whatever they are made of.
+	 */
+	bool flip = false;
+
+	/* Line elements: this line's share of the leftover room, against the other lines in its lane. */
+	double weight = 1.0;
+	/* Line elements: the shortest it may be drawn before the lane starts dropping optional pieces. */
+	double minLength = 0.0;
+	/*
+	 * Line elements: run on under the pieces either side as far as their middles, rather than
+	 * stopping short of them -- so a diamond sits *on* the line and an arrowhead closes it with no
+	 * blunt end showing. Every tinted part of a divider is inked as one silhouette, so the overlap
+	 * leaves no seam.
+	 */
+	bool join = false;
+
+	/* Pieces: cut every other lane's lines around this one too, so one ornament breaks a stack of rules. */
+	bool spanLanes = false;
+	/* Pieces: left out when the lane is too narrow for its lines' minimum lengths. */
+	bool optional = false;
+
+	/*
+	 * Drawn in a color of its own rather than the divider's ink -- a gold diamond on a white rule.
+	 * The outline and shadow are still the divider's, so the element still belongs to the figure.
+	 */
+	bool ownColor = false;
+	QColor color = QColor(255, 255, 255);
+
+	bool isLine() const { return kind == Kind::Line; }
 
 	void save(obs_data_t *data) const;
 	void load(obs_data_t *data);
 
-	bool operator==(const DividerPiece &other) const = default;
+	bool operator==(const DividerElement &other) const = default;
 };
 
-const char *dividerPieceKindId(DividerPiece::Kind kind);
-DividerPiece::Kind dividerPieceKindFromId(const char *id, DividerPiece::Kind fallback = DividerPiece::Kind::Ornament);
+const char *dividerElementKindId(DividerElement::Kind kind);
+DividerElement::Kind dividerElementKindFromId(const char *id,
+					      DividerElement::Kind fallback = DividerElement::Kind::Shape);
 
-/* Untranslated display name, used as the fallback when no locale string exists. */
-const char *dividerPieceKindName(DividerPiece::Kind kind);
+/*
+ * One line of a divider, with the row of elements set along it.
+ *
+ * A divider has one or more lanes, stacked top to bottom about its midline. Each is a complete row
+ * of its own -- a different rule, a different thickness, different pieces, a different length --
+ * so three lines can be three different lines. A piece that spans lanes is how one ornament breaks
+ * all of them at once.
+ */
+struct DividerLane {
+	QVector<DividerElement> elements;
+	/* How thick this lane's lines are drawn, in pixels. A shape's size is a proportion of it. */
+	double thickness = 4.0;
+	/* How far in from each end of the divider this lane starts, in pixels: a stack tapers this way. */
+	double inset = 0.0;
+	/* A nudge on where the lane sits, in pixels; positive moves it down. */
+	double offsetY = 0.0;
+	/*
+	 * Symmetric dividers only: the last element, when it is a piece, sits on the center line and is
+	 * drawn once, rather than being drawn twice either side of it. On by default, which is what a
+	 * diamond in the middle of a rule wants; off, a pair -- `Dot, Dot` -- meets at the middle.
+	 */
+	bool centerPiece = true;
 
-/* Every piece kind in the order the designer's picker should list them. */
-const QVector<DividerPiece::Kind> &allDividerPieceKinds();
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+
+	bool operator==(const DividerLane &other) const = default;
+};
+
+/*
+ * How a divider draws itself on as it scrolls into the frame.
+ *
+ *   None       - it is simply there, as every divider has always been.
+ *   FromCenter - it grows outward from its own middle to both ends.
+ *   FromLeft   - it is drawn on left to right, as if by a pen.
+ *   FromRight  - the same, right to left.
+ *
+ * Driven by where the divider is on the frame rather than by a clock, so a reveal looks the same at
+ * any scroll speed, paused, or scrubbed to by hand -- it is part of the roll's picture, not an event.
+ */
+enum class DividerReveal { None, FromCenter, FromLeft, FromRight };
+
+const char *dividerRevealId(DividerReveal reveal);
+DividerReveal dividerRevealFromId(const char *id, DividerReveal fallback = DividerReveal::None);
+
+/*
+ * Everything a Section Divider draws.
+ *
+ * `symmetric` is on by default and is the ordinary case: each lane's elements describe its left
+ * half, outside in, and the right half is drawn as the same list reflected. Off, each lane's list
+ * is the whole row, left to right, for a divider that points somewhere or is labeled at one end.
+ * Nothing is lost by switching -- the lists are kept as written either way.
+ */
+struct Divider {
+	/* Top to bottom. Never empty once loaded: there is always a lane to put something in. */
+	QVector<DividerLane> lanes = {DividerLane{}};
+	bool symmetric = true;
+
+	/* Space between neighbouring lanes' lines, in pixels. */
+	double laneGap = 6.0;
+	/* Space between two pieces side by side. Negative pushes them into each other, up to halfway. */
+	double pieceGap = 10.0;
+	/*
+	 * Space a line keeps clear of a piece beside it. Negative runs the line under the piece by
+	 * that much, which with the single silhouette the art is inked as joins the two seamlessly.
+	 */
+	double lineGap = 12.0;
+
+	/* How much of the section's content width the divider spans, 0.0 to 1.0, and where it sits. */
+	double length = 1.0;
+	HAlign align = HAlign::Center;
+
+	/*
+	 * Paint the user's own SVG files in the divider's ink rather than in the colors they were drawn
+	 * with. The built-in shapes are always tinted -- they are drawn white so they can be.
+	 */
+	bool tint = true;
+
+	/*
+	 * The draw-on, if any. It begins when the divider's middle rises past `revealStart` of the way
+	 * down the frame (1.0 is the bottom edge, so the default starts it just as it comes into view)
+	 * and is complete once the divider has risen a further `revealLength` of the frame's height.
+	 * Both are shares of the frame rather than pixels or seconds, so the reveal sits at the same
+	 * place on any canvas and at any speed.
+	 */
+	DividerReveal reveal = DividerReveal::None;
+	double revealStart = 0.95;
+	double revealLength = 0.2;
+
+	/*
+	 * Each lane's elements as they are actually drawn, left to right: the list itself when the
+	 * divider is not symmetric, the list and its reflection when it is.
+	 */
+	QVector<DividerElement> drawnRow(const DividerLane &lane) const;
+
+	/* True when any element of any lane holds a word with something in it. */
+	bool hasText() const;
+	/* The first word any lane holds, or an empty string. What a divider is named after in a list. */
+	QString firstText() const;
+	/* Every image path the divider draws. */
+	QStringList imagePaths() const;
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+
+	/*
+	 * Builds the divider an older document describes, from the keys it was written with: two end
+	 * stacks, an arm, a center stack, a rule count. See model/Divider.cpp.
+	 */
+	static Divider fromLegacy(obs_data_t *sectionData);
+
+	bool operator==(const Divider &other) const = default;
+};
+
+/* The plainest divider there is: one lane with one line across it. */
+Divider plainDivider();
 
 struct Section {
 	SectionType type = SectionType::Title;
@@ -800,117 +954,8 @@ struct Section {
 	 */
 	bool rowSubtitles = false;
 
-	/*
-	 * Section Divider sections only.
-	 *
-	 * A divider is composed rather than drawn from one piece of artwork: an end cap, an arm
-	 * running inward from it, whatever the center stack holds, then the same again mirrored.
-	 * `dividerThickness` is the one number that sizes all of it -- every shape's table row
-	 * declares its own height as a multiple of the rule it belongs to -- so a divider stays in
-	 * proportion when it is made heavier rather than needing each part resized in turn.
-	 *
-	 * The artwork is inked exactly as a bridge is: the section's own style, or `bridgeStyle`
-	 * when `useBridgeStyle` is set. That is deliberate reuse rather than a field left lying
-	 * around -- "color the art separately from the text" is the same want in both places, and
-	 * a divider whose text is white while its rule carries the title's gold sweep is precisely
-	 * what the override is for.
-	 */
-	/*
-	 * The left-hand end, outermost piece first.
-	 *
-	 * A list of the same `DividerPiece` the center holds rather than a single shape, because an
-	 * end is the same kind of thing a middle is: something drawn once at its own size, and just
-	 * as often a compound -- a diamond outside an arrowhead, a year set against the rule. Making
-	 * them the same list means a shape offered in one place is offered in the other, a piece can
-	 * be resized where it sits, and a word or a mark can cap a rule exactly as it can break one.
-	 *
-	 * Empty is an end with nothing on it, which is the ordinary case for a plain rule.
-	 */
-	QVector<DividerPiece> dividerCap;
-	/*
-	 * The right-hand end, used only when `dividerMirrorEnds` is off. Kept whether or not it is
-	 * in use, so mirroring can be switched off and back on without losing what was set.
-	 *
-	 * Written in the same order as the left-hand one -- outermost piece first -- and drawn
-	 * flipped, so an end reads the same way whichever list it came from.
-	 */
-	QVector<DividerPiece> dividerEndCap;
-	/*
-	 * Draw the right-hand end as the left one flipped. On by default, and true of every
-	 * ornamental rule that is not an arrow pointing somewhere: it is what stops the two ends of
-	 * the same divider from drifting apart as the design is worked on.
-	 */
-	bool dividerMirrorEnds = true;
-
-	DividerShape dividerArm = DividerShape::Rule;
-	/* Custom arms only: absolute path to the artwork tiled along each arm. */
-	QString dividerArmSvg;
-
-	/*
-	 * How tall the rule itself is drawn, in pixels. Every other part is a multiple of it.
-	 */
-	double dividerThickness = 4.0;
-	/*
-	 * Space left clear where an arm meets something, in pixels: the cap outside it and the
-	 * center stack inside it. One number rather than two, because a divider whose gaps differ
-	 * at the two ends of the same arm reads as a mistake rather than as a setting.
-	 *
-	 * Negative is a join rather than a gap: the arm runs *under* what it meets by that much, and
-	 * because every tinted part of a divider is rasterized into one silhouette and inked once,
-	 * an overlap unions into a single continuous ornament instead of showing a seam or a second
-	 * outline. That is the whole of what makes the parts connectable rather than merely adjacent.
-	 */
-	double dividerGap = 12.0;
-	/*
-	 * Space between consecutive pieces of a stack, in pixels. Negative overlaps them, and is
-	 * bounded per join at half the narrower of the two pieces it sits between, so pieces may be
-	 * pushed into each other but never through each other.
-	 */
-	double dividerPieceGap = 10.0;
-	/*
-	 * Run the rule the whole way through instead of stopping at what it meets.
-	 *
-	 * The arm becomes one unbroken span from the middle of one end cap to the middle of the
-	 * other, passing behind the center stack rather than breaking either side of it -- so a
-	 * diamond sits *on* the line the way an ornamental rule is actually drawn, rather than
-	 * beside two lines that stop short of it. The middle of the outermost piece rather than the
-	 * stack's outer edge, because that point is inside every cap's silhouette whatever the cap
-	 * is: run to the edge instead and the rule pokes a blunt nose out of a tapering arrowhead.
-	 *
-	 * `dividerGap` is not consulted while this is on -- there is nothing left for it to hold
-	 * apart -- and the piece gaps within each stack still are.
-	 *
-	 * Off by default, which is the divider every existing document already draws.
-	 */
-	bool dividerConnect = false;
-
-	/* What sits between the two arms, in order, left to right. Empty is an unbroken rule. */
-	QVector<DividerPiece> dividerCenter;
-
-	/*
-	 * How many rules run in parallel, stacked about the divider's midline, and the vertical
-	 * space between them in pixels. The center stack is drawn once over the whole stack rather
-	 * than once per rule -- three lines broken by one ornament is the deco figure; three
-	 * complete dividers touching is not.
-	 */
-	int dividerRules = 1;
-	double dividerRuleGap = 6.0;
-	/*
-	 * How much shorter each rule is than the one nearer the midline, in pixels, so a stack of
-	 * three tapers to a wedge. At 0 the rules are all the same length. An even-numbered stack
-	 * has no middle rule to measure from, so its two innermost are inset half of this each and
-	 * the figure stays symmetric either way.
-	 */
-	double dividerRuleInset = 0.0;
-
-	/*
-	 * Custom artwork only: paint the files in the section's own fill rather than in the colors
-	 * they were authored with. The built-in shapes are always painted this way -- they are drawn
-	 * white precisely so they can be -- so this only has a say over a user's files, and covers
-	 * all three slots at once because a divider whose cap is tinted and whose center is not is
-	 * not a design anyone reaches for on purpose.
-	 */
-	bool dividerTint = true;
+	/* Section Divider sections only: everything it draws. See Divider. */
+	Divider divider;
 
 	/* Multi-list sections only. */
 	int columns = 2;

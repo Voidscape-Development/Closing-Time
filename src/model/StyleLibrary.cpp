@@ -117,6 +117,35 @@ QVector<BackgroundPreset> backgroundsFromData(obs_data_t *data)
 	return presets;
 }
 
+QVector<DividerPreset> dividersFromData(obs_data_t *data)
+{
+	QVector<DividerPreset> presets;
+
+	OBSDataArrayAutoRelease array = obs_data_get_array(data, "divider_presets");
+	if (!array)
+		return presets;
+
+	const size_t count = obs_data_array_count(array);
+	presets.reserve(static_cast<int>(count));
+
+	for (size_t i = 0; i < count; ++i) {
+		OBSDataAutoRelease item = obs_data_array_item(array, i);
+		DividerPreset preset;
+		preset.load(item);
+
+		/* An unnamed divider cannot be picked, and a duplicate name could never be told apart. */
+		if (preset.name.isEmpty())
+			continue;
+		if (std::any_of(presets.cbegin(), presets.cend(),
+				[&preset](const DividerPreset &existing) { return existing.name == preset.name; }))
+			continue;
+
+		presets.append(preset);
+	}
+
+	return presets;
+}
+
 /*
  * The rename trail's mechanics, written once and used by both collections.
  *
@@ -228,7 +257,7 @@ void saveRenames(obs_data_t *data, const char *key, const QVector<QPair<QString,
 }
 
 QString presetsToJson(const QVector<StylePreset> &presets, const QVector<BackgroundPreset> &backgrounds,
-		      const QVector<QPair<QString, QString>> &renames,
+		      const QVector<DividerPreset> &dividers, const QVector<QPair<QString, QString>> &renames,
 		      const QVector<QPair<QString, QString>> &backgroundRenames, bool alwaysEditLinked)
 {
 	OBSDataAutoRelease data = obs_data_create();
@@ -250,6 +279,15 @@ QString presetsToJson(const QVector<StylePreset> &presets, const QVector<Backgro
 	}
 
 	obs_data_set_array(data, "background_presets", backgroundArray);
+
+	OBSDataArrayAutoRelease dividerArray = obs_data_array_create();
+	for (const DividerPreset &preset : dividers) {
+		OBSDataAutoRelease item = obs_data_create();
+		preset.save(item);
+		obs_data_array_push_back(dividerArray, item);
+	}
+
+	obs_data_set_array(data, "divider_presets", dividerArray);
 
 	saveRenames(data, "renames", renames);
 	saveRenames(data, "background_renames", backgroundRenames);
@@ -307,6 +345,7 @@ void StyleLibrary::load()
 		 */
 		entries.clear();
 		backgroundEntries.clear();
+		dividerEntries.clear();
 		renameTrail.clear();
 		backgroundRenameTrail.clear();
 		editLinkedInPlace = false;
@@ -326,12 +365,14 @@ void StyleLibrary::load()
 
 	entries = presetsFromData(data);
 	backgroundEntries = backgroundsFromData(data);
+	dividerEntries = dividersFromData(data);
 	renameTrail = renamesFromData(data, "renames");
 	backgroundRenameTrail = renamesFromData(data, "background_renames");
 	editLinkedInPlace = obs_data_get_bool(data, "always_edit_linked");
 	bumpLocked();
 
-	obs_log(LOG_INFO, "style library: %d preset(s), %d background(s)", entries.size(), backgroundEntries.size());
+	obs_log(LOG_INFO, "style library: %d preset(s), %d background(s), %d divider(s)", entries.size(),
+		backgroundEntries.size(), dividerEntries.size());
 }
 
 bool StyleLibrary::save()
@@ -345,7 +386,8 @@ bool StyleLibrary::save()
 			return false;
 
 		target = path;
-		json = presetsToJson(entries, backgroundEntries, renameTrail, backgroundRenameTrail, editLinkedInPlace);
+		json = presetsToJson(entries, backgroundEntries, dividerEntries, renameTrail, backgroundRenameTrail,
+				     editLinkedInPlace);
 	}
 
 	QDir().mkpath(QFileInfo(target).absolutePath());
@@ -695,6 +737,125 @@ QVector<QPair<QString, QString>> StyleLibrary::backgroundRenames() const
 	return backgroundRenameTrail;
 }
 
+void DividerPreset::save(obs_data_t *data) const
+{
+	obs_data_set_string(data, "name", name.toUtf8().constData());
+	OBSDataAutoRelease figureData = obs_data_create();
+	figure.save(figureData);
+	obs_data_set_obj(data, "divider", figureData);
+}
+
+void DividerPreset::load(obs_data_t *data)
+{
+	name = QString::fromUtf8(obs_data_get_string(data, "name")).trimmed();
+	figure = Divider{};
+	OBSDataAutoRelease figureData = obs_data_get_obj(data, "divider");
+	if (figureData)
+		figure.load(figureData);
+}
+
+QVector<DividerPreset> StyleLibrary::dividers() const
+{
+	std::lock_guard<std::mutex> lock(libraryMutex());
+	return dividerEntries;
+}
+
+bool StyleLibrary::findDivider(const QString &name, Divider *figure) const
+{
+	if (name.isEmpty())
+		return false;
+
+	std::lock_guard<std::mutex> lock(libraryMutex());
+	for (const DividerPreset &preset : dividerEntries) {
+		if (preset.name != name)
+			continue;
+		if (figure)
+			*figure = preset.figure;
+		return true;
+	}
+	return false;
+}
+
+bool StyleLibrary::containsDivider(const QString &name) const
+{
+	return findDivider(name, nullptr);
+}
+
+void StyleLibrary::setDivider(const QString &name, const Divider &figure)
+{
+	const QString key = name.trimmed();
+	if (key.isEmpty())
+		return;
+
+	{
+		std::lock_guard<std::mutex> lock(libraryMutex());
+
+		bool replaced = false;
+		for (DividerPreset &preset : dividerEntries) {
+			if (preset.name != key)
+				continue;
+			preset.figure = figure;
+			replaced = true;
+			break;
+		}
+		if (!replaced)
+			dividerEntries.append(DividerPreset{key, figure});
+
+		bumpLocked();
+	}
+
+	save();
+}
+
+void StyleLibrary::removeDivider(const QString &name)
+{
+	{
+		std::lock_guard<std::mutex> lock(libraryMutex());
+
+		const auto before = dividerEntries.size();
+		dividerEntries.erase(
+			std::remove_if(dividerEntries.begin(), dividerEntries.end(),
+				       [&name](const DividerPreset &preset) { return preset.name == name; }),
+			dividerEntries.end());
+		if (dividerEntries.size() == before)
+			return;
+
+		bumpLocked();
+	}
+
+	save();
+}
+
+void StyleLibrary::renameDivider(const QString &from, const QString &to)
+{
+	const QString target = to.trimmed();
+	if (from.isEmpty() || target.isEmpty() || from == target)
+		return;
+
+	{
+		std::lock_guard<std::mutex> lock(libraryMutex());
+
+		if (std::any_of(dividerEntries.cbegin(), dividerEntries.cend(),
+				[&target](const DividerPreset &preset) { return preset.name == target; }))
+			return;
+
+		bool renamed = false;
+		for (DividerPreset &preset : dividerEntries) {
+			if (preset.name != from)
+				continue;
+			preset.name = target;
+			renamed = true;
+			break;
+		}
+		if (!renamed)
+			return;
+
+		bumpLocked();
+	}
+
+	save();
+}
+
 void StyleLibrary::replaceAllBackgrounds(const QVector<BackgroundPreset> &presets)
 {
 	{
@@ -724,7 +885,8 @@ void StyleLibrary::replaceAllBackgrounds(const QVector<BackgroundPreset> &preset
 QString StyleLibrary::toJson() const
 {
 	std::lock_guard<std::mutex> lock(libraryMutex());
-	return presetsToJson(entries, backgroundEntries, renameTrail, backgroundRenameTrail, editLinkedInPlace);
+	return presetsToJson(entries, backgroundEntries, dividerEntries, renameTrail, backgroundRenameTrail,
+			     editLinkedInPlace);
 }
 
 bool StyleLibrary::alwaysEditLinked() const
