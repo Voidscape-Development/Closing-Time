@@ -93,6 +93,13 @@ struct ComposeView {
 	};
 	Blocks blocks = Blocks::Timeline;
 
+	/*
+	 * How tall the canvas is, in view pixels, when the view *is* the canvas at a moment. A divider's
+	 * draw-on is measured against it, so a view that is not a canvas -- the roll end to end -- leaves
+	 * it at zero and shows every divider whole.
+	 */
+	double canvasHeight = 0.0;
+
 	/* The canvas at a moment: the strip where the timeline has it, cut at the canvas's edges. */
 	static ComposeView canvas(const RollFrame &frame, int canvasHeight);
 };

@@ -50,6 +50,23 @@ namespace closingtime {
  * load; a suite points it at a temporary file, or leaves it unset and gets an empty library that
  * touches no disk.
  */
+/*
+ * A divider somebody saved to start from again, in this roll or any other on the machine.
+ *
+ * A copy, never a binding: picking one writes its figure into a section exactly as a built-in design
+ * does (see applyDividerDesign), and nothing about the section remembers where it came from. That is
+ * why a saved divider needs none of the rename trail a style does -- no document holds its name.
+ */
+struct DividerPreset {
+	QString name;
+	Divider figure;
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+
+	bool operator==(const DividerPreset &other) const = default;
+};
+
 class StyleLibrary {
 public:
 	/*
@@ -149,6 +166,18 @@ public:
 	QVector<QPair<QString, QString>> backgroundRenames() const;
 	void replaceAllBackgrounds(const QVector<BackgroundPreset> &presets);
 
+	/* --- dividers --------------------------------------------------------------------------- */
+
+	/* Every saved divider, in the order they were first saved. */
+	QVector<DividerPreset> dividers() const;
+	bool findDivider(const QString &name, Divider *figure) const;
+	bool containsDivider(const QString &name) const;
+	/* Adds `name` or replaces the divider already under it, then writes the file. */
+	void setDivider(const QString &name, const Divider &figure);
+	void removeDivider(const QString &name);
+	/* Does nothing when `to` is taken: two saved dividers nothing could tell apart. */
+	void renameDivider(const QString &from, const QString &to);
+
 	/*
 	 * Whether editing a style bound to a linked preset edits the library rather than forking a
 	 * copy into the document.
@@ -181,6 +210,7 @@ private:
 	QString path;
 	QVector<StylePreset> entries;
 	QVector<BackgroundPreset> backgroundEntries;
+	QVector<DividerPreset> dividerEntries;
 	/*
 	 * Old name -> current name, for presets that have been renamed. Kept for as long as the
 	 * library is: a scene collection that has not been opened in a year is exactly the one that

@@ -735,6 +735,22 @@ struct DividerLane {
 };
 
 /*
+ * How a divider draws itself on as it scrolls into the frame.
+ *
+ *   None       - it is simply there, as every divider has always been.
+ *   FromCenter - it grows outward from its own middle to both ends.
+ *   FromLeft   - it is drawn on left to right, as if by a pen.
+ *   FromRight  - the same, right to left.
+ *
+ * Driven by where the divider is on the frame rather than by a clock, so a reveal looks the same at
+ * any scroll speed, paused, or scrubbed to by hand -- it is part of the roll's picture, not an event.
+ */
+enum class DividerReveal { None, FromCenter, FromLeft, FromRight };
+
+const char *dividerRevealId(DividerReveal reveal);
+DividerReveal dividerRevealFromId(const char *id, DividerReveal fallback = DividerReveal::None);
+
+/*
  * Everything a Section Divider draws.
  *
  * `symmetric` is on by default and is the ordinary case: each lane's elements describe its left
@@ -766,6 +782,17 @@ struct Divider {
 	 * with. The built-in shapes are always tinted -- they are drawn white so they can be.
 	 */
 	bool tint = true;
+
+	/*
+	 * The draw-on, if any. It begins when the divider's middle rises past `revealStart` of the way
+	 * down the frame (1.0 is the bottom edge, so the default starts it just as it comes into view)
+	 * and is complete once the divider has risen a further `revealLength` of the frame's height.
+	 * Both are shares of the frame rather than pixels or seconds, so the reveal sits at the same
+	 * place on any canvas and at any speed.
+	 */
+	DividerReveal reveal = DividerReveal::None;
+	double revealStart = 0.95;
+	double revealLength = 0.2;
 
 	/*
 	 * Each lane's elements as they are actually drawn, left to right: the list itself when the

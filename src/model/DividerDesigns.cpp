@@ -254,6 +254,10 @@ void applyDividerDesign(Section &section, const DividerDesign &design)
 	section.divider.length = kept.length;
 	section.divider.align = kept.align;
 	section.divider.tint = kept.tint;
+	/* How it arrives is about the section's place in the roll, not about the figure. */
+	section.divider.reveal = kept.reveal;
+	section.divider.revealStart = kept.revealStart;
+	section.divider.revealLength = kept.revealLength;
 }
 
 bool sameDividerFigure(const Divider &a, const Divider &b)

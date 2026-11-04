@@ -2832,7 +2832,20 @@ template<typename T> void appendSaved(QByteArray *out, const T &value)
  */
 void appendSectionFingerprint(QByteArray *out, const Document &document, const Section &section)
 {
-	appendSaved(out, section);
+	/*
+	 * A divider's draw-on is left out: it decides how much of the picture the compositor shows, not
+	 * what the picture is, so changing it must not send the picture to be drawn again.
+	 */
+	if (section.divider.reveal != DividerReveal::None || section.divider.revealStart != Divider{}.revealStart ||
+	    section.divider.revealLength != Divider{}.revealLength) {
+		Section still = section;
+		still.divider.reveal = DividerReveal::None;
+		still.divider.revealStart = Divider{}.revealStart;
+		still.divider.revealLength = Divider{}.revealLength;
+		appendSaved(out, still);
+	} else {
+		appendSaved(out, section);
+	}
 
 	appendSaved(out, document.effectiveStyle(section));
 	appendSaved(out, document.effectiveSecondaryStyle(section));
@@ -3268,6 +3281,33 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 			layer.key = keyFor(*entry.section, layer);
 		if (!entry.rows.isEmpty())
 			layer.rowHeights = std::make_shared<const QVector<int>>(entry.rows);
+
+		/*
+		 * A divider that draws itself on carries its own box, found by laying the section out once
+		 * more with nothing painted -- the same call that placed it, so the sweep runs over exactly
+		 * the figure that was drawn. Only a top-level divider: one inside a sticky block is part of
+		 * the block's picture and arrives with the block.
+		 */
+		const Divider &figure = entry.section->divider;
+		if (entry.section->type == SectionType::SectionDivider && figure.reveal != DividerReveal::None) {
+			LayoutBoxes found;
+			BoxCollector collector{&found, entry.index};
+			layoutSection(nullptr, *entry.section, document, art, &bridges, &dividers, entry.top,
+				      &collector);
+			for (const LayoutBox &box : found) {
+				if (box.kind != LayoutBox::Kind::Divider)
+					continue;
+				layer.reveal.mode = figure.reveal;
+				layer.reveal.left = box.rect.left();
+				layer.reveal.right = box.rect.right();
+				layer.reveal.bleed = margin;
+				layer.reveal.anchor = box.rect.center().y();
+				layer.reveal.start = figure.revealStart;
+				layer.reveal.length = figure.revealLength;
+				break;
+			}
+		}
+
 		layout->layers.append(layer);
 	}
 
@@ -3436,6 +3476,41 @@ Strip RollRenderer::render(const Document &document, LayoutBoxes *boxes) const
 	}
 
 	return strip;
+}
+
+double LayerReveal::progress(double anchorY, double canvasHeight) const
+{
+	if (!active() || canvasHeight <= 0.0)
+		return 1.0;
+
+	/* How far the anchor has risen past the start line, as a share of the canvas. */
+	const double risen = (start * canvasHeight - anchorY) / canvasHeight;
+	if (risen <= 0.0)
+		return 0.0;
+	if (length <= 0.0)
+		return 1.0;
+	return std::clamp(risen / length, 0.0, 1.0);
+}
+
+QPair<double, double> LayerReveal::drawnSpan(double progress) const
+{
+	const double from = left - bleed;
+	const double to = right + bleed;
+	const double width = (to - from) * std::clamp(progress, 0.0, 1.0);
+
+	switch (mode) {
+	case DividerReveal::FromLeft:
+		return {from, from + width};
+	case DividerReveal::FromRight:
+		return {to - width, to};
+	case DividerReveal::FromCenter: {
+		const double middle = (left + right) / 2.0;
+		return {middle - width / 2.0, middle + width / 2.0};
+	}
+	case DividerReveal::None:
+		break;
+	}
+	return {from, to};
 }
 
 QImage RollRenderer::paintReference(const Document &input) const

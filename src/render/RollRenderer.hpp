@@ -322,6 +322,36 @@ using LayoutBoxes = QVector<LayoutBox>;
  * cached and uploaded: a list of four hundred names is one section and far too tall to be one
  * texture, or one upload.
  */
+/*
+ * A divider's draw-on, as its layer carries it: everything the compositor needs to cut the layer's
+ * draws down to the part drawn so far, without knowing what a divider is.
+ */
+struct LayerReveal {
+	DividerReveal mode = DividerReveal::None;
+	/* The divider's own box across the picture, in roll pixels: what the reveal sweeps over. */
+	double left = 0.0;
+	double right = 0.0;
+	/* How far past the box its ink can reach -- a shadow, an outline -- so the sweep covers it too. */
+	double bleed = 0.0;
+	/* The middle of the divider's box, in strip pixels. Its position on the frame drives the reveal. */
+	double anchor = 0.0;
+	/* See Divider::revealStart and Divider::revealLength: shares of the canvas height. */
+	double start = 0.95;
+	double length = 0.2;
+
+	bool active() const { return mode != DividerReveal::None && right > left; }
+
+	/*
+	 * How much of it is drawn, 0 to 1, with its anchor at `anchorY` on a canvas `canvasHeight` tall
+	 * (both in the same units). Zero until the anchor rises past the start line; one once it has
+	 * risen a further `length` of the canvas.
+	 */
+	double progress(double anchorY, double canvasHeight) const;
+
+	/* The span of the picture drawn at `progress`, in roll pixels, as {from, to}. */
+	QPair<double, double> drawnSpan(double progress) const;
+};
+
 struct RollLayer {
 	enum class Kind {
 		/* A top-level section. Its origin is the top of the strip; it scrolls with the roll. */
@@ -362,6 +392,12 @@ struct RollLayer {
 	 * Null for a section with no list.
 	 */
 	std::shared_ptr<const QVector<int>> rowHeights;
+
+	/*
+	 * A divider that draws itself on. Not part of `key`: the pixels are the same picture either way,
+	 * and the compositor only ever shows less of it.
+	 */
+	LayerReveal reveal;
 
 	int chunkCount() const;
 	/* A chunk's rows, relative to the picture's top edge. */

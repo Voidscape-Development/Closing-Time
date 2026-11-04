@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDateTime>
 #include <QDrag>
 #include <QDragEnterEvent>
 #include <QFileDialog>
@@ -34,7 +35,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QHash>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QInputDialog>
 #include <QLineEdit>
+#include <QMenu>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
@@ -52,6 +56,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cmath>
 
 #include "model/DividerDesigns.hpp"
+#include "model/StyleLibrary.hpp"
 #include "render/AnimatedLogo.hpp"
 #include "render/RollRenderer.hpp"
 #include "ui/StyleControls.hpp"
@@ -278,23 +283,32 @@ DividerElement pieceOf(DividerShape shape)
 	return element;
 }
 
-/* A design drawn by the real renderer and kept, for the design picker. */
-QIcon dividerDesignIcon(const DividerDesign &design, const QSize &size)
+/*
+ * A divider drawn by the real renderer and kept, for the design picker. Keyed by the figure's own
+ * saved form, so a built-in design is drawn once and a saved one again only when it changes.
+ */
+QIcon dividerFigureIcon(const Divider &figure, const QSize &size)
 {
-	static QHash<QString, QIcon> cache;
-	const QString key = QString::fromLatin1(design.id);
+	static QHash<QByteArray, QIcon> cache;
+	OBSDataAutoRelease keyData = obs_data_create();
+	figure.save(keyData);
+	const QByteArray key = QByteArray(obs_data_get_json(keyData)) + QByteArray::number(size.width());
 	if (const auto found = cache.constFind(key); found != cache.cend())
 		return *found;
 
 	Section section = Section::makeDefault(SectionType::SectionDivider);
-	applyDividerDesign(section, design);
+	applyDividerDesign(section, DividerDesign{"", "", figure});
 	section.sectionWidth = 1.0;
 	section.marginX = 0;
 	section.paddingTop = 2;
 	section.paddingBottom = 2;
 	section.style.pixelSize = 26;
 	section.style.bold = true;
-	section.style.color = QColor(255, 255, 255);
+	/*
+	 * Drawn straight in the theme's text color, so the divider's own ink reads on the list it sits in
+	 * while a part in a color of its own keeps that color -- a recolor afterwards would flatten both.
+	 */
+	section.style.color = pickerInk();
 
 	Document document;
 	document.width = qRound(size.width() * kIconScale);
@@ -308,7 +322,6 @@ QIcon dividerDesignIcon(const DividerDesign &design, const QSize &size)
 	QImage image(size * kIconScale, QImage::Format_ARGB32_Premultiplied);
 	image.fill(Qt::transparent);
 	if (!drawn.isNull()) {
-		/* Only a design that keeps its own colors keeps them in its picture; the rest take the theme's ink. */
 		const QImage fitted = drawn.height() > image.height() ? drawn.scaled(image.size(), Qt::KeepAspectRatio,
 										     Qt::SmoothTransformation)
 								      : drawn;
@@ -317,14 +330,6 @@ QIcon dividerDesignIcon(const DividerDesign &design, const QSize &size)
 					  (image.height() - fitted.height()) / 2.0),
 				  fitted);
 	}
-
-	bool colored = false;
-	for (const DividerLane &lane : design.figure.lanes) {
-		for (const DividerElement &element : lane.elements)
-			colored = colored || element.ownColor;
-	}
-	if (!colored)
-		image = inked(image, pickerInk());
 
 	QPixmap pixmap = QPixmap::fromImage(image);
 	pixmap.setDevicePixelRatio(kIconScale);
@@ -403,6 +408,37 @@ DividerPreview::DividerPreview(QWidget *parent) : QWidget(parent)
 {
 	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	setToolTip(moduleText("Designer.DividerPreview.Tip"));
+
+	revealTimer = new QTimer(this);
+	revealTimer->setInterval(16);
+	connect(revealTimer, &QTimer::timeout, this, [this] {
+		/* Long enough to read the shape of the sweep, short enough not to wait on. */
+		constexpr double kPlayMs = 1100.0;
+		const double elapsed = QDateTime::currentMSecsSinceEpoch() - revealStartedMs;
+		/* Eased out, the way a pen slows into the end of a stroke. */
+		const double t = std::clamp(elapsed / kPlayMs, 0.0, 1.0);
+		revealProgress = 1.0 - (1.0 - t) * (1.0 - t);
+		if (t >= 1.0) {
+			revealProgress = 1.0;
+			revealTimer->stop();
+		}
+		update();
+	});
+}
+
+void DividerPreview::playReveal(DividerReveal mode)
+{
+	revealMode = mode;
+	if (mode == DividerReveal::None) {
+		revealProgress = 1.0;
+		revealTimer->stop();
+		update();
+		return;
+	}
+	revealProgress = 0.0;
+	revealStartedMs = QDateTime::currentMSecsSinceEpoch();
+	revealTimer->start();
+	update();
 }
 
 void DividerPreview::setImage(const QImage &image)
@@ -445,6 +481,18 @@ void DividerPreview::paintEvent(QPaintEvent *)
 	const QRectF target(area.center().x() - size.width() / 2.0, area.center().y() - size.height() / 2.0,
 			    size.width(), size.height());
 	painter.setClipPath(path);
+
+	/* A reveal playing: the same sweep the compositor makes, over the picture's own width. */
+	if (revealMode != DividerReveal::None && revealProgress < 1.0) {
+		const double width = target.width() * revealProgress;
+		double from = target.left();
+		if (revealMode == DividerReveal::FromCenter)
+			from = target.center().x() - width / 2.0;
+		else if (revealMode == DividerReveal::FromRight)
+			from = target.right() - width;
+		painter.setClipRect(QRectF(from, frame.top(), width, frame.height()), Qt::IntersectClip);
+	}
+
 	painter.drawImage(target, picture);
 }
 
@@ -1089,13 +1137,18 @@ DividerEditor::DividerEditor(QWidget *parent) : QWidget(parent)
 		const QSize iconSize(180, 30);
 		design->setIconSize(iconSize);
 		design->setMaxVisibleItems(12);
-		design->addItem(moduleText("Designer.DividerDesign.Own"), QString());
-		for (const DividerDesign &each : dividerDesigns())
-			design->addItem(dividerDesignIcon(each, iconSize), dividerDesignText(each),
-					QString::fromLatin1(each.id));
 		label->setBuddy(design);
 		row->addWidget(label);
 		row->addWidget(design, 1);
+
+		designMenuButton = new QToolButton(this);
+		designMenuButton->setText(QStringLiteral("\u22ef"));
+		designMenuButton->setToolTip(moduleText("Designer.DividerSaved.Menu"));
+		designMenuButton->setPopupMode(QToolButton::InstantPopup);
+		designMenu = new QMenu(designMenuButton);
+		designMenuButton->setMenu(designMenu);
+		connect(designMenu, &QMenu::aboutToShow, this, &DividerEditor::rebuildDesignMenu);
+		row->addWidget(designMenuButton);
 
 		symmetric = new QCheckBox(moduleText("Designer.DividerSymmetric"), this);
 		symmetric->setToolTip(moduleText("Designer.DividerSymmetric.Tip"));
@@ -1103,15 +1156,24 @@ DividerEditor::DividerEditor(QWidget *parent) : QWidget(parent)
 		layout->addLayout(row);
 
 		connect(design, &QComboBox::activated, this, [this](int index) {
-			const QByteArray id = design->itemData(index).toString().toLatin1();
-			const DividerDesign *chosen = findDividerDesign(id.constData());
-			if (!chosen)
+			const QString data = design->itemData(index).toString();
+			Divider figure;
+			if (data.startsWith(QStringLiteral("builtin:"))) {
+				const QByteArray id = data.mid(8).toLatin1();
+				const DividerDesign *chosen = findDividerDesign(id.constData());
+				if (!chosen)
+					return;
+				figure = chosen->figure;
+			} else if (data.startsWith(QStringLiteral("saved:"))) {
+				if (!StyleLibrary::instance().findDivider(data.mid(6), &figure))
+					return;
+			} else {
 				return;
-			const Divider kept = model;
-			model = chosen->figure;
-			model.length = kept.length;
-			model.align = kept.align;
-			model.tint = kept.tint;
+			}
+			Section holder;
+			holder.divider = model;
+			applyDividerDesign(holder, DividerDesign{"", "", figure});
+			model = holder.divider;
 			lane = 0;
 			element = -1;
 			edited();
@@ -1399,6 +1461,44 @@ DividerEditor::DividerEditor(QWidget *parent) : QWidget(parent)
 	tintBox = new QCheckBox(moduleText("Designer.DividerTint"), spacing);
 	spacingForm->addRow(QString(), tintBox);
 	right->addWidget(spacing);
+
+	/*
+	 * The draw-on. Where it starts and how long it takes are shares of the frame rather than
+	 * seconds, because what is being placed is a moment in the picture -- "as it comes in at the
+	 * bottom", "by the time it is a quarter of the way up" -- which holds at any scroll speed.
+	 */
+	auto *revealGroup = new QGroupBox(moduleText("Designer.DividerReveal"), this);
+	revealGroup->setToolTip(moduleText("Designer.DividerReveal.Tip"));
+	revealForm = new QFormLayout(revealGroup);
+	{
+		auto *row = new QWidget(revealGroup);
+		auto *rowLayout = new QHBoxLayout(row);
+		rowLayout->setContentsMargins(0, 0, 0, 0);
+		revealBox = new QComboBox(row);
+		revealBox->addItem(moduleText("Designer.DividerReveal.None"), static_cast<int>(DividerReveal::None));
+		revealBox->addItem(moduleText("Designer.DividerReveal.Center"),
+				   static_cast<int>(DividerReveal::FromCenter));
+		revealBox->addItem(moduleText("Designer.DividerReveal.Left"),
+				   static_cast<int>(DividerReveal::FromLeft));
+		revealBox->addItem(moduleText("Designer.DividerReveal.Right"),
+				   static_cast<int>(DividerReveal::FromRight));
+		revealPlay = makeGlyphButton(row, QStringLiteral("▶"), moduleText("Designer.DividerReveal.Play"));
+		rowLayout->addWidget(revealBox, 1);
+		rowLayout->addWidget(revealPlay);
+		revealForm->addRow(moduleText("Designer.DividerReveal.Mode"), row);
+	}
+	revealStartBox = new QSpinBox(revealGroup);
+	revealStartBox->setRange(0, 150);
+	revealStartBox->setSuffix(QStringLiteral(" %"));
+	revealStartBox->setToolTip(moduleText("Designer.DividerReveal.Start.Tip"));
+	revealForm->addRow(moduleText("Designer.DividerReveal.Start"), revealStartBox);
+	revealLengthBox = new QSpinBox(revealGroup);
+	revealLengthBox->setRange(0, 200);
+	revealLengthBox->setSuffix(QStringLiteral(" %"));
+	revealLengthBox->setToolTip(moduleText("Designer.DividerReveal.Length.Tip"));
+	revealForm->addRow(moduleText("Designer.DividerReveal.Length"), revealLengthBox);
+	right->addWidget(revealGroup);
+	connect(revealPlay, &QToolButton::clicked, this, [this] { preview->playReveal(model.reveal); });
 	right->addStretch(1);
 
 	panes->addLayout(right, 2);
@@ -1505,6 +1605,18 @@ DividerEditor::DividerEditor(QWidget *parent) : QWidget(parent)
 	connect(laneGapBox, &QSpinBox::valueChanged, this,
 		onDivider([this](Divider &d) { d.laneGap = laneGapBox->value(); }));
 	connect(tintBox, &QCheckBox::toggled, this, onDivider([this](Divider &d) { d.tint = tintBox->isChecked(); }));
+	connect(revealBox, &QComboBox::currentIndexChanged, this, [this] {
+		if (loading)
+			return;
+		model.reveal = static_cast<DividerReveal>(revealBox->currentData().toInt());
+		edited(false);
+		/* Picking a reveal plays it, so the choice is seen rather than imagined. */
+		preview->playReveal(model.reveal);
+	});
+	connect(revealStartBox, &QSpinBox::valueChanged, this,
+		onDivider([this](Divider &d) { d.revealStart = revealStartBox->value() / 100.0; }));
+	connect(revealLengthBox, &QSpinBox::valueChanged, this,
+		onDivider([this](Divider &d) { d.revealLength = revealLengthBox->value() / 100.0; }));
 
 	previewTimer = new QTimer(this);
 	previewTimer->setSingleShot(true);
@@ -1706,17 +1818,140 @@ void DividerEditor::refreshInspector()
 	tintBox->setChecked(model.tint);
 	spacingForm->setRowVisible(tintBox, anyFile);
 
+	selectData(revealBox, static_cast<int>(model.reveal));
+	revealStartBox->setValue(qRound(model.revealStart * 100.0));
+	revealLengthBox->setValue(qRound(model.revealLength * 100.0));
+	const bool revealing = model.reveal != DividerReveal::None;
+	revealForm->setRowVisible(revealStartBox, revealing);
+	revealForm->setRowVisible(revealLengthBox, revealing);
+	revealPlay->setEnabled(revealing);
+
 	loading = was;
+}
+
+void DividerEditor::rebuildDesignPicker()
+{
+	const QSignalBlocker blocker(design);
+	const QSize iconSize = design->iconSize();
+	pickerSerial = StyleLibrary::instance().serial();
+
+	design->clear();
+	design->addItem(moduleText("Designer.DividerDesign.Own"), QString());
+	for (const DividerDesign &each : dividerDesigns())
+		design->addItem(dividerFigureIcon(each.figure, iconSize), dividerDesignText(each),
+				QStringLiteral("builtin:") + QString::fromLatin1(each.id));
+
+	/*
+	 * The dividers saved on this machine, under a heading of their own so a saved one is never
+	 * mistaken for the built-in design it may have started from.
+	 */
+	const QVector<DividerPreset> saved = StyleLibrary::instance().dividers();
+	if (!saved.isEmpty()) {
+		design->insertSeparator(design->count());
+		design->addItem(moduleText("Designer.DividerSaved.Heading"), QStringLiteral("heading"));
+		/* A heading, not a choice: disabled through the item's own flags. */
+		design->setItemData(design->count() - 1, 0, Qt::UserRole - 1);
+		for (const DividerPreset &preset : saved)
+			design->addItem(dividerFigureIcon(preset.figure, iconSize), preset.name,
+					QStringLiteral("saved:") + preset.name);
+	}
 }
 
 void DividerEditor::refreshDesign()
 {
+	if (StyleLibrary::instance().serial() != pickerSerial)
+		rebuildDesignPicker();
+
+	/* A built-in design first, then a saved one: the same figure is named after what ships with the plugin. */
+	QString key;
 	Section probe;
 	probe.divider = model;
-	const DividerDesign *matched = matchingDividerDesign(probe);
+	if (const DividerDesign *matched = matchingDividerDesign(probe)) {
+		key = QStringLiteral("builtin:") + QString::fromLatin1(matched->id);
+	} else {
+		for (const DividerPreset &preset : StyleLibrary::instance().dividers()) {
+			if (sameDividerFigure(model, preset.figure)) {
+				key = QStringLiteral("saved:") + preset.name;
+				break;
+			}
+		}
+	}
+
 	const QSignalBlocker blocker(design);
-	const int index = design->findData(matched ? QString::fromLatin1(matched->id) : QString());
+	const int index = design->findData(key);
 	design->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+void DividerEditor::rebuildDesignMenu()
+{
+	designMenu->clear();
+	designMenu->addAction(moduleText("Designer.DividerSaved.Save"), this, &DividerEditor::saveDesign);
+
+	const QVector<DividerPreset> saved = StyleLibrary::instance().dividers();
+	QMenu *rename = designMenu->addMenu(moduleText("Designer.DividerSaved.Rename"));
+	QMenu *remove = designMenu->addMenu(moduleText("Designer.DividerSaved.Delete"));
+	rename->setEnabled(!saved.isEmpty());
+	remove->setEnabled(!saved.isEmpty());
+	for (const DividerPreset &preset : saved) {
+		const QString name = preset.name;
+		rename->addAction(name, this, [this, name] { renameSavedDesign(name); });
+		remove->addAction(name, this, [this, name] { deleteSavedDesign(name); });
+	}
+}
+
+void DividerEditor::saveDesign()
+{
+	/* Offer the name of the saved divider this one still is, so saving over it again is one Enter. */
+	QString suggestion;
+	const QString current = design->currentData().toString();
+	if (current.startsWith(QStringLiteral("saved:")))
+		suggestion = current.mid(6);
+
+	bool ok = false;
+	const QString name = QInputDialog::getText(this, moduleText("Designer.DividerSaved.Save.Title"),
+						   moduleText("Designer.DividerSaved.Save.Prompt"), QLineEdit::Normal,
+						   suggestion, &ok)
+				     .trimmed();
+	if (!ok || name.isEmpty())
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	if (library.containsDivider(name) &&
+	    QMessageBox::question(this, moduleText("Designer.DividerSaved.Save.Title"),
+				  moduleText("Designer.DividerSaved.Replace").arg(name)) != QMessageBox::Yes)
+		return;
+
+	library.setDivider(name, model);
+	refreshDesign();
+}
+
+void DividerEditor::renameSavedDesign(const QString &name)
+{
+	bool ok = false;
+	const QString to = QInputDialog::getText(this, moduleText("Designer.DividerSaved.Rename.Title"),
+						 moduleText("Designer.DividerSaved.Save.Prompt"), QLineEdit::Normal,
+						 name, &ok)
+				   .trimmed();
+	if (!ok || to.isEmpty() || to == name)
+		return;
+
+	StyleLibrary &library = StyleLibrary::instance();
+	if (library.containsDivider(to)) {
+		QMessageBox::information(this, moduleText("Designer.DividerSaved.Rename.Title"),
+					 moduleText("Designer.DividerSaved.Taken").arg(to));
+		return;
+	}
+	library.renameDivider(name, to);
+	refreshDesign();
+}
+
+void DividerEditor::deleteSavedDesign(const QString &name)
+{
+	if (QMessageBox::question(this, moduleText("Designer.DividerSaved.Delete.Title"),
+				  moduleText("Designer.DividerSaved.Delete.Confirm").arg(name)) != QMessageBox::Yes)
+		return;
+	StyleLibrary::instance().removeDivider(name);
+	refreshDesign();
 }
 
 void DividerEditor::renderPreview()

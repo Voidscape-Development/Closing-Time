@@ -50,6 +50,8 @@ public:
 	~ScopedLibrary()
 	{
 		StyleLibrary::instance().replaceAll({});
+		for (const DividerPreset &preset : StyleLibrary::instance().dividers())
+			StyleLibrary::instance().removeDivider(preset.name);
 		StyleLibrary::instance().setFilePath(QString());
 	}
 
@@ -463,4 +465,71 @@ CT_SUITE(style_library_rename_file, "The rename trail is part of the library fil
 	check(migrated, "loading reports that the document was brought up to date");
 	checkEq(reloaded.stylePresets.first().name, QStringLiteral("Titles"), "under the new name");
 	checkEq(reloaded.sections.first().stylePresetName, QStringLiteral("Titles"), "with its binding moved");
+}
+
+CT_SUITE(style_library_dividers, "Dividers saved to the machine-wide library")
+{
+	ScopedLibrary scope;
+	check(scope.isValid(), "a temporary library file");
+	StyleLibrary &library = StyleLibrary::instance();
+
+	/* A divider worth saving: two lanes, a color of its own, not symmetric, drawing itself on. */
+	Section source = Section::makeDefault(SectionType::SectionDivider);
+	Divider figure = source.divider;
+	figure.symmetric = false;
+	figure.lanes.append(figure.lanes.first());
+	figure.lanes[1].thickness = 1.5;
+	figure.lanes[0].elements[0].ownColor = true;
+	figure.lanes[0].elements[0].color = QColor(200, 150, 20);
+	figure.reveal = DividerReveal::FromLeft;
+
+	library.set(QStringLiteral("Heading"), styleAt(40, Qt::white));
+	library.setDivider(QStringLiteral("Gold arrows"), figure);
+	check(library.containsDivider(QStringLiteral("Gold arrows")), "a saved divider is in the library");
+
+	/* Read back from the file, as another scene collection on the machine would see it. */
+	library.load();
+	Divider loaded;
+	check(library.findDivider(QStringLiteral("Gold arrows"), &loaded), "and in the file");
+	check(loaded == figure, "every field of it, exactly");
+	check(library.contains(QStringLiteral("Heading")), "beside the styles, which it leaves alone");
+
+	/* Saving under the same name replaces; a name is trimmed, and an empty one is refused. */
+	Divider plain = plainDivider();
+	library.setDivider(QStringLiteral("  Gold arrows "), plain);
+	checkEq(library.dividers().size(), 1, "saving under a taken name replaces rather than adds");
+	library.findDivider(QStringLiteral("Gold arrows"), &loaded);
+	check(loaded == plain, "with the new divider");
+	library.setDivider(QStringLiteral("   "), figure);
+	checkEq(library.dividers().size(), 1, "an empty name is not saved");
+
+	/* Rename, refusing a name that is taken; then remove. */
+	library.setDivider(QStringLiteral("Second"), figure);
+	library.renameDivider(QStringLiteral("Second"), QStringLiteral("Gold arrows"));
+	check(library.containsDivider(QStringLiteral("Second")), "a rename onto a taken name does nothing");
+	library.renameDivider(QStringLiteral("Second"), QStringLiteral("Third"));
+	check(library.containsDivider(QStringLiteral("Third")) && !library.containsDivider(QStringLiteral("Second")),
+	      "a rename moves it");
+	library.load();
+	check(library.containsDivider(QStringLiteral("Third")), "and the rename is in the file");
+	library.removeDivider(QStringLiteral("Third"));
+	library.load();
+	check(!library.containsDivider(QStringLiteral("Third")), "a removal is in the file too");
+
+	/* A hand-edited file with an unnamed entry and a duplicate keeps one of each name. */
+	{
+		QFile file(scope.path());
+		check(file.open(QIODevice::WriteOnly), "the file can be written by hand");
+		file.write(R"({"divider_presets": [
+			{"name": "", "divider": {}},
+			{"name": "Kept", "divider": {"symmetric": false}},
+			{"name": "Kept", "divider": {"symmetric": true}}
+		]})");
+		file.close();
+	}
+	library.load();
+	checkEq(library.dividers().size(), 1, "unnamed and duplicate entries are dropped");
+	library.findDivider(QStringLiteral("Kept"), &loaded);
+	check(!loaded.symmetric, "the first of a duplicate name is the one kept");
+	check(!loaded.lanes.isEmpty(), "and a divider read from a file always has a lane");
 }

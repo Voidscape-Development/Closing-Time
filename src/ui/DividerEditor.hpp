@@ -33,6 +33,7 @@ class QFormLayout;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPushButton;
 class QSpinBox;
 class QTabBar;
@@ -64,11 +65,19 @@ public:
 	void setImage(const QImage &image);
 	QSize sizeHint() const override;
 
+	/* Plays a draw-on across the picture once, so a reveal can be seen without running the roll. */
+	void playReveal(DividerReveal mode);
+
 protected:
 	void paintEvent(QPaintEvent *event) override;
 
 private:
 	QImage picture;
+	DividerReveal revealMode = DividerReveal::None;
+	/* 0 to 1 while a reveal plays; 1 when it is not playing. */
+	double revealProgress = 1.0;
+	QTimer *revealTimer = nullptr;
+	qint64 revealStartedMs = 0;
 };
 
 /*
@@ -246,6 +255,12 @@ private:
 	void rebuildTrack();
 	void refreshInspector();
 	void refreshDesign();
+	/* Fills the design picker: the built-in designs, then the ones saved to the library. */
+	void rebuildDesignPicker();
+	void rebuildDesignMenu();
+	void saveDesign();
+	void renameSavedDesign(const QString &name);
+	void deleteSavedDesign(const QString &name);
 	void renderPreview();
 
 	void insertElement(int at, const DividerElement &added);
@@ -270,6 +285,11 @@ private:
 	QTimer *previewTimer = nullptr;
 
 	QComboBox *design = nullptr;
+	/* Save, rename and delete the dividers saved to the library. */
+	QToolButton *designMenuButton = nullptr;
+	QMenu *designMenu = nullptr;
+	/* The library's serial when the picker was last filled, so a change made elsewhere shows up. */
+	quint64 pickerSerial = ~0ULL;
 	QCheckBox *symmetric = nullptr;
 	DividerPreview *preview = nullptr;
 	DividerPalette *palette = nullptr;
@@ -318,6 +338,13 @@ private:
 	QSpinBox *lengthBox = nullptr;
 	QComboBox *alignBox = nullptr;
 	QCheckBox *tintBox = nullptr;
+
+	/* The draw-on. */
+	QFormLayout *revealForm = nullptr;
+	QComboBox *revealBox = nullptr;
+	QSpinBox *revealStartBox = nullptr;
+	QSpinBox *revealLengthBox = nullptr;
+	QToolButton *revealPlay = nullptr;
 };
 
 /* A divider shape's name, through the locale table. Shared with anything else that lists shapes. */

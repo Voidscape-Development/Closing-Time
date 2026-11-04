@@ -163,6 +163,42 @@ QVector<DividerElement> legacyEnd(obs_data_t *data, const char *key, const char 
 
 } // namespace
 
+namespace {
+
+struct RevealInfo {
+	DividerReveal reveal;
+	const char *id;
+};
+
+constexpr RevealInfo kReveals[] = {
+	{DividerReveal::None, "none"},
+	{DividerReveal::FromCenter, "center"},
+	{DividerReveal::FromLeft, "left"},
+	{DividerReveal::FromRight, "right"},
+};
+
+} // namespace
+
+const char *dividerRevealId(DividerReveal reveal)
+{
+	for (const auto &info : kReveals) {
+		if (info.reveal == reveal)
+			return info.id;
+	}
+	return kReveals[0].id;
+}
+
+DividerReveal dividerRevealFromId(const char *id, DividerReveal fallback)
+{
+	if (!id)
+		return fallback;
+	for (const auto &info : kReveals) {
+		if (std::strcmp(info.id, id) == 0)
+			return info.reveal;
+	}
+	return fallback;
+}
+
 const char *dividerElementKindId(DividerElement::Kind kind)
 {
 	for (const auto &info : kElementKinds) {
@@ -341,6 +377,9 @@ void Divider::save(obs_data_t *data) const
 	obs_data_set_double(data, "length", length);
 	obs_data_set_string(data, "align", hAlignId(align));
 	obs_data_set_bool(data, "tint", tint);
+	obs_data_set_string(data, "reveal", dividerRevealId(reveal));
+	obs_data_set_double(data, "reveal_start", revealStart);
+	obs_data_set_double(data, "reveal_length", revealLength);
 }
 
 void Divider::load(obs_data_t *data)
@@ -363,6 +402,11 @@ void Divider::load(obs_data_t *data)
 	length = std::clamp(numberOr(data, "length", 1.0), 0.01, 1.0);
 	align = hAlignFromId(obs_data_get_string(data, "align"), HAlign::Center);
 	tint = boolOr(data, "tint", true);
+	reveal = dividerRevealFromId(obs_data_get_string(data, "reveal"), DividerReveal::None);
+	/* A start above the top edge would never be reached, and one far below it is already passed. */
+	revealStart = std::clamp(numberOr(data, "reveal_start", 0.95), 0.0, 1.5);
+	/* Zero is a cut: the divider appears whole the moment it crosses the start line. */
+	revealLength = std::clamp(numberOr(data, "reveal_length", 0.2), 0.0, 2.0);
 }
 
 Divider plainDivider()

@@ -103,6 +103,11 @@ nudged above or below the line, run under its neighbours so the figure reads as 
 to be left out when the divider is too narrow for it. Every shape knows its own proportion to the
 line it sits on, so an arrowhead stays an arrowhead when a lane is made heavier.
 
+A divider can also **draw itself on** as it scrolls into frame — growing from its center, or drawn
+from the left or the right — and the moment and length of the sweep are set by where it is on the
+frame, so it looks the same at any scroll speed. Any divider you build can be **saved to your
+library** and picked again in any roll on the machine.
+
 In the editor, a live preview sits over a palette of every part. Drag a part onto a lane to add it,
 drag it along the lane to reorder, drag a line's edge to give it more of the room, and drag a part
 back onto the palette to remove it.

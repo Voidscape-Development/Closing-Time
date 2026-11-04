@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "harness/Probe.hpp"
 
 #include "model/DividerDesigns.hpp"
+#include "render/RollCompositor.hpp"
 
 #include <obs.hpp>
 
@@ -634,4 +635,117 @@ CT_SUITE(divider_legacy_draws, "An old divider draws after it is brought into la
 	if (!heading.divider.lanes.isEmpty() && !heading.divider.lanes.first().elements.isEmpty())
 		check(heading.divider.lanes.first().elements.first().kind == DividerElement::Kind::Text,
 		      "and the word leads the row, as it led the rule");
+}
+
+namespace {
+
+LogoCache &revealLogos()
+{
+	static LogoCache cache;
+	return cache;
+}
+
+/* The columns a divider's layer is drawn across, with the divider's middle at `anchorY` on the canvas. */
+QPair<double, double> drawnColumns(const RollLayout &layout, int layerIndex, double anchorY, bool *any,
+				   int canvasHeight = 1000)
+{
+	const RollLayer &layer = layout.layers.at(layerIndex);
+	RollFrame frame;
+	/* Where the strip has to be for the anchor to sit at `anchorY`: stripTop + anchor = anchorY. */
+	frame.offset = canvasHeight + layer.reveal.anchor - anchorY;
+	const DrawList list = composeFrame(layout, frame, ComposeView::canvas(frame, canvasHeight));
+
+	double left = 1e9;
+	double right = -1e9;
+	*any = false;
+	for (const DrawItem &item : list) {
+		if (item.source.kind != DrawSource::Kind::Chunk || item.source.layer != layerIndex)
+			continue;
+		*any = true;
+		left = std::min(left, item.target.left());
+		right = std::max(right, item.target.right());
+	}
+	return {left, right};
+}
+
+} // namespace
+
+CT_SUITE(divider_reveal, "A divider drawing itself on as it scrolls into frame")
+{
+	Section section = divider({lane({shape(DividerShape::Arrow), line(), shape(DividerShape::Diamond)})});
+	section.paddingTop = section.paddingBottom = 40;
+	section.divider.length = 0.5;
+	section.divider.reveal = DividerReveal::FromCenter;
+	section.divider.revealStart = 0.9;
+	section.divider.revealLength = 0.25;
+
+	Document document = documentWith({section});
+	document.height = 1000;
+	const RollLayoutPtr layout = RollRenderer(&revealLogos()).layout(document);
+	check(layout && layout->layers.size() == 1, "the divider is a layer of its own");
+	if (!layout || layout->layers.size() != 1)
+		return;
+
+	const LayerReveal &reveal = layout->layers.first().reveal;
+	check(reveal.active(), "and carries its reveal");
+	checkNear(reveal.right - reveal.left, document.width * 0.5, 1.0, "across the divider's own box");
+	const double middle = (reveal.left + reveal.right) / 2.0;
+
+	bool any = false;
+	drawnColumns(*layout, 0, 950.0, &any);
+	check(!any, "below the start line nothing of it is drawn");
+
+	/* Halfway: the anchor has risen half the length past the start line. */
+	const QPair<double, double> half = drawnColumns(*layout, 0, 900.0 - 0.125 * 1000.0, &any);
+	check(any, "partway, some of it is drawn");
+	checkNear((half.first + half.second) / 2.0, middle, 1.5, "from the center, it grows about its middle");
+	const double fullWidth = reveal.right - reveal.left + 2.0 * reveal.bleed;
+	checkNear(half.second - half.first, fullWidth / 2.0, 2.0, "and is half drawn halfway through");
+
+	const QPair<double, double> done = drawnColumns(*layout, 0, 500.0, &any);
+	check(any, "once complete it is drawn");
+	checkNear(done.first, 0.0, 0.5, "the whole picture, uncut");
+	checkNear(done.second, layout->layers.first().width, 1.0, "edge to edge");
+
+	/* From the left: the drawn span starts at the box's left edge and grows rightward. */
+	Section leftward = section;
+	leftward.divider.reveal = DividerReveal::FromLeft;
+	Document leftDocument = documentWith({leftward});
+	leftDocument.height = 1000;
+	const RollLayoutPtr leftLayout = RollRenderer(&revealLogos()).layout(leftDocument);
+	const LayerReveal &leftReveal = leftLayout->layers.first().reveal;
+	const QPair<double, double> pen = drawnColumns(*leftLayout, 0, 900.0 - 0.125 * 1000.0, &any);
+	checkNear(pen.first, leftReveal.left - leftReveal.bleed, 1.0, "from the left, it starts at the left edge");
+	check(pen.second < (leftReveal.left + leftReveal.right) / 2.0 + 2.0, "and has reached about halfway");
+
+	/* The roll laid end to end -- the designer's overview -- shows every divider whole. */
+	ComposeView overview;
+	overview.blocks = ComposeView::Blocks::InSlots;
+	overview.clipTop = -1e9;
+	overview.clipBottom = 1e9;
+	bool whole = false;
+	for (const DrawItem &item : composeFrame(*layout, RollFrame(), overview))
+		whole = whole || (item.target.left() <= 0.5 && item.target.right() >= layout->width - 1.0);
+	check(whole, "a view that is not the canvas shows it whole");
+
+	/* No reveal, no cut; and the picture is the same picture either way. */
+	Section plain = section;
+	plain.divider.reveal = DividerReveal::None;
+	Document plainDocument = documentWith({plain});
+	plainDocument.height = 1000;
+	const RollLayoutPtr plainLayout = RollRenderer(&revealLogos()).layout(plainDocument);
+	check(!plainLayout->layers.first().reveal.active(), "a divider with no reveal carries none");
+	const QPair<double, double> early = drawnColumns(*plainLayout, 0, 950.0, &any);
+	check(any && early.first <= 0.5, "and is drawn whole as soon as it is on the canvas");
+	checkEq(plainLayout->layers.first().key, layout->layers.first().key,
+		"a reveal does not change the picture, so the picture is not drawn again");
+
+	/* Saved and loaded with everything else. */
+	OBSDataAutoRelease data = obs_data_create();
+	section.save(data);
+	Section loaded;
+	loaded.load(data);
+	check(loaded.divider.reveal == DividerReveal::FromCenter, "the reveal is saved");
+	checkNear(loaded.divider.revealStart, 0.9, 0.0001, "with where it starts");
+	checkNear(loaded.divider.revealLength, 0.25, 0.0001, "and how long it takes");
 }

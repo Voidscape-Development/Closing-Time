@@ -488,6 +488,32 @@ with one lane, a built-in shape's leftover file), so a divider is not called cha
 it cannot show. `Section::makeDefault` takes its divider from this table, so a new one is a design
 too.
 
+**A divider can draw itself on.** `Divider::reveal` sweeps it in from the center, the left or the
+right as it scrolls into frame. It is driven by the divider's *position on the canvas* rather than
+by a clock, so it looks the same at any scroll speed, paused, or scrubbed to by hand: it begins
+when the divider's middle rises past `revealStart` of the way down the canvas and is complete once
+it has risen a further `revealLength` of the canvas height. Both are shares of the frame rather than
+seconds, which also keeps them correct after a speed change — scroll speed is not part of the
+layout, so a time-based reveal would go stale without a rebuild.
+
+None of it touches the picture. The layout gives a top-level divider's layer a `LayerReveal` — its
+own box, found by running the section's layout once more through a box collector, its bleed, and
+its anchor — and `composeFrame` cuts that layer's draws horizontally to the span drawn so far,
+cutting the source rectangle by the same share. Every consumer already executes draw items as
+target and source rectangles, so the GPU source, the designer's playback and a scrub all show the
+same reveal from one implementation. An animated image inside a revealing divider is cut with it.
+A view that is not the canvas — the designer's roll laid end to end — leaves `canvasHeight` at zero
+and shows every divider whole. The reveal is left out of the layer key, because changing it changes
+how much of the picture is shown, never the picture. A divider inside a sticky block is part of
+the block's picture and arrives with the block.
+
+**Saved dividers live in the machine-wide library** alongside styles and backgrounds, as a
+`divider_presets` array in the same file. A saved divider is a copy rather than a binding — picking
+one writes its figure into the section exactly as a built-in design does — so unlike a style it
+needs no rename trail: no document holds its name. The design picker lists the built-in designs and
+then the saved ones under a heading of their own, rebuilt whenever the library's serial moves, and
+names a divider after the saved design it matches when no built-in one does.
+
 ### Title and subtitle rows### Title and subtitle rows
 
 A `TitleSubtitleList` entry is two texts stacked rather than two texts on a line: `text` above
@@ -1857,6 +1883,11 @@ same reason: reporting it would send the user after a font nothing uses.
   of its own, nudged off the line, flipped, turned, given a minimum length, or marked to be dropped
   when there is no room; the divider itself has a length and a placement. Older dividers are
   brought into lanes on load and draw as they did.
+- A divider can draw itself on as it scrolls into frame — from the center, the left or the right —
+  placed by where it is on the frame, so it looks the same at any speed and when scrubbed. The
+  editor's preview plays it.
+- Dividers can be saved to the machine-wide library and picked again in any roll on the machine;
+  saved ones are renamed and deleted from the same menu.
 - The divider editor is built around dragging. A live preview drawn by the real renderer sits over
   a palette of every line, shape, word and image; parts are dragged onto a lane, dragged to reorder,
   dragged back onto the palette to remove, and a line's edge is dragged to give it more of the
@@ -2021,13 +2052,26 @@ and every line drawn inside its box; and every design picked onto a divider set 
 else, keeping the section's own length, alignment, tint, padding and style, drawing inside its box,
 and reloading as the same design.
 
+The draw-on was checked through the compositor itself: nothing of a revealing divider drawn below its
+start line; halfway through its length, half of it drawn and centered on its own middle when it
+grows from the center, or starting at its left edge when drawn from the left; the whole picture
+uncut once complete; every divider whole in a view that is not the canvas; a divider with no reveal
+drawn whole as soon as it is on the canvas; a reveal leaving the picture's key unchanged; and the
+reveal saved and loaded. Saved dividers were checked through the library file: every field of a
+two-lane, two-color, non-symmetric, revealing divider read back exactly beside the styles; a save
+under a taken name replacing it; an empty name refused; a rename onto a taken name doing nothing;
+renames and removals reaching the file; and a hand-edited file's unnamed and duplicate entries
+dropped.
+
 The editor was driven offscreen as well: a part dropped onto the track through a real drag-enter,
 drag-move and drop landing where it was dropped; moving it, clicking a palette tile to add after the
 selection, and dropping chips back on the palette to remove them; the design picker falling back to
 "your own design" on an edit and naming the design again when the edit was undone; a line's edge
 dragged to a new weight; a color, a new lane and a lane's own thickness set from the inspector;
 symmetry switched off; a round trip through the section editor keeping the divider and the
-selected lane; and Delete removing the selected part.
+selected lane; Delete removing the selected part; a saved divider appearing in the picker and naming
+the divider it matches, and being picked back after a built-in design; and a reveal surviving a
+design pick.
 
 Row geometry and the section box were checked the same way, against the previous build as well
 as the new one so that each case is known to fail before it passes: every bridged row staying on
