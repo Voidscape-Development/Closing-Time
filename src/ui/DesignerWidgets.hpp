@@ -86,6 +86,10 @@ QPixmap infoPixmap(int size, const QColor &color, qreal devicePixelRatio);
 /* Undo and redo arrows, drawn rather than taken from a theme that may not carry them. */
 QIcon undoIcon(bool redo, const QColor &color);
 
+/* The preview transport's icons, in the button text colour so they never read as disabled. */
+enum class TransportIcon { Play, Pause, Stop };
+QIcon transportIcon(TransportIcon kind, const QColor &color);
+
 /* An open eye, or one struck through, for the list's show and hide control. */
 void paintEye(QPainter &painter, const QRectF &rect, bool open, const QColor &color);
 

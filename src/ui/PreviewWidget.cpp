@@ -190,12 +190,13 @@ void PreviewWidget::setLayoutBoxesVisible(bool visible)
 	update();
 }
 
-void PreviewWidget::setHighlightedSection(int index)
+void PreviewWidget::setHighlightedSection(int index, const QString &label)
 {
-	if (index == highlightedSection)
+	if (index == highlightedSection && label == highlightedLabel)
 		return;
 
 	highlightedSection = index;
+	highlightedLabel = label;
 	update();
 }
 
@@ -611,6 +612,29 @@ void PreviewWidget::paintSelection(QPainter &painter) const
 			QColor accent = palette().color(QPalette::Highlight).lighter(130);
 			painter.setPen(QPen(accent, 1.5));
 			painter.drawRoundedRect(selected.adjusted(1.5, 0.5, -1.5, -0.5), 3, 3);
+
+			/*
+			 * The section's name on a tab at the outline's corner, inside the box when the box
+			 * starts at the top of the pane, so the tag is never drawn off the top.
+			 */
+			if (!highlightedLabel.isEmpty()) {
+				QFont font = painter.font();
+				font.setPointSizeF(std::max(7.0, font.pointSizeF() * 0.85));
+				painter.setFont(font);
+				const QFontMetrics metrics(font);
+				const QString text = metrics.elidedText(highlightedLabel, Qt::ElideRight,
+									std::max(40, qRound(selected.width()) - 8));
+				const qreal tagHeight = metrics.height() + 2;
+				const qreal top = selected.top() - tagHeight >= 0 ? selected.top() - tagHeight + 0.5
+										  : selected.top() + 1.5;
+				const QRectF tag(std::max(selected.left(), 0.0) + 1.5, top,
+						 metrics.horizontalAdvance(text) + 10, tagHeight);
+				painter.setPen(Qt::NoPen);
+				painter.setBrush(accent);
+				painter.drawRoundedRect(tag, 2, 2);
+				painter.setPen(Qt::white);
+				painter.drawText(tag.adjusted(5, 0, -5, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
+			}
 		}
 	}
 
@@ -677,7 +701,7 @@ void PreviewWidget::paintPlayback(QPainter &painter, const QRect &canvasColumn)
 
 	if (onAir.bottom() + 24 < height()) {
 		QColor hint = palette().color(QPalette::WindowText);
-		hint.setAlphaF(0.55);
+		hint.setAlphaF(0.55f);
 		painter.setPen(hint);
 		painter.drawText(QRect(0, onAir.bottom() + 8, width(), 40),
 				 Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap,

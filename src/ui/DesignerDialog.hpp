@@ -394,6 +394,8 @@ private:
 
 	/* Which section the preview should highlight for a path: a child highlights its own block. */
 	int highlightFor(const SectionPath &path) const;
+	/* Outlines the selection in the preview, with its name on the outline. */
+	void highlightCurrentSection();
 
 	int currentRow = -1;
 	SectionPath currentPath;

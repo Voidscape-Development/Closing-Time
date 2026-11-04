@@ -966,6 +966,13 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	subtitleEdit->setMaximumHeight(80);
 	addRow(moduleText("Designer.Subtitle"), subtitleEdit);
 
+	addLogoSlot = new QPushButton(moduleText("Designer.AddLogoSlot"), this);
+	addLogoSlot->setObjectName(QStringLiteral("designerEmptySlot"));
+	addLogoSlot->setToolTip(moduleText("Designer.TypeLogo.Tip"));
+	addLogoSlot->setCursor(Qt::PointingHandCursor);
+	addRow(QString(), addLogoSlot);
+	connect(addLogoSlot, &QPushButton::clicked, this, [this] { typeLogo->setChecked(true); });
+
 	auto *logoRow = new QWidget(this);
 	auto *logoLayout = new QHBoxLayout(logoRow);
 	logoLayout->setContentsMargins(0, 0, 0, 0);
@@ -2344,6 +2351,7 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	setRowVisible(subtitleEdit, singleLineText && sectionUsesSubtitles(type));
 	setRowVisible(logoPath->parentWidget(), sectionLogo);
+	setRowVisible(addLogoSlot, heading && !typeLogo->isChecked() && !typeLogoOnly->isChecked());
 	setRowVisible(logoHeight, sectionLogo);
 	/*
 	 * Hidden here and shown again by refreshLogoPlayback, which is the one that knows whether the

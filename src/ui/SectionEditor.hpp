@@ -458,6 +458,11 @@ private:
 	/* The second line of a "... w/ Subtitle" heading; a list's subtitles live in the entry table. */
 	QPlainTextEdit *subtitleEdit = nullptr;
 
+	/*
+	 * A dashed slot under a heading's words offering a logo beside them -- the "+ Logo" chip said
+	 * again, where somebody looking at the words will see it.
+	 */
+	QPushButton *addLogoSlot = nullptr;
 	QLineEdit *logoPath = nullptr;
 	QToolButton *logoBrowse = nullptr;
 	QSpinBox *logoHeight = nullptr;

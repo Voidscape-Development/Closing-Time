@@ -203,7 +203,7 @@ public:
 
 		QColor text = palette.color(QPalette::Text);
 		QColor dim = text;
-		dim.setAlphaF(0.6);
+		dim.setAlphaF(0.6f);
 
 		/* A child's guide line, down from its block's badge and across to its own. */
 		if (depth > 0) {
@@ -984,11 +984,11 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	auto *transport = new QHBoxLayout();
 	transport->setSpacing(6);
 	playButton = new QToolButton(previewBody);
-	playButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+	playButton->setIcon(transportIcon(TransportIcon::Play, iconColor));
 	playButton->setToolTip(moduleText("Designer.Preview.Play.Tip"));
 	playButton->setAutoRaise(true);
 	stopButton = new QToolButton(previewBody);
-	stopButton->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+	stopButton->setIcon(transportIcon(TransportIcon::Stop, iconColor));
 	stopButton->setToolTip(moduleText("Designer.Preview.Stop.Tip"));
 	stopButton->setAutoRaise(true);
 	stopButton->setEnabled(false);
@@ -1486,7 +1486,8 @@ void DesignerDialog::setPlaying(bool play)
 		playTimer->stop();
 	}
 
-	playButton->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+	playButton->setIcon(transportIcon(playing ? TransportIcon::Pause : TransportIcon::Play,
+					  palette().color(QPalette::ButtonText)));
 	playButton->setToolTip(moduleText(playing ? "Designer.Preview.Pause.Tip" : "Designer.Preview.Play.Tip"));
 	stopButton->setEnabled(playing || preview->isShowingPlayback());
 }
@@ -1598,6 +1599,19 @@ void DesignerDialog::removeSectionAt(const SectionPath &path)
 	children.erase(children.begin() + path.index);
 }
 
+void DesignerDialog::highlightCurrentSection()
+{
+	if (!currentPath.isValid()) {
+		preview->setHighlightedSection(-1);
+		return;
+	}
+
+	/* Named after what the preview outlines, which for a child is its whole block. */
+	const int index = highlightFor(currentPath);
+	const Section *outlined = sectionAt(SectionPath{-1, index});
+	preview->setHighlightedSection(index, outlined ? outlined->displayLabel() : QString());
+}
+
 int DesignerDialog::highlightFor(const SectionPath &path) const
 {
 	/*
@@ -1697,7 +1711,7 @@ void DesignerDialog::refreshSectionList(int selectRow)
 	currentRow = row;
 	currentPath = row >= 0 ? rowPaths.at(row) : SectionPath{};
 	/* Set here as well as on selection: this path moves the row with the list's signals blocked. */
-	preview->setHighlightedSection(row >= 0 ? highlightFor(currentPath) : -1);
+	highlightCurrentSection();
 
 	if (const Section *section = sectionAt(currentPath))
 		editor->setSection(*section);
@@ -1920,7 +1934,7 @@ void DesignerDialog::onSelectionChanged()
 	currentRow = row;
 	currentPath = row >= 0 && row < rowPaths.size() ? rowPaths.at(row) : SectionPath{};
 	editor->setEnabled(row >= 0);
-	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
+	highlightCurrentSection();
 
 	if (const Section *section = sectionAt(currentPath))
 		editor->setSection(*section);
@@ -2499,7 +2513,7 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 
 	shownLayout = layout;
 	preview->setLayout(layout, rendered.background);
-	preview->setHighlightedSection(currentPath.isValid() ? highlightFor(currentPath) : -1);
+	highlightCurrentSection();
 
 	/*
 	 * How long the roll runs is the timeline's answer, which counts what the strip's height alone

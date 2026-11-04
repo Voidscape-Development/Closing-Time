@@ -148,7 +148,7 @@ void GalleryTile::paintEvent(QPaintEvent *)
 			 Qt::AlignLeft | Qt::AlignVCenter, name);
 
 	QColor dim = palette().color(QPalette::Text);
-	dim.setAlphaF(0.62);
+	dim.setAlphaF(0.62f);
 	painter.setFont(font());
 	painter.setPen(dim);
 	painter.drawText(QRectF(thumb.left(), nameTop + boldMetrics.height() + 2, thumb.width(),

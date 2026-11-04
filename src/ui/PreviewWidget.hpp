@@ -64,8 +64,11 @@ public:
 	 */
 	void setLayoutBoxesVisible(bool visible);
 
-	/* The section drawn at full strength; every other one is dimmed. -1 highlights none. */
-	void setHighlightedSection(int index);
+	/*
+	 * The section drawn at full strength; every other one is dimmed. -1 highlights none. `label`
+	 * is the name tagged onto its outline, so the pane says which section is being edited.
+	 */
+	void setHighlightedSection(int index, const QString &label = QString());
 
 	/*
 	 * Runs the animated logos.
@@ -159,6 +162,7 @@ private:
 	QColor background = QColor(0, 0, 0, 0);
 	bool layoutBoxesVisible = false;
 	int highlightedSection = -1;
+	QString highlightedLabel;
 	int hoveredSection = -1;
 	int scroll = 0;
 	Zoom zoom = Zoom::Fit;

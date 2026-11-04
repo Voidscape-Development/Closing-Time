@@ -37,6 +37,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 namespace closingtime {
 
@@ -72,14 +73,16 @@ QSettings &uiSettings()
 	 * Beside the plugin's other per-machine files. obs_module_config_path hands back an allocation
 	 * of its own, which is copied and freed at once rather than held.
 	 */
-	static QSettings settings = [] {
+	/* Held by pointer: QSettings cannot be copied or moved, so it is built where it will live. */
+	static const std::unique_ptr<QSettings> settings = [] {
 		char *raw = obs_module_config_path("designer-ui.ini");
 		const QString path = raw ? QString::fromUtf8(raw) : QString();
 		bfree(raw);
-		return path.isEmpty() ? QSettings(QStringLiteral("Voidscape"), QStringLiteral("ClosingTime"))
-				      : QSettings(path, QSettings::IniFormat);
+		return path.isEmpty()
+			       ? std::make_unique<QSettings>(QStringLiteral("Voidscape"), QStringLiteral("ClosingTime"))
+			       : std::make_unique<QSettings>(path, QSettings::IniFormat);
 	}();
-	return settings;
+	return *settings;
 }
 
 } // namespace
@@ -522,6 +525,48 @@ QIcon undoIcon(bool redo, const QColor &color)
 	return icon;
 }
 
+QIcon transportIcon(TransportIcon kind, const QColor &color)
+{
+	QIcon icon;
+
+	for (const qreal dpr : {1.0, 2.0}) {
+		for (const QIcon::Mode mode : {QIcon::Normal, QIcon::Disabled}) {
+			QPixmap pixmap(QSize(16, 16) * dpr);
+			pixmap.setDevicePixelRatio(dpr);
+			pixmap.fill(Qt::transparent);
+
+			QPainter painter(&pixmap);
+			painter.setRenderHint(QPainter::Antialiasing);
+			painter.setOpacity(mode == QIcon::Disabled ? 0.35 : 1.0);
+			painter.setPen(Qt::NoPen);
+			painter.setBrush(color);
+
+			switch (kind) {
+			case TransportIcon::Play: {
+				QPainterPath play;
+				play.moveTo(4.5, 3);
+				play.lineTo(13, 8);
+				play.lineTo(4.5, 13);
+				play.closeSubpath();
+				painter.drawPath(play);
+				break;
+			}
+			case TransportIcon::Pause:
+				painter.drawRoundedRect(QRectF(4, 3, 3, 10), 0.8, 0.8);
+				painter.drawRoundedRect(QRectF(9, 3, 3, 10), 0.8, 0.8);
+				break;
+			case TransportIcon::Stop:
+				painter.drawRoundedRect(QRectF(4, 4, 8, 8), 1.2, 1.2);
+				break;
+			}
+			painter.end();
+			icon.addPixmap(pixmap, mode);
+		}
+	}
+
+	return icon;
+}
+
 void paintEye(QPainter &painter, const QRectF &rect, bool open, const QColor &color)
 {
 	painter.save();
@@ -554,7 +599,7 @@ void styleAsHint(QWidget *widget)
 {
 	QPalette palette = widget->palette();
 	QColor text = palette.color(QPalette::WindowText);
-	text.setAlphaF(0.62);
+	text.setAlphaF(0.62f);
 	palette.setColor(QPalette::WindowText, text);
 	palette.setColor(QPalette::Text, text);
 	widget->setPalette(palette);
@@ -1107,6 +1152,14 @@ QPushButton#designerPrimary {
 	padding: 4px 16px;
 	font-weight: 600;
 }
+QPushButton#designerEmptySlot {
+	border: 1px dashed palette(mid);
+	border-radius: 6px;
+	padding: 9px 12px;
+	text-align: left;
+	background: transparent;
+}
+QPushButton#designerEmptySlot:hover { border-color: palette(highlight); }
 QToolButton#designerAddSection {
 	border: 1px solid rgba(90, 130, 240, 140);
 	border-radius: 5px;
