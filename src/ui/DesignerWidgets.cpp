@@ -26,12 +26,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QEnterEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPlainTextEdit>
 #include <QResizeEvent>
 #include <QSettings>
 #include <QSpinBox>
+#include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
 
@@ -603,6 +606,36 @@ void styleAsHint(QWidget *widget)
 	palette.setColor(QPalette::WindowText, text);
 	palette.setColor(QPalette::Text, text);
 	widget->setPalette(palette);
+}
+
+void applyReadablePlaceholder(QWidget *field)
+{
+	QColor placeholder = QApplication::palette(field).color(QPalette::Active, QPalette::Text);
+	placeholder.setAlphaF(0.55f);
+
+	/*
+	 * Set on the field itself, after it has been polished: under a stylesheet -- the designer's,
+	 * or an OBS theme's -- polishing rebuilds a widget's palette and drops anything it inherited.
+	 */
+	QPalette palette = field->palette();
+	for (const QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled})
+		palette.setColor(group, QPalette::PlaceholderText, placeholder);
+	field->setPalette(palette);
+}
+
+void applyReadablePlaceholders(QWidget *root)
+{
+	const auto apply = [](QWidget *field) {
+		field->ensurePolished();
+		applyReadablePlaceholder(field);
+	};
+
+	for (QLineEdit *field : root->findChildren<QLineEdit *>())
+		apply(field);
+	for (QPlainTextEdit *field : root->findChildren<QPlainTextEdit *>())
+		apply(field);
+	for (QTextEdit *field : root->findChildren<QTextEdit *>())
+		apply(field);
 }
 
 /* --- remembered view state ------------------------------------------------------------------- */

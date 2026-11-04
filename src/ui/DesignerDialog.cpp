@@ -287,6 +287,8 @@ public:
 	{
 		auto *edit = new QLineEdit(parent);
 		edit->setFrame(true);
+		edit->ensurePolished();
+		applyReadablePlaceholder(edit);
 		return edit;
 	}
 
@@ -1187,6 +1189,22 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 
 	loadFromSource();
 	refreshUndoButtons();
+}
+
+void DesignerDialog::changeEvent(QEvent *event)
+{
+	QDialog::changeEvent(event);
+
+	if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::StyleChange)
+		applyReadablePlaceholders(this);
+}
+
+void DesignerDialog::showEvent(QShowEvent *event)
+{
+	QDialog::showEvent(event);
+
+	/* Here rather than in the constructor: the fields are polished by now, and keep what is set. */
+	applyReadablePlaceholders(this);
 }
 
 void DesignerDialog::reloadStyleLibrary()

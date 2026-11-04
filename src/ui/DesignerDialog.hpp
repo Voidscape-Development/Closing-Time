@@ -147,6 +147,9 @@ public:
 
 protected:
 	void keyPressEvent(QKeyEvent *event) override;
+	/* Re-derives the placeholder colour when OBS switches theme under an open window. */
+	void changeEvent(QEvent *event) override;
+	void showEvent(QShowEvent *event) override;
 
 private:
 	void loadFromSource();

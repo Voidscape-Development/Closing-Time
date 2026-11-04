@@ -96,6 +96,17 @@ void paintEye(QPainter &painter, const QRectF &rect, bool open, const QColor &co
 /* Fades a label's text to the secondary weight used for hints and second lines. */
 void styleAsHint(QWidget *widget);
 
+/*
+ * Gives a text field a placeholder colour drawn from the theme's own text colour.
+ *
+ * Qt's placeholder colour is a palette role many themes never set, and its fallback is dark: on a
+ * dark theme an unnamed section's name -- shown as the placeholder of the name field -- came out
+ * near-black on near-black. Only that one role changes, so everything else follows the theme.
+ */
+void applyReadablePlaceholder(QWidget *field);
+/* The same for every line and text edit under `root`, windows included. */
+void applyReadablePlaceholders(QWidget *root);
+
 /* --- remembered view state ------------------------------------------------------------------- */
 
 /*

@@ -244,6 +244,7 @@ void AddSectionGallery::popup(QWidget *anchor, const QString &insertHint)
 
 	move(at);
 	show();
+	applyReadablePlaceholder(search);
 	search->setFocus();
 }
 
