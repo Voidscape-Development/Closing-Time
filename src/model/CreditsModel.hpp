@@ -886,6 +886,17 @@ struct Section {
 
 	/* What sits between the two arms, in order, left to right. Empty is an unbroken rule. */
 	QVector<DividerPiece> dividerCenter;
+	/*
+	 * Where along the rule the center stack sits, 0.0 to 1.0. At the default 0.5 it is centered
+	 * on the section's own box -- exactly where every divider written before this existed draws
+	 * it. Toward 0 it slides left until it meets the left-hand end, toward 1 right until it meets
+	 * the right-hand one, so a label can lead a rule ("ACT II ———") or close it.
+	 *
+	 * Two straight runs meeting at the middle rather than one across the whole span, because the
+	 * middle of the box and the middle of the room between the two ends are different places
+	 * when the ends differ -- and 0.5 has to mean the one it always has.
+	 */
+	double dividerCenterPosition = 0.5;
 
 	/*
 	 * How many rules run in parallel, stacked about the divider's midline, and the vertical

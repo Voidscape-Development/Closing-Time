@@ -79,6 +79,7 @@ Section distinctive(SectionType type)
 	section.dividerRuleGap = 8.5;
 	section.dividerRuleInset = 12.5;
 	section.dividerTint = false;
+	section.dividerCenterPosition = 0.0;
 	section.dividerCenter = {
 		DividerPiece{DividerPiece::Kind::Text, DividerShape::Diamond, {}, 1.5, QStringLiteral("PART II"), {}}};
 	section.columns = 4;
@@ -217,6 +218,7 @@ void compare(const Section &loaded, const Section &original)
 	checkNear(loaded.dividerRuleGap, original.dividerRuleGap, 0.001, "dividerRuleGap");
 	checkNear(loaded.dividerRuleInset, original.dividerRuleInset, 0.001, "dividerRuleInset");
 	check(loaded.dividerTint == original.dividerTint, "dividerTint");
+	checkNear(loaded.dividerCenterPosition, original.dividerCenterPosition, 0.0001, "dividerCenterPosition");
 	checkEq(loaded.dividerCenter.size(), original.dividerCenter.size(), "dividerCenter size");
 	checkEq(loaded.columns, original.columns, "columns");
 	checkEq(loaded.columnGap, original.columnGap, "columnGap");

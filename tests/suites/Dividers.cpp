@@ -20,6 +20,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "harness/Harness.hpp"
 #include "harness/Probe.hpp"
 
+#include "model/DividerDesigns.hpp"
+
+#include <obs.hpp>
+
 using namespace closingtime;
 using namespace closingtime::test;
 
@@ -436,4 +440,166 @@ CT_SUITE(divider_rotation_mirrors, "A turned end and its reflection at the other
 	check(!left.isEmpty() && !right.isEmpty(), "both ends are drawn");
 	checkNear(left.height(), right.height(), 2.0, "each end reaches as far up and down as the other");
 	checkNear(left.top, right.top, 2.0, "and leans the same way about the rule");
+}
+
+CT_SUITE(divider_center_position, "Sliding the middle along the rule")
+{
+	/*
+	 * A word in the middle of a plain rule with no ends, so where the word is drawn is the only
+	 * thing that moves: at 0 it leads the rule from the left edge, at 1 it closes it at the right,
+	 * and 0.5 is the centered divider every older document draws.
+	 */
+	Section section = divider();
+	section.dividerCenter = {ornament(DividerShape::Square, 2.0)};
+	section.dividerGap = 10.0;
+
+	const auto centerInk = [](const Section &s) {
+		/*
+		 * The square fills its own box and is far taller than the rule or a dot capping it, so the
+		 * rows above both of those find its whole width and nothing else.
+		 */
+		const Document document = documentWith(s);
+		const QImage image = renderImage(document);
+		const QRectF box = boxOf(document, LayoutBox::Kind::Divider);
+		const qreal ruleTop = box.center().y() - 1.5 * s.dividerThickness;
+		return inkOf(image, QRectF(box.left(), box.top(), box.width(), ruleTop - box.top()));
+	};
+
+	const Document document = documentWith(section);
+	const QRectF box = boxOf(document, LayoutBox::Kind::Divider);
+
+	Section middle = section;
+	middle.dividerCenterPosition = 0.5;
+	const Ink centered = centerInk(middle);
+	check(!centered.isEmpty(), "the square is drawn");
+	checkNear((centered.left + centered.right) / 2.0, box.center().x(), 2.0, "0.5 is centered on the box");
+
+	Section start = section;
+	start.dividerCenterPosition = 0.0;
+	const Ink leading = centerInk(start);
+	checkNear(leading.left, box.left(), 2.0, "0 puts the middle against the left edge with no end there");
+
+	Section end = section;
+	end.dividerCenterPosition = 1.0;
+	const Ink closing = centerInk(end);
+	checkNear(closing.right, box.right(), 2.0, "and 1 against the right one");
+
+	Section quarter = section;
+	quarter.dividerCenterPosition = 0.25;
+	const Ink between = centerInk(quarter);
+	check(between.left > leading.left && between.left < centered.left, "positions between move it between");
+
+	/* Sliding never changes the figure's height, nor puts anything outside the content box. */
+	checkEq(measure(documentWith(start)), measure(documentWith(middle)), "the height does not move");
+	checkEq(boxesOutsideContent(documentWith(start)), 0, "nothing outside the content box at 0");
+	checkEq(boxesOutsideContent(documentWith(end)), 0, "nor at 1");
+
+	/* With an end on the rule, the middle stops the arm gap short of it rather than running into it. */
+	Section capped = start;
+	capped.dividerCap = {ornament(DividerShape::Dot)};
+	const Ink cappedStar = centerInk(capped);
+	check(cappedStar.left > leading.left + capped.dividerGap, "a capped rule holds the middle clear of its end");
+
+	/* A middle too wide for the room has nowhere to slide to, and stays where it was. */
+	Section crowded = section;
+	crowded.sectionWidth = 0.2;
+	crowded.dividerCenter = {ornament(DividerShape::Square, 25.0)};
+	crowded.dividerCenterPosition = 0.0;
+	Section crowdedMiddle = crowded;
+	crowdedMiddle.dividerCenterPosition = 0.5;
+	checkEq(inkOf(renderImage(documentWith(crowded))).left, inkOf(renderImage(documentWith(crowdedMiddle))).left,
+		"an over-wide middle stays centered");
+}
+
+CT_SUITE(divider_center_position_legacy, "A divider saved before the middle could move")
+{
+	OBSDataAutoRelease old = obs_data_create();
+	obs_data_set_string(old, "type", "section_divider");
+
+	Section loaded;
+	loaded.load(old);
+	checkNear(loaded.dividerCenterPosition, 0.5, 0.0001, "a missing key is the centered divider");
+
+	OBSDataAutoRelease leading = obs_data_create();
+	obs_data_set_string(leading, "type", "section_divider");
+	obs_data_set_double(leading, "divider_center_position", 0.0);
+	loaded.load(leading);
+	checkNear(loaded.dividerCenterPosition, 0.0, 0.0001, "a stored zero is told apart from a missing key");
+
+	OBSDataAutoRelease hostile = obs_data_create();
+	obs_data_set_string(hostile, "type", "section_divider");
+	obs_data_set_double(hostile, "divider_center_position", 7.5);
+	loaded.load(hostile);
+	checkNear(loaded.dividerCenterPosition, 1.0, 0.0001, "an out-of-range position is held to the rule");
+}
+
+CT_SUITE(divider_designs, "Finished designs to start a divider from")
+{
+	const QVector<DividerDesign> &designs = dividerDesigns();
+	check(designs.size() >= 8, "there is a real choice of designs");
+
+	QStringList ids;
+	for (const DividerDesign &design : designs) {
+		const Context context(QString::fromLatin1(design.id));
+		check(!ids.contains(QString::fromLatin1(design.id)), "ids are unique");
+		ids.append(QString::fromLatin1(design.id));
+		check(findDividerDesign(design.id) == &design, "a design is found by its own id");
+
+		/* Picked onto a section that was something else entirely. */
+		Section section = Section::makeDefault(SectionType::SectionDivider);
+		section.dividerMirrorEnds = false;
+		section.dividerEndCap = {ornament(DividerShape::Heart)};
+		section.dividerRules = 4;
+		section.dividerArm = DividerShape::Dots;
+		section.paddingTop = 3;
+		section.style.color = QColor(10, 200, 30);
+		applyDividerDesign(section, design);
+
+		check(matchingDividerDesign(section) == &design, "a freshly picked design is recognized as itself");
+		check(section.dividerMirrorEnds, "a design mirrors its ends");
+		check(section.dividerEndCap.size() == 1, "and leaves the hand-built right end where it was");
+		checkEq(section.paddingTop, 3, "padding is the section's, not the design's");
+		check(section.style.color == QColor(10, 200, 30), "and so is the style");
+
+		/* Every design draws, inside its box, and survives the round trip still itself. */
+		const Document document = documentWith(section);
+		check(measure(document) > 0, "the design draws something");
+		checkEq(boxesOutsideContent(document), 0, "nothing outside the content box");
+		check(!inkOf(renderImage(document)).isEmpty(), "and inks it");
+		saveArtifact(QStringLiteral("divider_design_%1").arg(QString::fromLatin1(design.id)), document);
+
+		OBSDataAutoRelease data = obs_data_create();
+		section.save(data);
+		Section loaded;
+		loaded.load(data);
+		check(matchingDividerDesign(loaded) == &design, "a saved design reloads as the same design");
+	}
+
+	/* A new divider is a design, so the picker names it rather than calling it the section's own. */
+	const DividerDesign *fresh = matchingDividerDesign(Section::makeDefault(SectionType::SectionDivider));
+	check(fresh && QString::fromLatin1(fresh->id) == QStringLiteral("arrow_rule"),
+	      "a new divider is the arrow rule");
+
+	/* An edit to the figure makes it the section's own... */
+	Section edited = Section::makeDefault(SectionType::SectionDivider);
+	edited.dividerCenter.removeLast();
+	check(matchingDividerDesign(edited) == nullptr, "taking a piece out makes it the section's own design");
+
+	Section heavier = Section::makeDefault(SectionType::SectionDivider);
+	heavier.dividerThickness += 1.0;
+	check(matchingDividerDesign(heavier) == nullptr, "and so does a heavier rule");
+
+	/* ...but not an edit to a value the figure does not consult. */
+	const DividerDesign *joined = findDividerDesign("diamond_line");
+	check(joined && joined->connect, "the joined design is joined");
+	if (joined) {
+		Section section = Section::makeDefault(SectionType::SectionDivider);
+		applyDividerDesign(section, *joined);
+		section.dividerGap = 99.0;
+		section.dividerRuleGap = 40.0;
+		section.dividerTint = false;
+		section.sectionWidth = 0.3;
+		check(matchingDividerDesign(section) == joined,
+		      "a joined rule's end gap, a single rule's spacing and the section's own settings are not the figure");
+	}
 }

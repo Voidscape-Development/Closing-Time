@@ -1596,13 +1596,35 @@ DividerLayout layoutDivider(const Section &section, const TextStyle &style, cons
 
 	/* --- Work out where the arms run ------------------------------------------------- */
 
-	/*
-	 * Centered on the section's own box rather than between the two arms, so a divider whose
-	 * ends differ still has its ornament on the middle of the line the eye follows.
-	 */
-	const qreal centerLeft = x + (width - center.width) / 2.0;
-
 	const bool connect = section.dividerConnect;
+
+	/*
+	 * At the middle, centered on the section's own box rather than between the two arms, so a
+	 * divider whose ends differ still has its ornament on the middle of the line the eye follows.
+	 *
+	 * Off the middle, it slides toward an end until it meets it: held clear of the end by the arm
+	 * gap -- or, connected, by the piece gap, since the rule runs on behind it and nothing else is
+	 * left to say how close a piece may sit to another. Two runs meeting at the box's middle rather
+	 * than one across the room between the ends, so 0.5 is exactly where every older divider drew
+	 * its center whether or not the two ends match. A center too wide for the room has nowhere to
+	 * slide, and stays in the middle.
+	 */
+	const qreal boxCentered = x + (width - center.width) / 2.0;
+	qreal centerLeft = boxCentered;
+
+	const double position = std::clamp(section.dividerCenterPosition, 0.0, 1.0);
+	if (!center.isEmpty() && position != 0.5) {
+		const qreal clearance = connect ? std::max(0.0, section.dividerPieceGap) : section.dividerGap;
+		const auto endRoom = [clearance](const MeasuredStack &end) {
+			return end.isEmpty() ? 0.0 : std::max(0.0, end.width + clearance);
+		};
+
+		const qreal lowest = std::min(boxCentered, x + endRoom(leftEnd));
+		const qreal highest = std::max(boxCentered, x + width - endRoom(rightEnd) - center.width);
+
+		centerLeft = position < 0.5 ? lowest + (boxCentered - lowest) * (position / 0.5)
+					    : boxCentered + (highest - boxCentered) * ((position - 0.5) / 0.5);
+	}
 
 	/*
 	 * Connected, the rule runs to the middle of the outermost piece of each end rather than

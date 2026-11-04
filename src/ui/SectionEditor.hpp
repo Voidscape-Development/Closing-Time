@@ -347,12 +347,28 @@ private:
 	 */
 	void writePiecesToTable(PieceSlot slot, const Section &source);
 	void readPiecesFromTable(PieceSlot slot, Section *target) const;
+	/* Adds a piece after the selected one, or at the end with none selected. */
 	void addPiece(PieceSlot slot);
 	void removeSelectedPieces(PieceSlot slot);
+	/* Puts a copy of the selected piece straight after it. */
+	void duplicatePiece(PieceSlot slot);
+	/* Hands the right-hand end a copy of the left, as the start of a pair that differs. */
+	void copyLeftEndToRight();
 	void movePiece(PieceSlot slot, int delta);
 	void browseForPieceFile(PieceSlot slot);
+	/*
+	 * A row's piece picker moved: swaps the row's value and size over to the new kind's own, and
+	 * re-asks everything that depends on what the row holds.
+	 */
+	void onPiecePicked(PieceSlot slot, int row);
 	/* Shows the fields that apply to the piece in `row` and hides the rest. */
 	void applyPieceRowVisibility(PieceSlot slot, int row);
+	/* Enables the slot's file button only while its selected row has a file to set. */
+	void refreshPieceFileButton(PieceSlot slot);
+	/* Selects the design the divider still draws in the design picker, or its own when none. */
+	void refreshDividerDesign();
+	/* Writes a built-in design's figure into the section being edited. */
+	void applyDividerDesignById(const QString &id);
 	/* True when any piece of any of the three stacks draws its artwork from a file. */
 	bool dividerUsesFile() const;
 
@@ -514,6 +530,10 @@ private:
 	QSpinBox *dividerRuleGap = nullptr;
 	QSpinBox *dividerRuleInset = nullptr;
 	QCheckBox *dividerTint = nullptr;
+	/* Where the middle sits along the rule, as a whole percent; see Section::dividerCenterPosition. */
+	QSpinBox *dividerCenterPosition = nullptr;
+	/* The finished designs a divider can be started from; see model/DividerDesigns.hpp. */
+	QComboBox *dividerDesign = nullptr;
 
 	/*
 	 * The divider's three piece stacks, in PieceSlot order. One table each rather than one table
@@ -524,6 +544,12 @@ private:
 	QTabWidget *pieceTabs = nullptr;
 	QTableWidget *pieceTables[kPieceSlotCount] = {};
 	QToolButton *pieceFileButtons[kPieceSlotCount] = {};
+	/*
+	 * The pieces each table was last filled from, row for row. A table has no column for an image
+	 * piece's playback or for the shape a word piece used to be, and reading a row back over its
+	 * origin is what keeps those rather than resetting them on every edit.
+	 */
+	QVector<DividerPiece> pieceOrigins[kPieceSlotCount];
 
 	QSpinBox *columns = nullptr;
 	QSpinBox *columnGap = nullptr;

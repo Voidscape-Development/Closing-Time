@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "model/CreditsModel.hpp"
 
+#include "model/DividerDesigns.hpp"
 #include "model/StyleLibrary.hpp"
 
 #include <obs.hpp>
@@ -1021,6 +1022,7 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "divider_rule_gap", dividerRuleGap);
 	obs_data_set_double(data, "divider_rule_inset", dividerRuleInset);
 	obs_data_set_bool(data, "divider_tint", dividerTint);
+	obs_data_set_double(data, "divider_center_position", dividerCenterPosition);
 	obs_data_set_int(data, "columns", columns);
 	obs_data_set_int(data, "column_gap", columnGap);
 	obs_data_set_int(data, "entry_gap", entryGap);
@@ -1239,6 +1241,15 @@ void Section::load(obs_data_t *data)
 	dividerRuleInset = obs_data_get_double(data, "divider_rule_inset");
 	/* Absent in documents that predate custom art, whose built-in shapes are tinted regardless. */
 	dividerTint = obs_data_has_user_value(data, "divider_tint") ? obs_data_get_bool(data, "divider_tint") : true;
+	/*
+	 * 0.0 is a legitimate position -- a label leading the rule -- so a missing key has to be told
+	 * apart from a stored zero. Absent, it is the middle every older divider was drawn with.
+	 */
+	dividerCenterPosition = obs_data_has_user_value(data, "divider_center_position")
+					? obs_data_get_double(data, "divider_center_position")
+					: 0.5;
+	dividerCenterPosition = std::isfinite(dividerCenterPosition) ? std::clamp(dividerCenterPosition, 0.0, 1.0)
+								     : 0.5;
 
 	columns = static_cast<int>(obs_data_get_int(data, "columns"));
 	columnGap = static_cast<int>(obs_data_get_int(data, "column_gap"));
@@ -1639,16 +1650,12 @@ Section Section::makeDefault(SectionType type)
 		 * diamond with a dot either side of it. Deliberately a compound rather than a
 		 * single ornament, because the first thing anyone does with a new divider is take a
 		 * piece out or put one in, and starting from three shows that the center is a list.
+		 *
+		 * Taken from the design table rather than written out here, so the designer's design
+		 * picker names what a new divider is instead of calling it the section's own.
 		 */
-		section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Arrow, {}, 1.0, {}, {}}};
-		section.dividerArm = DividerShape::Rule;
-		section.dividerThickness = 5.0;
-		section.dividerCenter.append(
-			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}});
-		section.dividerCenter.append(
-			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Diamond, {}, 1.0, {}, {}});
-		section.dividerCenter.append(
-			DividerPiece{DividerPiece::Kind::Ornament, DividerShape::Dot, {}, 1.0, {}, {}});
+		if (const DividerDesign *design = findDividerDesign("arrow_rule"))
+			applyDividerDesign(section, *design);
 		/*
 		 * Narrower than the canvas and generously padded, because a divider that runs edge to
 		 * edge and sits tight against the text above it reads as a border rather than as a

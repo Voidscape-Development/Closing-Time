@@ -51,6 +51,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/CreditsModel.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerArt.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerArt.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerDesigns.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/model/DividerDesigns.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/EndingAction.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/model/FontBundle.cpp"

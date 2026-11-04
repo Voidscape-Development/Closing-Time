@@ -56,6 +56,7 @@ src/
     Gradient.{hpp,cpp}     GradientSpec and its stops, shared by a text fill and a panel alike
     BridgeArt.{hpp,cpp}    the table of bridge types and the SVG tile each one is drawn from
     DividerArt.{hpp,cpp}   the table of divider shapes, and which of the three slots each serves
+    DividerDesigns.{hpp,cpp} finished dividers to start from, and which one a section still draws
     EndingAction.{hpp,cpp} ending-action config and execution
     StyleLibrary.{hpp,cpp} the machine-wide style library file, and reading it into a document
     FontBundle.{hpp,cpp}   the font files a document carries, and collecting them off the machine
@@ -539,6 +540,28 @@ Every load-time fallback is `None` — a divider whose keys a document does not 
 plainest thing the library can, rather than whatever happens to sit first in the table — except
 the arm, where `None` would mean a divider with no rule in it at all, so that one falls back to
 `Rule`.
+
+**The middle can slide along the rule.** `dividerCenterPosition` runs from 0 (the center stack
+against the left-hand end) to 1 (against the right-hand one), which is what a label that *leads* a
+rule — `CHAPTER ONE ————` — needs. It is two straight runs meeting at 0.5 rather than one across the
+room between the ends, because the middle of the box and the middle of that room are different
+places once the two ends differ, and 0.5 has to stay exactly where every older divider drew its
+center. Off the middle the stack is held clear of an end by the arm gap, or by the piece gap when the
+rule is joined and runs on behind it; a stack wider than the room has nowhere to slide and stays put.
+A missing key loads as 0.5, told apart from a stored 0.
+
+**Finished designs are a starting point, not a binding.** `model/DividerDesigns.{hpp,cpp}` is a
+table of complete dividers — an arrow rule, a needle, a deco triple, a heading rule and a dozen
+more — each naming only the handful of fields that make it what it is. `applyDividerDesign` writes
+the *figure* into a section: ends, arm, thickness, join, gaps, center, rules and center position.
+It leaves alone everything about the section rather than the figure — style, ink, width, padding,
+panels — and leaves the right-hand end's list where it was, as mirroring always does. Nothing is
+remembered: a section does not know which design it came from, so retuning a design in a later
+release cannot move a divider somebody has already worked on. `matchingDividerDesign` answers the
+other way round, which is how the designer's picker says truthfully whether a divider is still one
+of them; it skips a value the figure does not consult (the end gap of a joined rule, the spacing of
+a single rule, the position of an empty middle), so a divider is not called changed over a number it
+cannot show. `Section::makeDefault` takes its divider from this table, so a new one is a design too.
 
 ### Title and subtitle rows
 
@@ -1400,7 +1423,8 @@ is untouched by this: a tab is where a control is drawn and nothing else.
 
 *Content* holds what the section says, and the tables it says it through: the entry table for a
 list, the divider's three piece stacks for a divider (a divider has no words, so those stacks *are*
-its content, and its Content tab holds them alone). *Layout* holds the type's own settings and the
+its content, and its Content tab holds them alone, under the picker of finished designs they can
+be started from). *Layout* holds the type's own settings and the
 placement rows. *Style* holds the up-to-five `StyleEditor`s. *Background* holds the eight panel
 slots.
 
@@ -1906,6 +1930,14 @@ same reason: reporting it would send the user after a font nothing uses.
   break one.
 - A divider's parts can be joined into one figure rather than set beside each other: the rule runs
   the whole way through, and every gap in a divider reaches below zero to push two parts together.
+- A divider can be started from one of sixteen finished designs, each shown in the picker as the
+  renderer draws it, and the picker keeps saying which design a divider still is until it is
+  changed into one of its own. Every shape picker shows the shape itself; a piece is one choice —
+  a shape, a word or an image — rather than a kind and then a shape; its size and angle are spin
+  boxes that say what their number means; and switching a piece's kind and back hands back what it
+  held rather than reading a word as a path or a 2.5× size as a 2-pixel image. Pieces can be
+  duplicated, are added beside the selected one, and a separate right-hand end can start as a copy
+  of the left. The middle of a divider can slide along the rule, so a label can lead it or close it.
 - The section editor's style groups fold away like the rows above them, and a group can now be both
   switched off and folded — the checkbox and the disclosure triangle side by side, saying different
   things.
@@ -2058,6 +2090,17 @@ Overlap was measured on a center stack with no arm drawn, where the ink *is* the
 three equal diamonds opening by exactly the gap asked for, and an unbounded overlap taking back
 exactly one piece width across the two joins rather than however much was typed. A join dragged to
 its far end leaves no ink outside the section's own box.
+
+Sliding the middle and the finished designs were checked the same way. A square in the middle of an
+endless rule sits against the left edge at 0, the right at 1, centered on the box at 0.5 and in
+between at 0.25, without the divider's height moving or anything leaving its box; capped, it stops
+the arm gap short of the cap, and one wider than the room stays centered. Every design was picked onto
+a divider set up as something else entirely and checked to be recognized as itself, to keep the
+section's own padding, style and hand-built right end, to draw inside its box, and to reload from
+`obs_data` as the same design; an edit to its figure makes it the section's own, and an edit to
+something it does not consult does not. The designer's piece rows were driven offscreen as well:
+picking a design, switching a word to an image and back, and an ornament's size surviving a spell as
+an image.
 
 Row geometry and the section box were checked the same way, against the previous build as well
 as the new one so that each case is known to fail before it passes: every bridged row staying on
