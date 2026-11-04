@@ -446,104 +446,117 @@ const QVector<Scene> &scenes()
 		/* --- dividers ---------------------------------------------------------------- */
 
 		{
-			Section plain = Section::makeDefault(SectionType::SectionDivider);
-
-			Section stacked = Section::makeDefault(SectionType::SectionDivider);
-			stacked.dividerRules = 3;
-			stacked.dividerRuleInset = 40.0;
-
-			Section labeled = Section::makeDefault(SectionType::SectionDivider);
-			labeled.dividerCenter = {DividerPiece{DividerPiece::Kind::Text,
-							      DividerShape::Diamond,
-							      {},
-							      1.0,
-							      QStringLiteral("PART II"),
-							      {}}};
-
-			add(QStringLiteral("dividers"),
-			    QStringLiteral("A plain rule, a tapered stack and a labeled break"),
-			    documentWith({plain, stacked, labeled}));
-		}
-
-		/* --- plain shapes and turned pieces -------------------------------------------- */
-
-		{
-			/*
-			 * The plain shapes, filled over outlined, and then the same square turned
-			 * through a run of angles: what the picture is for is that the geometry is
-			 * drawn as geometry -- an equilateral triangle, a regular pentagon -- and that
-			 * a turned piece leans without dragging the rule it sits on with it.
-			 */
-			const auto ornament = [](DividerShape shape, double rotation = 0.0) {
-				return DividerPiece{DividerPiece::Kind::Ornament, shape, {}, 1.0, {}, {}, rotation};
+			const auto shape = [](DividerShape which, double rotation = 0.0, double scale = 1.0) {
+				DividerElement element;
+				element.kind = DividerElement::Kind::Shape;
+				element.shape = which;
+				element.rotation = rotation;
+				element.scale = scale;
+				return element;
 			};
-
-			const auto row = [&](const QVector<DividerPiece> &center) {
+			const auto line = [](DividerShape which = DividerShape::Rule, bool join = false) {
+				DividerElement element;
+				element.kind = DividerElement::Kind::Line;
+				element.lineShape = which;
+				element.join = join;
+				return element;
+			};
+			const auto word = [](const QString &text) {
+				DividerElement element;
+				element.kind = DividerElement::Kind::Text;
+				element.text = text;
+				return element;
+			};
+			const auto divider = [](QVector<DividerLane> lanes, bool symmetric = true) {
 				Section section = Section::makeDefault(SectionType::SectionDivider);
-				section.dividerPieceGap = 14.0;
-				section.dividerCenter = center;
+				section.divider.lanes = std::move(lanes);
+				section.divider.symmetric = symmetric;
 				return section;
 			};
-
-			Section filled = row({ornament(DividerShape::Circle), ornament(DividerShape::Square),
-					      ornament(DividerShape::RoundedSquare), ornament(DividerShape::Triangle),
-					      ornament(DividerShape::Pentagon), ornament(DividerShape::Hexagon),
-					      ornament(DividerShape::Octagon)});
-
-			Section outlined =
-				row({ornament(DividerShape::Ring), ornament(DividerShape::SquareOutline),
-				     ornament(DividerShape::RoundedSquareOutline),
-				     ornament(DividerShape::TriangleOutline), ornament(DividerShape::PentagonOutline),
-				     ornament(DividerShape::HexagonOutline), ornament(DividerShape::OctagonOutline)});
-
-			Section turned =
-				row({ornament(DividerShape::Square, 0.0), ornament(DividerShape::Square, 15.0),
-				     ornament(DividerShape::Square, 30.0), ornament(DividerShape::Square, 45.0),
-				     ornament(DividerShape::Triangle, 90.0), ornament(DividerShape::Triangle, 180.0)});
-
-			add(QStringLiteral("dividers-shapes"),
-			    QStringLiteral("The plain shapes filled and outlined, and a run of turned pieces"),
-			    documentWith({filled, outlined, turned}));
-		}
-
-		/* --- joined dividers ---------------------------------------------------------- */
-
-		{
-			/*
-			 * The same composed divider three ways, because the whole of what joining
-			 * does is visible only against the divider it was: held apart, run through,
-			 * and pushed together by hand. One ornament and one cap, so what the picture
-			 * shows is the joins rather than the shapes either side of them.
-			 */
-			const auto composed = [] {
-				Section section = Section::makeDefault(SectionType::SectionDivider);
-				section.dividerCap = {DividerPiece{DividerPiece::Kind::Ornament,
-								   DividerShape::Arrow,
-								   {},
-								   1.0,
-								   {},
-								   {}}};
-				section.dividerCenter = {DividerPiece{DividerPiece::Kind::Ornament,
-								      DividerShape::Diamond,
-								      {},
-								      1.0,
-								      {},
-								      {}}};
-				section.dividerGap = 24.0;
-				return section;
+			const auto lane = [](double thickness, QVector<DividerElement> elements, double inset = 0.0) {
+				DividerLane built;
+				built.thickness = thickness;
+				built.inset = inset;
+				built.elements = std::move(elements);
+				return built;
 			};
 
-			Section apart = composed();
+			{
+				/*
+				 * The default, three different lines broken by one ornament, and a word leading
+				 * a rule: what lanes and a row of elements make possible that slots did not.
+				 */
+				Section plain = Section::makeDefault(SectionType::SectionDivider);
 
-			Section joined = composed();
-			joined.dividerConnect = true;
+				DividerElement diamond = shape(DividerShape::Diamond, 0.0, 1.4);
+				diamond.spanLanes = true;
+				Section lanes = divider({lane(1.0, {line()}, 30.0), lane(5.0, {line(), diamond}),
+							 lane(2.0, {line(DividerShape::Dots)}, 30.0)});
 
-			Section overlapped = composed();
-			overlapped.dividerGap = -12.0;
+				Section heading =
+					divider({lane(2.0, {word(QStringLiteral("PART II")), line()})}, false);
 
-			add(QStringLiteral("dividers-joined"),
-			    QStringLiteral("One composed divider held apart, run through, and overlapped"),
-			    documentWith({apart, joined, overlapped}));
+				add(QStringLiteral("dividers"),
+				    QStringLiteral(
+					    "The default, three different lines broken by one ornament, and a leading label"),
+				    documentWith({plain, lanes, heading}));
+			}
+
+			{
+				/*
+				 * The plain shapes, filled over outlined, and then the same square turned
+				 * through a run of angles: what the picture is for is that the geometry is
+				 * drawn as geometry -- an equilateral triangle, a regular pentagon -- and that a
+				 * turned piece leans without dragging the rule it sits on with it.
+				 */
+				const auto row = [&](QVector<DividerElement> pieces) {
+					pieces.prepend(line());
+					pieces.append(line());
+					Section section = divider({lane(4.0, pieces)}, false);
+					section.divider.pieceGap = 14.0;
+					return section;
+				};
+
+				Section filled = row({shape(DividerShape::Circle), shape(DividerShape::Square),
+						      shape(DividerShape::RoundedSquare), shape(DividerShape::Triangle),
+						      shape(DividerShape::Pentagon), shape(DividerShape::Hexagon),
+						      shape(DividerShape::Octagon)});
+				Section outlined =
+					row({shape(DividerShape::Ring), shape(DividerShape::SquareOutline),
+					     shape(DividerShape::RoundedSquareOutline),
+					     shape(DividerShape::TriangleOutline), shape(DividerShape::PentagonOutline),
+					     shape(DividerShape::HexagonOutline), shape(DividerShape::OctagonOutline)});
+				Section turned = row(
+					{shape(DividerShape::Square, 0.0), shape(DividerShape::Square, 15.0),
+					 shape(DividerShape::Square, 30.0), shape(DividerShape::Square, 45.0),
+					 shape(DividerShape::Triangle, 90.0), shape(DividerShape::Triangle, 180.0)});
+
+				add(QStringLiteral("dividers-shapes"),
+				    QStringLiteral("The plain shapes filled and outlined, and a run of turned pieces"),
+				    documentWith({filled, outlined, turned}));
+			}
+
+			{
+				/*
+				 * The same divider three ways, because what joining does is visible only against
+				 * the divider it was: held apart, run under its pieces, and pushed into them by a
+				 * negative gap.
+				 */
+				Section apart = divider({lane(4.0, {shape(DividerShape::Arrow), line(),
+								    shape(DividerShape::Diamond)})});
+				apart.divider.lineGap = 24.0;
+
+				Section joined =
+					divider({lane(4.0, {shape(DividerShape::Arrow), line(DividerShape::Rule, true),
+							    shape(DividerShape::Diamond)})});
+
+				Section overlapped = apart;
+				overlapped.divider.lineGap = -12.0;
+
+				add(QStringLiteral("dividers-joined"),
+				    QStringLiteral("One divider held apart, run through, and overlapped"),
+				    documentWith({apart, joined, overlapped}));
+			}
 		}
 
 		/* --- everything -------------------------------------------------------------- */

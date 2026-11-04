@@ -183,11 +183,12 @@ CT_SUITE(animated_logo_slots, "Every kind of logo slot reports its animation")
 	{
 		const Context context(QStringLiteral("divider center"));
 		Section divider = unpadded(SectionType::SectionDivider);
-		DividerPiece piece;
-		piece.kind = DividerPiece::Kind::Logo;
+		DividerElement piece;
+		piece.kind = DividerElement::Kind::Image;
 		piece.logo.path = testAnimatedLogoPath();
 		piece.logo.maxHeight = 48;
-		divider.dividerCenter = {piece};
+		/* At the middle of a symmetric divider, where it is drawn once rather than twice. */
+		divider.divider.lanes.first().elements.append(piece);
 
 		const Strip strip = renderAnimatedStrip(documentWith(divider));
 		checkEq(strip.animatedLogos.size(), 1, "a divider's own logo animates like any other");

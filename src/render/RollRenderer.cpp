@@ -1332,25 +1332,25 @@ private:
  *
  * The artwork is separated from the text and the logos because the three are painted by
  * different machinery: art goes through the divider renderer's stencil, while a word and a mark
- * in the middle of a divider are drawn by exactly the helpers that draw a section's own title
- * and its own logo -- which is the point of letting the center hold them at all.
+ * in a divider are drawn by exactly the helpers that draw a section's own title and its own logo
+ * -- which is the point of letting a divider hold them at all.
  */
 struct DividerLayout {
 	struct TextPiece {
 		QString text;
 		QRectF rect;
-		/* Degrees clockwise about the rect's center; see DividerPiece::rotation. */
+		/* Degrees clockwise about the rect's center; see DividerElement::rotation. */
 		qreal rotation = 0.0;
+		/* See DividerElement::ownColor. */
+		bool ownColor = false;
+		QColor color;
 	};
 	struct LogoPiece {
 		LogoArt art;
-		/*
-		 * The piece's own reference, for the playback settings the placement needs. It points
-		 * into the section, which outlives every use of the layout this call returns.
-		 */
-		const LogoRef *ref = nullptr;
+		/* A copy: the row it came from is built for the layout and gone once it returns. */
+		LogoRef ref;
 		QRect rect;
-		/* Degrees clockwise about the rect's center; see DividerPiece::rotation. */
+		/* Degrees clockwise about the rect's center; see DividerElement::rotation. */
 		qreal rotation = 0.0;
 	};
 
@@ -1358,379 +1358,399 @@ struct DividerLayout {
 	QVector<TextPiece> texts;
 	QVector<LogoPiece> logos;
 
+	/* The box the divider spans: its own length and alignment inside the content column. */
+	QRectF box;
 	/* Total height the divider occupies. Zero when it draws nothing at all. */
 	qreal height = 0.0;
 };
 
-/* One piece of a divider -- an end or a centerpiece -- measured but not yet placed. */
-struct MeasuredPiece {
-	const DividerPiece *piece;
-	QSizeF size;
-	/* Logo pieces only, resolved once here so the paint pass does not look it up again. */
-	LogoArt art;
-};
-
-/* A measured stack of them: what one end or the middle of a divider comes to. */
-struct MeasuredStack {
-	QVector<MeasuredPiece> pieces;
-	/*
-	 * The join before each piece, already clamped -- `gaps[i]` sits between piece `i - 1` and
-	 * piece `i`, and `gaps[0]` is unused. Carried rather than recomputed at placement time
-	 * because a negative gap is bounded by the two pieces it sits between, and a measure pass
-	 * and a place pass that worked that bound out separately would be two chances to disagree
-	 * about a width the section under this one is positioned from.
-	 */
-	QVector<qreal> gaps;
-	qreal width = 0.0;
-	qreal height = 0.0;
-
-	bool isEmpty() const { return pieces.isEmpty(); }
-
-	/*
-	 * Half the outermost piece, which is where a connected arm stops.
-	 *
-	 * The outermost piece is always the first written: a cap's list runs outermost-first, and
-	 * the right-hand end is the same list placed in reverse, which puts the same piece at the
-	 * far edge either way.
-	 */
-	qreal outerHalfWidth() const { return isEmpty() ? 0.0 : pieces.first().size.width() / 2.0; }
-};
-
-/*
- * How tall a measured piece reaches once it is turned: the height of its own box while it stands
- * square, and the height that box sweeps out once it does not.
- *
- * Height only. A turn moves nothing along the rule -- the piece keeps the width its untilted shape
- * asked for, so its neighbors and the arms stay where they were while an angle is dialed in (see
- * DividerPiece::rotation) -- but the divider still has to be tall enough to hold what it draws, or
- * a square set on its corner would have the corners cut off by the section's own box.
- */
-qreal turnedHeight(const MeasuredPiece &piece)
+/* How tall a box reaches once it is turned about its center by `degrees`. */
+qreal turnedHeight(const QSizeF &size, qreal degrees)
 {
-	const qreal degrees = piece.piece->rotation;
 	if (degrees == 0.0)
-		return piece.size.height();
+		return size.height();
 
 	const qreal radians = qDegreesToRadians(degrees);
-	return std::abs(piece.size.width() * std::sin(radians)) + std::abs(piece.size.height() * std::cos(radians));
+	return std::abs(size.width() * std::sin(radians)) + std::abs(size.height() * std::cos(radians));
 }
 
-/*
- * Measures a run of divider pieces laid side by side, `pieceGap` apart.
- *
- * One helper for all three stacks rather than one for the middle and a separate path for the two
- * ends, because an end *is* a stack: that is the whole of what makes a shape offered in one place
- * offered in the other, and a word or a mark able to cap a rule as well as break one.
- */
-MeasuredStack measureDividerStack(const QVector<DividerPiece> &pieces, const TextStyle &style, const LogoSource &logos,
-				  DividerArtCache *dividers, qreal thickness, qreal pieceGap, qreal available)
+/* One element of a lane's drawn row, measured and, once the lane is laid out, placed. */
+struct LaneItem {
+	DividerElement element;
+	/* A piece's own size. A line's height is its drawn thickness, and its width is decided by the lane. */
+	QSizeF size;
+	/* Image pieces only, resolved once here so the paint pass does not look it up again. */
+	LogoArt art;
+	qreal x = 0.0;
+	/* Lines only: how long the lane made it. */
+	qreal length = 0.0;
+
+	bool isLine() const { return element.isLine(); }
+	qreal width() const { return isLine() ? length : size.width(); }
+};
+
+/* A piece's drawn size at a lane's thickness. Null when it draws nothing -- an empty word, a missing file. */
+QSizeF measureDividerPiece(const DividerElement &element, const TextStyle &style, const LogoSource &logos,
+			   DividerArtCache *dividers, qreal thickness, qreal available, LogoArt *art)
 {
-	MeasuredStack stack;
-	stack.pieces.reserve(pieces.size());
+	switch (element.kind) {
+	case DividerElement::Kind::Shape:
+		return dividerShapeSize(element.shape, element.svgPath, dividers, thickness, element.scale);
 
-	for (const DividerPiece &piece : pieces) {
-		MeasuredPiece measured{&piece, QSizeF(), LogoArt()};
-
-		switch (piece.kind) {
-		case DividerPiece::Kind::Ornament:
-			measured.size = dividerShapeSize(piece.shape, piece.svgPath, dividers, thickness, piece.scale);
-			break;
-
-		case DividerPiece::Kind::Text: {
-			if (piece.text.isEmpty())
-				break;
-			/*
-			 * Measured at its natural width and then laid out into exactly that, so the
-			 * word occupies the room it needs and never wraps inside a divider. A divider
-			 * piece has no column to wrap into -- the arms are what the space around it
-			 * is for.
-			 */
-			const qreal textWidth = naturalTextWidth(piece.text, style);
-			const qreal textHeight = layoutText(nullptr, piece.text, style, 0, 0, textWidth);
-			measured.size = QSizeF(textWidth, textHeight);
-			break;
-		}
-
-		case DividerPiece::Kind::Logo: {
-			measured.art = logos.resolve(piece.logo);
-			measured.size = QSizeF(logoDrawSize(measured.art.poster, piece.logo, qRound(available)));
-			break;
-		}
-		}
-
+	case DividerElement::Kind::Text: {
+		if (element.text.isEmpty())
+			return QSizeF();
 		/*
-		 * A piece that measures to nothing -- an empty word, a logo that would not decode, a
-		 * shape whose file is missing -- is dropped along with the gap that would have sat
-		 * beside it, rather than left as a hole in the rule.
+		 * Measured at its natural width and then laid out into exactly that, so the word occupies
+		 * the room it needs and never wraps inside a divider: the lines are what the space around
+		 * it is for.
 		 */
-		if (measured.size.width() > 0.0 && measured.size.height() > 0.0)
-			stack.pieces.append(measured);
+		const qreal width = naturalTextWidth(element.text, style);
+		return QSizeF(width, layoutText(nullptr, element.text, style, 0, 0, width));
 	}
 
-	stack.gaps.resize(stack.pieces.size());
-
-	for (int i = 0; i < stack.pieces.size(); ++i) {
-		const qreal pieceWidth = stack.pieces.at(i).size.width();
-
-		if (i > 0) {
-			/*
-			 * A negative gap pushes two pieces into each other, which is how a stack is
-			 * made to read as one ornament rather than as a row of them. Bounded at half
-			 * the narrower of the pair, so they may be pushed together but never through
-			 * each other: past that the run reorders itself, and a stack whose width
-			 * counts down as the setting goes up is not a design anybody asked for.
-			 */
-			const qreal limit = std::min(stack.pieces.at(i - 1).size.width(), pieceWidth) / 2.0;
-			stack.gaps[i] = std::max(pieceGap, -limit);
-			stack.width += stack.gaps.at(i);
-		}
-
-		stack.width += pieceWidth;
-		stack.height = std::max(stack.height, turnedHeight(stack.pieces.at(i)));
+	case DividerElement::Kind::Image: {
+		*art = logos.resolve(element.logo);
+		return QSizeF(logoDrawSize(art->poster, element.logo, qRound(available)));
 	}
 
-	return stack;
+	case DividerElement::Kind::Line:
+		break;
+	}
+	return QSizeF();
 }
 
 /*
- * Places a measured stack, left to right from `left`, centered on `midY`.
+ * The join between two neighbours in a lane, already bounded.
  *
- * `mirrored` is what an end at the right-hand side of the divider is drawn with: the pieces run in
- * reverse, so the figure is a mirror image of the same list, and each piece's *artwork* is flipped
- * along x -- the caps in the shape library are authored pointing outward along -x, so an arrowhead
- * at the right-hand end has to be. A word and a picture are deliberately left unflipped: mirrored
- * type is not a design, it is a mistake, and neither is authored pointing anywhere.
- *
- * The joins come from the stack rather than from the section, already bounded by the pieces they
- * sit between -- see MeasuredStack::gaps.
+ * Two pieces are held `pieceGap` apart, which below zero pushes them into each other -- but never
+ * further than halfway into the narrower, past which the row would reorder itself. A line keeps
+ * `lineGap` clear of a piece beside it, or runs under it to its middle when it joins; two lines
+ * side by side simply meet.
  */
-void placeDividerStack(DividerLayout *layout, const MeasuredStack &stack, qreal left, qreal midY, bool mirrored)
+qreal laneJoin(const LaneItem &before, const LaneItem &after, const Divider &divider)
 {
-	const int count = stack.pieces.size();
-	qreal cursor = left;
+	if (before.isLine() && after.isLine())
+		return 0.0;
 
-	for (int i = 0; i < count; ++i) {
-		const int index = mirrored ? count - 1 - i : i;
-		const MeasuredPiece &measured = stack.pieces.at(index);
-		const DividerPiece &piece = *measured.piece;
-
-		/*
-		 * The join before the piece about to be placed. Reversing the run reverses the joins
-		 * with it -- the gap that was written after a piece is drawn before it -- so the two
-		 * ends of a divider are the same figure whichever way round it is read.
-		 */
-		if (i > 0)
-			cursor += stack.gaps.at(mirrored ? index + 1 : index);
-
-		const QRectF box(cursor, midY - measured.size.height() / 2.0, measured.size.width(),
-				 measured.size.height());
-
-		/*
-		 * A word and a mark are not flipped, so the lean they were given is reflected instead:
-		 * that is what keeps a tilted year or badge at one end the answering figure to the one
-		 * at the other without setting any of it backwards. Artwork needs no such arrangement --
-		 * its flip is a true mirror, and reflects whatever angle it carries with it.
-		 */
-		const qreal turn = mirrored ? -piece.rotation : piece.rotation;
-
-		switch (piece.kind) {
-		case DividerPiece::Kind::Ornament:
-			layout->art.append(
-				DividerArtPlacement{box, piece.shape, piece.svgPath, mirrored, piece.rotation});
-			break;
-
-		case DividerPiece::Kind::Text:
-			layout->texts.append(DividerLayout::TextPiece{piece.text, box, turn});
-			break;
-
-		case DividerPiece::Kind::Logo:
-			layout->logos.append(DividerLayout::LogoPiece{measured.art, &piece.logo, box.toRect(), turn});
-			break;
-		}
-
-		cursor += measured.size.width();
+	if (!before.isLine() && !after.isLine()) {
+		const qreal limit = std::min(before.size.width(), after.size.width()) / 2.0;
+		return std::max<qreal>(divider.pieceGap, -limit);
 	}
+
+	const LaneItem &line = before.isLine() ? before : after;
+	const LaneItem &piece = before.isLine() ? after : before;
+	const qreal half = piece.size.width() / 2.0;
+	return line.element.join ? -half : std::max<qreal>(divider.lineGap, -half);
 }
 
 /*
- * Composes a divider across `width`, starting at `x`, with its content beginning at `top`.
+ * Shares `free` between the lines of a lane by weight, giving none less than its minimum length.
  *
- * Nothing is painted here: the whole figure is measured and placed, and the caller paints from
- * the result. That is what keeps the measure pass and the render pass in agreement -- they are
- * the same call, and a divider whose height is reported as one thing and drawn as another would
- * shift every section under it by the difference.
+ * Water-filled: a line whose share falls short of its minimum is given the minimum and taken out,
+ * and what is left is shared again among the rest, until every remaining line's share holds. When
+ * the minimums alone are more than there is, they are what is drawn and the lane overflows -- the
+ * caller has already dropped whatever optional pieces it could.
+ */
+void shareLaneLength(QVector<LaneItem> &items, qreal free)
+{
+	QVector<int> active;
+	for (int i = 0; i < items.size(); ++i) {
+		if (items.at(i).isLine()) {
+			items[i].length = 0.0;
+			active.append(i);
+		}
+	}
+
+	qreal remaining = std::max<qreal>(0.0, free);
+	for (int pass = 0; pass <= items.size() && !active.isEmpty(); ++pass) {
+		qreal weights = 0.0;
+		for (int i : active)
+			weights += items.at(i).element.weight;
+
+		QVector<int> held;
+		for (int i : active) {
+			const qreal share = weights > 0.0 ? remaining * items.at(i).element.weight / weights : 0.0;
+			if (share < items.at(i).element.minLength)
+				held.append(i);
+		}
+
+		if (held.isEmpty()) {
+			for (int i : active)
+				items[i].length = weights > 0.0 ? remaining * items.at(i).element.weight / weights
+								: 0.0;
+			return;
+		}
+
+		for (int i : held) {
+			items[i].length = items.at(i).element.minLength;
+			remaining = std::max<qreal>(0.0, remaining - items.at(i).length);
+			active.removeOne(i);
+		}
+	}
+}
+
+/* `span` with every interval in `cuts` taken out of it, left to right. */
+QVector<QPair<qreal, qreal>> cutSpan(qreal from, qreal to, const QVector<QPair<qreal, qreal>> &cuts)
+{
+	QVector<QPair<qreal, qreal>> pieces = {{from, to}};
+	for (const auto &cut : cuts) {
+		QVector<QPair<qreal, qreal>> next;
+		for (const auto &piece : pieces) {
+			if (cut.second <= piece.first || cut.first >= piece.second) {
+				next.append(piece);
+				continue;
+			}
+			if (cut.first > piece.first)
+				next.append({piece.first, cut.first});
+			if (cut.second < piece.second)
+				next.append({cut.second, piece.second});
+		}
+		pieces = next;
+	}
+	return pieces;
+}
+
+/*
+ * Composes a divider inside the content column `x`..`x + width`, its top at `top`.
+ *
+ * Each lane is its own row: its pieces at their own sizes, its lines sharing out whatever room is
+ * left by weight. The lanes are stacked about one midline by their own thicknesses, and a piece
+ * set to span lanes cuts every other lane's lines around itself, which is how one ornament breaks
+ * a stack of rules. Pieces may reach past their lane in any direction -- a diamond is taller than
+ * the hairline it sits on -- so the divider's height is whatever everything in it actually covers.
+ *
+ * Nothing is painted here: the whole figure is measured and placed, and the caller paints from the
+ * result. That is what keeps the measure pass and the render pass in agreement -- they are the same
+ * call, and a divider whose height is reported as one thing and drawn as another would shift every
+ * section under it by the difference.
  */
 DividerLayout layoutDivider(const Section &section, const TextStyle &style, const LogoSource &logos,
 			    DividerArtCache *dividers, qreal x, qreal top, qreal width)
 {
 	DividerLayout layout;
+	const Divider &divider = section.divider;
 
-	const qreal thickness = section.dividerThickness;
-	if (!dividers || thickness <= 0.0 || width <= 0.0)
+	if (!dividers || width <= 0.0 || divider.lanes.isEmpty())
 		return layout;
 
-	/* --- Measure the three stacks ---------------------------------------------------- */
+	const qreal span = width * std::clamp(divider.length, 0.01, 1.0);
+	qreal left = x;
+	if (divider.align == HAlign::Center)
+		left = x + (width - span) / 2.0;
+	else if (divider.align == HAlign::Right)
+		left = x + width - span;
 
-	const qreal pieceGap = section.dividerPieceGap;
-	const auto measure = [&](const QVector<DividerPiece> &pieces) {
-		return measureDividerStack(pieces, style, logos, dividers, thickness, pieceGap, width);
-	};
+	const int laneCount = std::min(static_cast<int>(divider.lanes.size()), kMaxDividerLanes);
 
-	const MeasuredStack center = measure(section.dividerCenter);
-	const MeasuredStack leftEnd = measure(section.dividerCap);
-	/*
-	 * Mirroring says the two ends are the same list, not that the right-hand one is drawn
-	 * unflipped: an end is always drawn as a mirror image of the way it is written, whichever
-	 * list it came from, so the divider cannot come out pointing the same way at both ends.
-	 */
-	const MeasuredStack rightEnd = section.dividerMirrorEnds ? leftEnd : measure(section.dividerEndCap);
+	/* --- Stack the lanes about a midline at y = 0 ---------------------------------------------- */
 
-	const int rules = std::clamp(section.dividerRules, 1, 16);
-	const qreal stackHeight = rules * thickness + (rules - 1) * section.dividerRuleGap;
+	qreal stackHeight = (laneCount - 1) * divider.laneGap;
+	for (int i = 0; i < laneCount; ++i)
+		stackHeight += divider.lanes.at(i).thickness;
 
-	layout.height = std::max({stackHeight, leftEnd.height, rightEnd.height, center.height});
-	if (layout.height <= 0.0)
-		return layout;
-
-	const qreal midY = top + layout.height / 2.0;
-
-	/* --- Work out where the arms run ------------------------------------------------- */
-
-	const bool connect = section.dividerConnect;
-
-	/*
-	 * At the middle, centered on the section's own box rather than between the two arms, so a
-	 * divider whose ends differ still has its ornament on the middle of the line the eye follows.
-	 *
-	 * Off the middle, it slides toward an end until it meets it: held clear of the end by the arm
-	 * gap -- or, connected, by the piece gap, since the rule runs on behind it and nothing else is
-	 * left to say how close a piece may sit to another. Two runs meeting at the box's middle rather
-	 * than one across the room between the ends, so 0.5 is exactly where every older divider drew
-	 * its center whether or not the two ends match. A center too wide for the room has nowhere to
-	 * slide, and stays in the middle.
-	 */
-	const qreal boxCentered = x + (width - center.width) / 2.0;
-	qreal centerLeft = boxCentered;
-
-	const double position = std::clamp(section.dividerCenterPosition, 0.0, 1.0);
-	if (!center.isEmpty() && position != 0.5) {
-		const qreal clearance = connect ? std::max(0.0, section.dividerPieceGap) : section.dividerGap;
-		const auto endRoom = [clearance](const MeasuredStack &end) {
-			return end.isEmpty() ? 0.0 : std::max(0.0, end.width + clearance);
-		};
-
-		const qreal lowest = std::min(boxCentered, x + endRoom(leftEnd));
-		const qreal highest = std::max(boxCentered, x + width - endRoom(rightEnd) - center.width);
-
-		centerLeft = position < 0.5 ? lowest + (boxCentered - lowest) * (position / 0.5)
-					    : boxCentered + (highest - boxCentered) * ((position - 0.5) / 0.5);
+	QVector<qreal> laneCenters;
+	qreal cursorY = -stackHeight / 2.0;
+	for (int i = 0; i < laneCount; ++i) {
+		const DividerLane &lane = divider.lanes.at(i);
+		laneCenters.append(cursorY + lane.thickness / 2.0 + lane.offsetY);
+		cursorY += lane.thickness + divider.laneGap;
 	}
 
-	/*
-	 * Connected, the rule runs to the middle of the outermost piece of each end rather than
-	 * stopping outside the stack: that point is inside every cap's silhouette whatever the cap
-	 * is, where running to the stack's outer edge would poke a blunt nose out of a tapering
-	 * arrowhead. Otherwise the arm keeps clear by the section's gap -- which may itself be
-	 * negative, and is then an overlap by exactly the same reasoning, only asked for by hand.
-	 *
-	 * Either way the span is held inside the section's own box. A join deep enough to push an
-	 * arm out of it would have the rule painting over whatever the section above or below drew.
-	 */
-	qreal armLeft = x;
-	qreal armRight = x + width;
+	/* --- Lay each lane out along its own row -------------------------------------------------- */
 
-	if (connect) {
-		armLeft = x + leftEnd.outerHalfWidth();
-		armRight = x + width - rightEnd.outerHalfWidth();
-	} else {
-		/* Nothing to keep clear of, nor to run under, at an end with nothing on it. */
-		if (leftEnd.width > 0.0)
-			armLeft = std::max(x, x + leftEnd.width + section.dividerGap);
-		if (rightEnd.width > 0.0)
-			armRight = std::min(x + width, x + width - rightEnd.width - section.dividerGap);
-	}
+	QVector<QVector<LaneItem>> laneItems(laneCount);
 
-	/* --- Place the arms -------------------------------------------------------------- */
+	for (int laneIndex = 0; laneIndex < laneCount; ++laneIndex) {
+		const DividerLane &lane = divider.lanes.at(laneIndex);
+		const qreal laneLeft = left + lane.inset;
+		const qreal laneWidth = span - 2.0 * lane.inset;
+		if (laneWidth <= 0.0)
+			continue;
 
-	/*
-	 * Before the stacks rather than after them, so a piece is drawn over the rule it sits on
-	 * rather than under it. It makes no difference to tinted artwork -- every tinted part goes
-	 * into one silhouette, which is what lets an overlap union seamlessly in the first place --
-	 * but a custom picture left in its own colors is painted straight to the strip, and a rule
-	 * running across the front of it is not the ornament anybody placed.
-	 */
-	const qreal stackTop = midY - stackHeight / 2.0;
-
-	for (int rule = 0; rule < rules; ++rule) {
-		/*
-		 * Distance from the middle of the stack in rule steps, so each rule is shorter than
-		 * the one nearer the midline by exactly the inset. An even stack has no middle rule
-		 * to measure from and its two innermost sit half a step out, which keeps the wedge
-		 * symmetric either way.
-		 */
-		const qreal steps = std::abs(rule - (rules - 1) / 2.0);
-		const qreal inset = steps * section.dividerRuleInset;
-
-		const qreal ruleTop = stackTop + rule * (thickness + section.dividerRuleGap);
-		const qreal left = armLeft + inset;
-		const qreal right = armRight - inset;
-
-		/*
-		 * The right-hand arm is mirrored for the same reason the right-hand cap is: an arm
-		 * that is not symmetric in itself -- a taper running from a hairline up to full
-		 * thickness, a rule ticked off at one edge of each tile -- would otherwise point the
-		 * same way on both sides and leave the divider lopsided. Mirroring a tile that *is*
-		 * symmetric costs a transform and changes nothing, which is why it is unconditional
-		 * rather than a property some shapes declare and others forget to.
-		 */
-		const auto placeArm = [&](qreal from, qreal to, bool mirrored) {
-			if (to <= from)
-				return;
-			const QVector<QRectF> tiles = layoutDividerArm(section.dividerArm, section.dividerArmSvg,
-								       dividers,
-								       QRectF(from, ruleTop, to - from, thickness));
-			for (const QRectF &tile : tiles) {
-				layout.art.append(
-					DividerArtPlacement{tile, section.dividerArm, section.dividerArmSvg, mirrored});
+		QVector<LaneItem> items;
+		for (const DividerElement &element : divider.drawnRow(lane)) {
+			LaneItem item{element, QSizeF(), LogoArt()};
+			if (element.isLine()) {
+				item.size = QSizeF(0.0, lane.thickness * element.scale);
+			} else {
+				item.size = measureDividerPiece(element, style, logos, dividers, lane.thickness,
+								laneWidth, &item.art);
+				/* A piece that measures to nothing is dropped along with the joins beside it. */
+				if (!(item.size.width() > 0.0 && item.size.height() > 0.0))
+					continue;
 			}
+			items.append(item);
+		}
+
+		const auto fixedWidth = [&divider](const QVector<LaneItem> &row, qreal *minimums) {
+			qreal fixed = 0.0;
+			*minimums = 0.0;
+			for (int i = 0; i < row.size(); ++i) {
+				if (i > 0)
+					fixed += laneJoin(row.at(i - 1), row.at(i), divider);
+				if (row.at(i).isLine())
+					*minimums += row.at(i).element.minLength;
+				else
+					fixed += row.at(i).size.width();
+			}
+			return fixed;
 		};
 
-		if (center.isEmpty() || connect) {
-			/*
-			 * Nothing in the way -- or nothing the rule is asked to stop for -- so it
-			 * runs from one cap straight to the other, as one arm rather than two
-			 * touching: a scaling shape is stretched once across the whole span and a
-			 * spreading one is not made to meet in the middle. A shape with a direction
-			 * to it points one way along the whole rule, which for an unbroken line is
-			 * the only reading there is.
-			 *
-			 * Connected, the center is then drawn on top of this, which is how an
-			 * ornamental rule is actually composed: the diamond sits *on* the line
-			 * rather than between two lines that stop short of it.
-			 */
-			placeArm(left, right, false);
-		} else {
-			/*
-			 * Each arm still stops at its own end of the span. A join negative enough
-			 * to run one arm past the center would otherwise carry it out through the
-			 * far cap and off the section's box.
-			 */
-			placeArm(left, std::min(right, centerLeft - section.dividerGap), false);
-			placeArm(std::max(left, centerLeft + center.width + section.dividerGap), right, true);
+		qreal minimums = 0.0;
+		qreal fixed = fixedWidth(items, &minimums);
+
+		/*
+		 * Too narrow for the lines' own minimums: the pieces marked optional are the first to go,
+		 * all together, so a lane loses its flourishes before its rule is crushed.
+		 */
+		if (laneWidth - fixed < minimums && std::any_of(items.cbegin(), items.cend(), [](const LaneItem &item) {
+			    return item.element.optional;
+		    })) {
+			items.erase(std::remove_if(items.begin(), items.end(),
+						   [](const LaneItem &item) {
+							   return !item.isLine() && item.element.optional;
+						   }),
+				    items.end());
+			fixed = fixedWidth(items, &minimums);
+		}
+
+		shareLaneLength(items, laneWidth - fixed);
+
+		qreal total = fixed;
+		for (const LaneItem &item : items) {
+			if (item.isLine())
+				total += item.length;
+		}
+
+		/*
+		 * A lane whose lines take up the slack spans exactly its width. One with nothing to take it
+		 * up -- no lines, or none with any weight -- is centered, and one too wide for itself
+		 * overflows evenly either way rather than off one edge.
+		 */
+		qreal cursor = laneLeft + (laneWidth - total) / 2.0;
+		for (int i = 0; i < items.size(); ++i) {
+			if (i > 0)
+				cursor += laneJoin(items.at(i - 1), items.at(i), divider);
+			items[i].x = cursor;
+			cursor += items.at(i).width();
+		}
+
+		laneItems[laneIndex] = items;
+	}
+
+	/* --- Where spanning pieces cut the other lanes ------------------------------------------- */
+
+	QVector<QVector<QPair<qreal, qreal>>> cuts(laneCount);
+	for (int laneIndex = 0; laneIndex < laneCount; ++laneIndex) {
+		for (const LaneItem &item : laneItems.at(laneIndex)) {
+			if (item.isLine() || !item.element.spanLanes)
+				continue;
+			const qreal clearance = std::max<qreal>(divider.lineGap, -item.size.width() / 2.0);
+			const QPair<qreal, qreal> cut{item.x - clearance, item.x + item.size.width() + clearance};
+			for (int other = 0; other < laneCount; ++other) {
+				if (other != laneIndex)
+					cuts[other].append(cut);
+			}
 		}
 	}
 
-	/* --- Place the ends and the center ------------------------------------------------ */
+	/* --- Place everything, lines first ------------------------------------------------------- */
 
 	/*
-	 * The ends sit at the divider's full extent and on its midline, and are drawn once however
-	 * many rules run between them: three lines meeting one arrowhead is the figure the deco
-	 * rules draw, where three arrowheads stacked on top of each other is not.
+	 * Lines go in before pieces, so a piece is drawn over the line it sits on. That makes no
+	 * difference to tinted artwork -- it all goes into one silhouette -- but a custom picture left in
+	 * its own colors is painted straight to the strip, and a rule across the front of it is not the
+	 * ornament anybody placed.
 	 */
-	placeDividerStack(&layout, leftEnd, x, midY, false);
-	placeDividerStack(&layout, rightEnd, x + width - rightEnd.width, midY, true);
-	placeDividerStack(&layout, center, centerLeft, midY, false);
+	qreal minY = 0.0;
+	qreal maxY = 0.0;
+	bool any = false;
+	const auto cover = [&](qreal topEdge, qreal bottomEdge) {
+		minY = any ? std::min(minY, topEdge) : topEdge;
+		maxY = any ? std::max(maxY, bottomEdge) : bottomEdge;
+		any = true;
+	};
 
+	for (int laneIndex = 0; laneIndex < laneCount; ++laneIndex) {
+		for (const LaneItem &item : laneItems.at(laneIndex)) {
+			if (!item.isLine() || item.length <= 0.0)
+				continue;
+
+			const qreal thickness = item.size.height();
+			const qreal lineTop = laneCenters.at(laneIndex) + item.element.offsetY - thickness / 2.0;
+			/* Empty space still holds its room open, but has nothing to draw or to make the divider taller. */
+			if (dividerShapeIsEmpty(item.element.lineShape))
+				continue;
+			cover(lineTop, lineTop + thickness);
+
+			for (const auto &piece : cutSpan(item.x, item.x + item.length, cuts.at(laneIndex))) {
+				const QVector<QRectF> tiles = layoutDividerArm(
+					item.element.lineShape, item.element.lineSvgPath, dividers,
+					QRectF(piece.first, lineTop, piece.second - piece.first, thickness));
+				for (const QRectF &tile : tiles) {
+					layout.art.append(DividerArtPlacement{
+						tile, item.element.lineShape, item.element.lineSvgPath,
+						item.element.flip, 0.0, item.element.ownColor, item.element.color});
+				}
+			}
+		}
+	}
+
+	for (int laneIndex = 0; laneIndex < laneCount; ++laneIndex) {
+		for (const LaneItem &item : laneItems.at(laneIndex)) {
+			if (item.isLine())
+				continue;
+
+			const DividerElement &element = item.element;
+			const qreal centerY = laneCenters.at(laneIndex) + element.offsetY;
+			const QRectF box(item.x, centerY - item.size.height() / 2.0, item.size.width(),
+					 item.size.height());
+			const qreal reach = turnedHeight(item.size, element.rotation) / 2.0;
+			cover(centerY - reach, centerY + reach);
+
+			/*
+			 * Artwork is truly mirrored when flipped; a word and a picture are never set backwards,
+			 * so their lean is reflected instead -- which keeps a tilted year at one end the answering
+			 * figure to the one at the other.
+			 */
+			const qreal lean = element.flip ? -element.rotation : element.rotation;
+
+			switch (element.kind) {
+			case DividerElement::Kind::Shape:
+				layout.art.append(DividerArtPlacement{box, element.shape, element.svgPath, element.flip,
+								      element.rotation, element.ownColor,
+								      element.color});
+				break;
+			case DividerElement::Kind::Text:
+				layout.texts.append(DividerLayout::TextPiece{element.text, box, lean, element.ownColor,
+									     element.color});
+				break;
+			case DividerElement::Kind::Image:
+				layout.logos.append(
+					DividerLayout::LogoPiece{item.art, element.logo, box.toRect(), lean});
+				break;
+			case DividerElement::Kind::Line:
+				break;
+			}
+		}
+	}
+
+	if (!any || maxY <= minY)
+		return DividerLayout();
+
+	/* --- Move the whole figure down so its highest point is the top of the section ------------- */
+
+	const qreal shift = top - minY;
+	for (DividerArtPlacement &placement : layout.art)
+		placement.rect.translate(0.0, shift);
+	for (DividerLayout::TextPiece &piece : layout.texts)
+		piece.rect.translate(0.0, shift);
+	for (DividerLayout::LogoPiece &piece : layout.logos)
+		piece.rect.translate(0, qRound(shift));
+
+	layout.height = maxY - minY;
+	layout.box = QRectF(left, top, span, layout.height);
 	return layout;
 }
 
@@ -2046,13 +2066,13 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		const DividerLayout divider = layoutDivider(section, style, logos, dividers, contentX, y, contentWidth);
 
 		if (painter && divider.height > 0.0) {
-			const QRectF fillBox(contentX, y, contentWidth, divider.height);
+			const QRectF fillBox = divider.box;
 
 			/*
 			 * The divider's own panel, over the box its artwork occupies rather than the
 			 * section's -- which is the narrower and shorter of the two, since a divider set
-			 * narrower than its section sits centered in it. Down before the art, so a rule
-			 * drawn on a band reads as being on it.
+			 * shorter than its section sits inside it. Down before the art, so a rule drawn on
+			 * a band reads as being on it.
 			 */
 			panels.paint(BackgroundSlot::Divider, fillBox);
 
@@ -2062,33 +2082,34 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 			 * carries the title's gold sweep while its own label stays white is the
 			 * same edit as yellow leader dots under white names.
 			 */
-			paintDividerArt(painter, divider.art, section, document.effectiveBridgeStyle(section), dividers,
-					fillBox);
+			paintDividerArt(painter, divider.art, section.divider.tint,
+					document.effectiveBridgeStyle(section), dividers, fillBox);
 
 			/*
-			 * A word and a mark in the middle of a divider go through the very helpers
-			 * that draw a section's own title and its own logo, so they pick up the
-			 * style's gradient, outline and shadow without a second implementation of
-			 * any of it.
+			 * A word and a mark in a divider go through the very helpers that draw a
+			 * section's own title and its own logo, so they pick up the style's gradient,
+			 * outline and shadow without a second implementation of any of it.
 			 */
 			for (const DividerLayout::TextPiece &piece : divider.texts) {
 				const TurnedPainter turned(painter, piece.rect, piece.rotation);
-				layoutText(painter, piece.text, style, piece.rect.left(), piece.rect.top(),
-					   piece.rect.width());
+				layoutText(painter, piece.text,
+					   piece.ownColor ? dividerInkIn(style, piece.color) : style, piece.rect.left(),
+					   piece.rect.top(), piece.rect.width());
 			}
 
 			for (const DividerLayout::LogoPiece &piece : divider.logos) {
 				const TurnedPainter turned(painter, piece.rect, piece.rotation);
-				paintLogo(painter, piece.art, piece.rect, style, piece.ref->playback);
+				paintLogo(painter, piece.art, piece.rect, style, piece.ref.playback);
 			}
 		}
 
 		for (const DividerLayout::TextPiece &piece : divider.texts)
 			record(LayoutBox::Kind::Text, piece.rect);
 		for (const DividerLayout::LogoPiece &piece : divider.logos)
-			recordLogo(piece.art, *piece.ref, piece.rect, style);
+			recordLogo(piece.art, piece.ref, piece.rect, style);
 
-		record(LayoutBox::Kind::Divider, QRectF(contentX, y, contentWidth, divider.height));
+		if (divider.height > 0.0)
+			record(LayoutBox::Kind::Divider, divider.box);
 		y += qRound(divider.height);
 		break;
 	}

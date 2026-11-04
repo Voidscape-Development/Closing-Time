@@ -34,7 +34,7 @@ columns — which between them cover every shape in the table below:
 | Multi-List of Text | Names across a configurable number of columns |
 | Title and Subtitle Multi-List | The same stacked pairs, across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
-| Section Divider | An ornamental rule between sections, composed from its two ends, the rule between them, and whatever sits in the middle |
+| Section Divider | An ornamental rule between sections, built from lanes of lines and shapes by dragging, symmetric by default |
 | Spacer | A blank run, for pacing |
 | Sticky Ending Block | Sections that hold still on the frame while the rest of the roll scrolls past behind them — a closing card that stays up, and can be the end of the roll |
 | Action | A marker that runs actions when the roll reaches it — show a background source, switch a filter on, trigger a hotkey — and takes no room at all |
@@ -80,30 +80,32 @@ row can hug either edge or sit centered; and a row with only one side filled in 
 leader out to the far edge, for a heading inside an otherwise bridged list.
 
 A **section divider** is the ornamental rule that separates one part of a roll from the next,
-and it is *composed* rather than picked from a list of finished pictures: an end, a rule
-running inward from it, and a middle — then the same again mirrored, so the two ends of a rule
-cannot drift apart while you work on it. The ends and the middle are the same kind of thing and
-draw on the same library of vector shapes — arrowheads, spearpoints, teardrops, scrolled ends,
-deco steps and chevrons; diamonds, nested diamonds, four- and five-point stars, dots, hearts,
-scrolls, filigree curls and deco interlocks; and the plain geometry under all of it — circles,
-squares, rounded squares, triangles, pentagons, hexagons and octagons, each filled or as an
-outline — so an arrowhead can break a rule as readily as it caps one, and any of them can instead
-be an SVG of your own. The rule between them has a library
-of its own: plain, double, tapered, dotted, dashed, diamond-chained and ticked.
+and it is *composed* rather than picked from a list of finished pictures. Start from one of twenty
+finished designs, then shape it by dragging.
 
-Each end, and the middle, is a *list* rather than a single choice, because the figures that turn
-up there are compounds: a diamond with a dot either side of it, `PART II` between two curls, a
-monogram between a pair of scrolls, `MMXXVI` set against the end of the rule. Pieces can be
-ornaments, a word set in the section's own font, or an image, each at a size and an angle of its
-own and in whatever order you put them; leave a list empty and you get an end with nothing on it,
-or an unbroken rule. A turned piece keeps the room along the rule that its untilted shape had, so
-its neighbors stay where they are while you dial an angle in — a square set on its corner, a
-triangle pointing up out of the line, a year set sideways — and the far end of a mirrored rule
-leans the other way, so the two ends stay each other's reflection. Two
-or three rules can run in parallel with a single ornament breaking all of them, and they can be
-tapered so the stack forms a wedge. One thickness sizes the whole thing — every shape knows its
-own proportion to the rule it belongs to, so an arrowhead stays an arrowhead when a divider is
-made heavier.
+A divider is a row of parts along a line. Some parts are **lines** that stretch to fill the room —
+plain, double, tapered, dotted, dashed, diamond-chained, ticked, empty space, or an SVG of your own
+— and the rest are drawn once at their own size: **shapes** (arrowheads, spearpoints, teardrops,
+scrolled ends, deco steps, chevrons, diamonds, stars, dots, hearts, scrolls, filigree curls, deco
+interlocks, and circles, squares, triangles, pentagons, hexagons and octagons filled or outlined),
+a **word** set in the section's own font, or an **image**. Lines share out the room by weight, so
+where a shape sits is simply how much line is either side of it: `CHAPTER ONE` leading a rule,
+diamonds at the thirds, an arrow that flies one way.
+
+Dividers are **symmetric** by default: you design the left half and the right half is its
+reflection, with the last part sitting on the center line. Turn symmetry off to lay out the whole
+row yourself.
+
+A divider can have several **lanes**, stacked one above another, each its own line with its own
+rule, thickness, length and parts — a hairline over a heavy rule over a run of dots — and one
+ornament can break all of them at once. Any part can be drawn in a color of its own, turned, flipped,
+nudged above or below the line, run under its neighbours so the figure reads as one piece, or marked
+to be left out when the divider is too narrow for it. Every shape knows its own proportion to the
+line it sits on, so an arrowhead stays an arrowhead when a lane is made heavier.
+
+In the editor, a live preview sits over a palette of every part. Drag a part onto a lane to add it,
+drag it along the lane to reorder, drag a line's edge to give it more of the room, and drag a part
+back onto the palette to remove it.
 
 Because the artwork is a stencil rather than a picture, a divider takes the section's own fill:
 the gold sweep on your titles runs across the whole divider as one figure rather than
@@ -164,7 +166,7 @@ rather than quietly substituted. Carrying font files is redistributing them, so 
 turned off per roll and the window says so where the switch is.
 
 **Logos can move.** Any slot that takes a logo — a heading's, a wordmark, a cell in a sponsor
-grid, an ornament in the middle of a divider — takes an animated GIF, APNG or animated WebP.
+grid, an image in a divider — takes an animated GIF, APNG or animated WebP.
 Video files are not logos and are not played. Each one sets whether it loops or plays
 once, whether it starts with the roll or when it scrolls into frame, and how fast it runs against
 the artwork's own timing. Animations move with the roll rather than with the clock, so a paused

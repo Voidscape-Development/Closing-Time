@@ -333,10 +333,10 @@ CT_SUITE(fonts_used_families, "Which families a roll is actually set in")
 	divider.style.family = QStringLiteral("Divider Face");
 	check(documentWith(divider).usedFontFamilies().isEmpty(), "a divider with no text reports no family");
 
-	DividerPiece word;
-	word.kind = DividerPiece::Kind::Text;
+	DividerElement word;
+	word.kind = DividerElement::Kind::Text;
 	word.text = QStringLiteral("PART II");
-	divider.dividerCenter = {word};
+	divider.divider.lanes.first().elements.append(word);
 	checkEq(documentWith(divider).usedFontFamilies().size(), 1,
 		"a divider that does set text reports the family it sets it in");
 

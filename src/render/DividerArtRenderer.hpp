@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <QColor>
 #include <QRectF>
 #include <QSizeF>
 #include <QString>
@@ -67,9 +68,15 @@ struct DividerArtPlacement {
 	 * from each other rather than both the same way.
 	 *
 	 * The rect is the room the untilted shape asked for and does not grow with the angle; see
-	 * DividerPiece::rotation for why the layout deliberately stays still.
+	 * DividerElement::rotation for why the layout deliberately stays still.
 	 */
 	qreal rotation = 0.0;
+	/*
+	 * Inked in this color rather than the divider's own fill, with the divider's outline and
+	 * shadow still around it. See DividerElement::ownColor.
+	 */
+	bool ownColor = false;
+	QColor color;
 };
 
 /*
@@ -108,7 +115,14 @@ QVector<QRectF> layoutDividerArm(DividerShape shape, const QString &file, Divide
  * Custom artwork left untinted is drawn straight to the strip in the colors it was authored
  * with, and so takes no part in that silhouette.
  */
-void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art, const Section &section,
-		     const TextStyle &style, DividerArtCache *cache, const QRectF &fillBox);
+void paintDividerArt(QPainter *painter, const QVector<DividerArtPlacement> &art, bool tint, const TextStyle &style,
+		     DividerArtCache *cache, const QRectF &fillBox);
+
+/*
+ * The style a part of the divider drawn in a color of its own is inked with: the divider's, with
+ * its fill swapped for that one color. The outline and the shadow are kept, so the part still
+ * belongs to the figure around it.
+ */
+TextStyle dividerInkIn(const TextStyle &style, const QColor &color);
 
 } // namespace closingtime

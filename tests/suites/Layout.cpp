@@ -148,7 +148,8 @@ CT_SUITE(layout_empty, "Degenerate documents, which must not crash or measure ne
 		section.text.clear();
 		section.secondaryText.clear();
 		section.entries.clear();
-		section.dividerCenter.clear();
+		for (DividerLane &lane : section.divider.lanes)
+			lane.elements.clear();
 		section.logo.path.clear();
 
 		const Document document = documentWith(section);
