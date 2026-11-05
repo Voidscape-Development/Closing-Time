@@ -31,6 +31,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QStringList>
 
 #include <algorithm>
+#include <string>
+#include <tuple>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -284,8 +286,7 @@ struct CreditsSourceData {
 RollTimeline timelineFor(const RollLayout &layout, const Document &current)
 {
 	TimelineInputs inputs = layout.timelineInputs();
-	inputs.scrollSpeed = current.scrollSpeed;
-	inputs.loop = current.loop;
+	applyPlayback(&inputs, current);
 	return RollTimeline(inputs);
 }
 
@@ -549,7 +550,8 @@ void planPictures(CreditsSourceData *data)
 
 	const uint64_t frameTime = obs_get_video_frame_time();
 	const int canvasHeight = std::max(1, data->document.height);
-	const double speed = std::max(1.0, data->document.scrollSpeed);
+	/* The speed really played at, which a fit may have worked out rather than the document saying. */
+	const double speed = std::max(1.0, data->timeline.speedUsed());
 	const bool looking = obs_source_showing(data->source) ||
 			     (data->lastRendered != 0 && frameTime - data->lastRendered < kTextureGraceNs);
 
@@ -1078,8 +1080,15 @@ void update(void *raw, obs_data_t *settings)
 {
 	auto *data = static_cast<CreditsSourceData *>(raw);
 
-	const double previousSpeed = data->document.scrollSpeed;
-	const bool previousLoop = data->document.loop;
+	/* Everything a new timeline is built from without laying the roll out again; see applyPlayback. */
+	const auto playbackOf = [](const Document &document) {
+		TimelineInputs inputs;
+		applyPlayback(&inputs, document);
+		return std::make_tuple(inputs.scrollSpeed, inputs.loop, inputs.mode, inputs.fitSeconds, inputs.pageHold,
+				       inputs.pageTransition, inputs.pageTransitionTime, inputs.pageAnchor,
+				       inputs.pageMargin);
+	};
+	const auto previousPlayback = playbackOf(data->document);
 
 	/*
 	 * `load` brings the document up to date against the library, which can rename a preset and
@@ -1108,8 +1117,7 @@ void update(void *raw, obs_data_t *settings)
 	 * roll's time is carried across so the strip stays where it is -- a roll keeps its place when
 	 * its speed is adjusted under it.
 	 */
-	if (!contentChanged && data->live &&
-	    (data->document.scrollSpeed != previousSpeed || data->document.loop != previousLoop)) {
+	if (!contentChanged && data->live && playbackOf(data->document) != previousPlayback) {
 		RollTimeline next = timelineFor(*data->live, data->document);
 		{
 			std::lock_guard<std::mutex> lock(data->stateMutex);
@@ -1388,6 +1396,9 @@ void videoTick(void *raw, float seconds)
  * the alpha alone would leave the color at full strength on top of a background the blend no longer
  * takes away, which glows rather than fades.
  *
+ * The edge fade is the same per-pixel ramp `edgeFadeAt` computes for the designer, worked out from
+ * where each pixel lands on the canvas; `fade_on` is off for a draw that does not fade -- a card.
+ *
  * Written out here rather than shipped as a .effect file because it is forty lines and because a
  * data file is one more thing that has to be found at runtime on three platforms.
  */
@@ -1395,6 +1406,10 @@ const char *const kRollEffectSource = R"(
 uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform float alpha;
+uniform float fade_top;
+uniform float fade_bottom;
+uniform float canvas_height;
+uniform float fade_on;
 
 sampler_state textureSampler {
 	Filter   = Linear;
@@ -1407,12 +1422,27 @@ struct VertData {
 	float2 uv  : TEXCOORD0;
 };
 
-VertData VSDefault(VertData vert_in)
+struct VertOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+	float2 canvas : TEXCOORD1;
+};
+
+VertOut VSDefault(VertData vert_in)
 {
-	VertData vert_out;
+	VertOut vert_out;
 	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
 	vert_out.uv  = vert_in.uv;
+	vert_out.canvas = vert_in.pos.xy;
 	return vert_out;
+}
+
+float edge_ramp(float distance, float over)
+{
+	if (over <= 0.0)
+		return 1.0;
+	float p = saturate(distance / over);
+	return p * p * (3.0 - 2.0 * p);
 }
 
 float srgb_to_linear_channel(float u)
@@ -1420,13 +1450,15 @@ float srgb_to_linear_channel(float u)
 	return (u <= 0.04045) ? (u / 12.92) : pow((u + 0.055) / 1.055, 2.4);
 }
 
-float4 PSDraw(VertData vert_in) : TARGET
+float4 PSDraw(VertOut vert_in) : TARGET
 {
 	float4 rgba = image.Sample(textureSampler, vert_in.uv);
 	float3 straight = rgba.rgb / max(rgba.a, 0.0001);
 	float3 linear_rgb = float3(srgb_to_linear_channel(straight.r), srgb_to_linear_channel(straight.g),
 				   srgb_to_linear_channel(straight.b));
-	return float4(linear_rgb * rgba.a, rgba.a) * alpha;
+	float y = vert_in.canvas.y;
+	float fade = lerp(1.0, edge_ramp(y, fade_top) * edge_ramp(canvas_height - y, fade_bottom), fade_on);
+	return float4(linear_rgb * rgba.a, rgba.a) * (alpha * fade);
 }
 
 technique Draw
@@ -1625,6 +1657,12 @@ void videoRender(void *raw, gs_effect_t *)
 		effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
 	gs_eparam_t *alphaParam = gs_effect_get_param_by_name(effect, "alpha");
+	/* All four are null with the base effect, which is drawn from only when the shader failed to compile. */
+	gs_eparam_t *fadeTopParam = gs_effect_get_param_by_name(effect, "fade_top");
+	gs_eparam_t *fadeBottomParam = gs_effect_get_param_by_name(effect, "fade_bottom");
+	gs_eparam_t *canvasHeightParam = gs_effect_get_param_by_name(effect, "canvas_height");
+	gs_eparam_t *fadeOnParam = gs_effect_get_param_by_name(effect, "fade_on");
+	const bool fades = data->document.edgeFadeTop > 0 || data->document.edgeFadeBottom > 0;
 
 	/*
 	 * Premultiplied, because the pictures are -- see RollRenderer::rasterize. It is also what OBS
@@ -1655,6 +1693,12 @@ void videoRender(void *raw, gs_effect_t *)
 			gs_effect_set_texture(imageParam, texture);
 			if (alphaParam)
 				gs_effect_set_float(alphaParam, static_cast<float>(item.alpha));
+			if (fadeOnParam) {
+				gs_effect_set_float(fadeOnParam, fades && item.edgeFade ? 1.0f : 0.0f);
+				gs_effect_set_float(fadeTopParam, static_cast<float>(data->document.edgeFadeTop));
+				gs_effect_set_float(fadeBottomParam, static_cast<float>(data->document.edgeFadeBottom));
+				gs_effect_set_float(canvasHeightParam, static_cast<float>(canvasHeight));
+			}
 			drawQuad(texture, target, source);
 		}
 	}
@@ -1684,6 +1728,29 @@ bool onManualScrollChanged(obs_properties_t *props, obs_property_t *, obs_data_t
 			obs_property_set_visible(property, manual);
 	}
 
+	return true;
+}
+
+/*
+ * Shows the rows the playback settings leave meaningful: the speed only while nothing is fitting it
+ * (and only when scrolling -- pages have no speed), the length only while fitting, and the page
+ * settings only for a roll played as pages.
+ */
+bool onPlaybackChanged(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
+{
+	const bool pages = playbackModeFromId(obs_data_get_string(settings, "playback_mode"), PlaybackMode::Scroll) ==
+			   PlaybackMode::Pages;
+	const bool fit = obs_data_get_bool(settings, "fit_duration");
+
+	const auto setVisible = [props](const char *name, bool visible) {
+		if (obs_property_t *property = obs_properties_get(props, name))
+			obs_property_set_visible(property, visible);
+	};
+	setVisible("scroll_speed", !pages && !fit);
+	setVisible("fit_seconds", fit);
+	setVisible("pages_group", pages);
+	/* A fitted roll's pages hold for whatever the fit works out. */
+	setVisible("page_hold", pages && !fit);
 	return true;
 }
 
@@ -1826,9 +1893,65 @@ obs_properties_t *getProperties(void *raw)
 	obs_properties_add_int(props, "height", obs_module_text("Height"), 16, 8192, 1);
 	obs_properties_add_color_alpha(props, "background", obs_module_text("BackgroundColor"));
 
+	/* How the roll is played: scrolled, or as pages that each hold and give way to the next. */
+	obs_property_t *mode = obs_properties_add_list(props, "playback_mode", obs_module_text("PlaybackMode"),
+						       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(mode, obs_module_text("PlaybackMode.Scroll"), "scroll");
+	obs_property_list_add_string(mode, obs_module_text("PlaybackMode.Pages"), "pages");
+	obs_property_set_long_description(mode, obs_module_text("PlaybackMode.Tip"));
+	obs_property_set_modified_callback(mode, onPlaybackChanged);
+
 	obs_property_t *speed =
 		obs_properties_add_float(props, "scroll_speed", obs_module_text("ScrollSpeed"), 1.0, 2000.0, 1.0);
 	obs_property_float_set_suffix(speed, " px/s");
+
+	/*
+	 * Fit to a length: the speed -- or, played as pages, the hold -- is worked out so the roll ends
+	 * when the music does. The speed row goes away while it is on, since it is no longer the answer.
+	 */
+	obs_property_t *fit = obs_properties_add_bool(props, "fit_duration", obs_module_text("FitDuration"));
+	obs_property_set_long_description(fit, obs_module_text("FitDuration.Tip"));
+	obs_property_set_modified_callback(fit, onPlaybackChanged);
+	obs_property_t *fitSeconds =
+		obs_properties_add_float(props, "fit_seconds", obs_module_text("FitSeconds"), 1.0, 86400.0, 0.5);
+	obs_property_float_set_suffix(fitSeconds, " s");
+	obs_property_set_long_description(fitSeconds, obs_module_text("FitSeconds.Tip"));
+
+	/* The pages' own settings, shown only for a roll played as pages. */
+	obs_properties_t *pages = obs_properties_create();
+	obs_property_t *hold =
+		obs_properties_add_float(pages, "page_hold", obs_module_text("PageHold"), 0.0, 3600.0, 0.1);
+	obs_property_float_set_suffix(hold, " s");
+	obs_property_t *transition = obs_properties_add_list(pages, "page_transition",
+							     obs_module_text("PageTransition"), OBS_COMBO_TYPE_LIST,
+							     OBS_COMBO_FORMAT_STRING);
+	for (const char *id : {"cut", "fade", "crossfade", "slide"}) {
+		const std::string key = std::string("PageTransition.") + id;
+		obs_property_list_add_string(transition, obs_module_text(key.c_str()), id);
+	}
+	obs_property_t *transitionTime = obs_properties_add_float(
+		pages, "page_transition_time", obs_module_text("PageTransitionTime"), 0.0, 60.0, 0.05);
+	obs_property_float_set_suffix(transitionTime, " s");
+	obs_property_t *anchor = obs_properties_add_list(pages, "page_anchor", obs_module_text("PageAnchor"),
+							 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(anchor, obs_module_text("PageAnchor.Top"), "top");
+	obs_property_list_add_string(anchor, obs_module_text("PageAnchor.Center"), "center");
+	obs_property_list_add_string(anchor, obs_module_text("PageAnchor.Bottom"), "bottom");
+	obs_property_t *margin =
+		obs_properties_add_int(pages, "page_margin", obs_module_text("PageMargin"), 0, 4096, 4);
+	obs_property_int_set_suffix(margin, " px");
+	obs_property_set_long_description(margin, obs_module_text("PageMargin.Tip"));
+	obs_properties_add_group(props, "pages_group", obs_module_text("PagesGroup"), OBS_GROUP_NORMAL, pages);
+
+	/* A soft edge where the roll enters and leaves the frame, instead of a cut. */
+	obs_property_t *fadeTop =
+		obs_properties_add_int(props, "edge_fade_top", obs_module_text("EdgeFadeTop"), 0, 4096, 4);
+	obs_property_int_set_suffix(fadeTop, " px");
+	obs_property_set_long_description(fadeTop, obs_module_text("EdgeFade.Tip"));
+	obs_property_t *fadeBottom =
+		obs_properties_add_int(props, "edge_fade_bottom", obs_module_text("EdgeFadeBottom"), 0, 4096, 4);
+	obs_property_int_set_suffix(fadeBottom, " px");
+	obs_property_set_long_description(fadeBottom, obs_module_text("EdgeFade.Tip"));
 
 	obs_properties_add_int(props, "lead_in", obs_module_text("LeadIn"), 0, 20000, 10);
 	obs_properties_add_int(props, "lead_out", obs_module_text("LeadOut"), 0, 20000, 10);

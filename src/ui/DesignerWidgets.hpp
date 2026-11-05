@@ -50,7 +50,20 @@ namespace closingtime {
  * of forty rows, and nine shapes in nine colours is about as many as that kind of glance can tell
  * apart. Which heading, or which kind of list, is what the row's second line is for.
  */
-enum class SectionFamily { Heading, LogoHeading, List, Columns, Bridged, Divider, Spacer, Sticky, Action };
+enum class SectionFamily {
+	Heading,
+	LogoHeading,
+	List,
+	Columns,
+	Bridged,
+	Divider,
+	Spacer,
+	Sticky,
+	Action,
+	Paragraph,
+	QrCode,
+	PageBreak,
+};
 
 SectionFamily sectionFamily(SectionType type);
 

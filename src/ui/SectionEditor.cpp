@@ -177,8 +177,9 @@ QString bridgeTypeText(BridgeType type)
 const QVector<SectionType> &baseSectionTypes()
 {
 	static const QVector<SectionType> types = {
-		SectionType::Title,  SectionType::Header,         SectionType::TextList,    SectionType::Bridged,
-		SectionType::Spacer, SectionType::SectionDivider, SectionType::StickyBlock, SectionType::Action,
+		SectionType::Title,       SectionType::Header, SectionType::TextList,  SectionType::Bridged,
+		SectionType::Paragraph,   SectionType::QrCode, SectionType::Spacer,    SectionType::SectionDivider,
+		SectionType::StickyBlock, SectionType::Action, SectionType::PageBreak,
 	};
 	return types;
 }
@@ -833,6 +834,10 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	typeListContent->addItem(moduleText("Designer.ListContent.Text"), static_cast<int>(SectionListContent::Text));
 	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
 	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
+	typeListContent->addItem(moduleText("Designer.ListContent.Stacks"),
+				 static_cast<int>(SectionListContent::Stacks));
+	typeListContent->addItem(moduleText("Designer.ListContent.Cards"), static_cast<int>(SectionListContent::Cards));
+	typeListContent->addItem(moduleText("Designer.ListContent.Icons"), static_cast<int>(SectionListContent::Icons));
 	typeListContent->hide();
 	listContentSegments = new SegmentedControl(variantRow);
 	listContentSegments->setToolTip(moduleText("Designer.ListContent.Tip"));
@@ -888,6 +893,11 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	subtitleEdit = new QPlainTextEdit(this);
 	subtitleEdit->setMaximumHeight(80);
 	addRow(moduleText("Designer.Subtitle"), subtitleEdit);
+
+	qrTextEdit = new QLineEdit(this);
+	qrTextEdit->setPlaceholderText(QStringLiteral("https://"));
+	qrTextEdit->setToolTip(moduleText("Designer.QrText.Tip"));
+	addRow(moduleText("Designer.QrText"), qrTextEdit);
 
 	addLogoSlot = new QPushButton(moduleText("Designer.AddLogoSlot"), this);
 	addLogoSlot->setObjectName(QStringLiteral("designerEmptySlot"));
@@ -1158,6 +1168,145 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	spacerHeight->setRange(0, 20000);
 	spacerHeight->setSuffix(QStringLiteral(" px"));
 	addRow(moduleText("Designer.SpacerHeight"), spacerHeight);
+
+	paragraphGap = new QSpinBox(this);
+	paragraphGap->setRange(0, 4096);
+	paragraphGap->setSuffix(QStringLiteral(" px"));
+	paragraphGap->setToolTip(moduleText("Designer.ParagraphGap.Tip"));
+	addRow(moduleText("Designer.ParagraphGap"), paragraphGap);
+
+	justifyText = new QCheckBox(moduleText("Designer.JustifyText"), this);
+	justifyText->setToolTip(moduleText("Designer.JustifyText.Tip"));
+	addRow(QString(), justifyText);
+
+	qrSize = new QSpinBox(this);
+	qrSize->setRange(21, 8192);
+	qrSize->setSuffix(QStringLiteral(" px"));
+	qrSize->setToolTip(moduleText("Designer.QrSize.Tip"));
+	addRow(moduleText("Designer.QrSize"), qrSize);
+
+	qrQuietZone = new QSpinBox(this);
+	qrQuietZone->setRange(0, 16);
+	qrQuietZone->setToolTip(moduleText("Designer.QrQuietZone.Tip"));
+	addRow(moduleText("Designer.QrQuietZone"), qrQuietZone);
+
+	qrErrorCorrection = new QComboBox(this);
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.Low"),
+				   static_cast<int>(QrErrorCorrection::Low));
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.Medium"),
+				   static_cast<int>(QrErrorCorrection::Medium));
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.Quartile"),
+				   static_cast<int>(QrErrorCorrection::Quartile));
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.High"),
+				   static_cast<int>(QrErrorCorrection::High));
+	qrErrorCorrection->setToolTip(moduleText("Designer.QrErrorCorrection.Tip"));
+	addRow(moduleText("Designer.QrErrorCorrection"), qrErrorCorrection);
+
+	qrForeground = new ColorButton(this);
+	qrForeground->setDialogTitle(moduleText("Designer.QrForeground"));
+	addRow(moduleText("Designer.QrForeground"), qrForeground);
+
+	qrBackground = new ColorButton(this);
+	qrBackground->setDialogTitle(moduleText("Designer.QrBackground"));
+	qrBackground->setToolTip(moduleText("Designer.QrBackground.Tip"));
+	addRow(moduleText("Designer.QrBackground"), qrBackground);
+
+	qrLook = new QComboBox(this);
+	qrLook->addItem(moduleText("Designer.QrLook.Own"), -1);
+	for (int i = 0; i < qrLooks().size(); ++i) {
+		const QrLook &look = qrLooks().at(i);
+		const QString key = QStringLiteral("Designer.QrLook.") + QString::fromLatin1(look.id);
+		const QString text = QString::fromUtf8(obs_module_text(key.toUtf8().constData()));
+		qrLook->addItem(text == key ? QString::fromUtf8(look.name) : text, i);
+	}
+	qrLook->setToolTip(moduleText("Designer.QrLook.Tip"));
+	addRow(moduleText("Designer.QrLook"), qrLook);
+
+	const auto eyeShapes = [](QComboBox *box) {
+		box->addItem(moduleText("Designer.QrShape.Square"), static_cast<int>(QrEyeShape::Square));
+		box->addItem(moduleText("Designer.QrShape.Rounded"), static_cast<int>(QrEyeShape::Rounded));
+		box->addItem(moduleText("Designer.QrShape.Circle"), static_cast<int>(QrEyeShape::Circle));
+		box->addItem(moduleText("Designer.QrShape.Diamond"), static_cast<int>(QrEyeShape::Diamond));
+	};
+
+	qrModuleShape = new QComboBox(this);
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Square"), static_cast<int>(QrModuleShape::Square));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Rounded"), static_cast<int>(QrModuleShape::Rounded));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Dots"), static_cast<int>(QrModuleShape::Dots));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Diamond"), static_cast<int>(QrModuleShape::Diamond));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Connected"), static_cast<int>(QrModuleShape::Connected));
+	addRow(moduleText("Designer.QrModuleShape"), qrModuleShape);
+
+	qrModuleScale = new QSpinBox(this);
+	qrModuleScale->setRange(50, 100);
+	qrModuleScale->setSuffix(QStringLiteral(" %"));
+	qrModuleScale->setToolTip(moduleText("Designer.QrModuleScale.Tip"));
+	addRow(moduleText("Designer.QrModuleScale"), qrModuleScale);
+
+	qrEyeFrame = new QComboBox(this);
+	eyeShapes(qrEyeFrame);
+	/* A pupil shape only: a diamond frame is missed by too many phone readers. */
+	qrEyeFrame->removeItem(qrEyeFrame->findData(static_cast<int>(QrEyeShape::Diamond)));
+	addRow(moduleText("Designer.QrEyeFrame"), qrEyeFrame);
+
+	qrEyePupil = new QComboBox(this);
+	eyeShapes(qrEyePupil);
+	addRow(moduleText("Designer.QrEyePupil"), qrEyePupil);
+
+	qrEyeColors = new QCheckBox(moduleText("Designer.QrEyeColors"), this);
+	addRow(QString(), qrEyeColors);
+
+	qrEyeFrameColor = new ColorButton(this);
+	qrEyeFrameColor->setDialogTitle(moduleText("Designer.QrEyeFrameColor"));
+	addRow(moduleText("Designer.QrEyeFrameColor"), qrEyeFrameColor);
+
+	qrEyePupilColor = new ColorButton(this);
+	qrEyePupilColor->setDialogTitle(moduleText("Designer.QrEyePupilColor"));
+	addRow(moduleText("Designer.QrEyePupilColor"), qrEyePupilColor);
+
+	qrFill = new QComboBox(this);
+	qrFill->addItem(moduleText("Designer.QrFill.Solid"), static_cast<int>(TextFill::Solid));
+	qrFill->addItem(moduleText("Designer.QrFill.Linear"), static_cast<int>(TextFill::LinearGradient));
+	qrFill->addItem(moduleText("Designer.QrFill.Radial"), static_cast<int>(TextFill::RadialGradient));
+	addRow(moduleText("Designer.QrFill"), qrFill);
+
+	qrGradient = new GradientEditor(this);
+	addRow(moduleText("Designer.Gradient"), qrGradient);
+
+	qrPlateRadius = new QSpinBox(this);
+	qrPlateRadius->setRange(0, 4096);
+	qrPlateRadius->setSuffix(QStringLiteral(" px"));
+	addRow(moduleText("Designer.QrPlateRadius"), qrPlateRadius);
+
+	auto *qrLogoRow = new QWidget(this);
+	auto *qrLogoLayout = new QHBoxLayout(qrLogoRow);
+	qrLogoLayout->setContentsMargins(0, 0, 0, 0);
+	qrLogoPath = new QLineEdit(qrLogoRow);
+	qrLogoPath->setPlaceholderText(moduleText("Designer.QrLogo.None"));
+	qrLogoBrowse = new QToolButton(qrLogoRow);
+	qrLogoBrowse->setText(QStringLiteral("..."));
+	qrLogoLayout->addWidget(qrLogoPath);
+	qrLogoLayout->addWidget(qrLogoBrowse);
+	qrLogoRow->setToolTip(moduleText("Designer.QrLogo.Tip"));
+	addRow(moduleText("Designer.QrLogo"), qrLogoRow);
+
+	qrLogoSize = new QSpinBox(this);
+	qrLogoSize->setRange(5, 30);
+	qrLogoSize->setSuffix(QStringLiteral(" %"));
+	qrLogoSize->setToolTip(moduleText("Designer.QrLogoSize.Tip"));
+	addRow(moduleText("Designer.QrLogoSize"), qrLogoSize);
+
+	qrLogoClear = new QCheckBox(moduleText("Designer.QrLogoClear"), this);
+	qrLogoClear->setToolTip(moduleText("Designer.QrLogoClear.Tip"));
+	addRow(QString(), qrLogoClear);
+
+	iconScale = new QDoubleSpinBox(this);
+	iconScale->setRange(0.1, 10.0);
+	iconScale->setSingleStep(0.1);
+	iconScale->setDecimals(2);
+	iconScale->setSuffix(QStringLiteral("x"));
+	iconScale->setToolTip(moduleText("Designer.IconScale.Tip"));
+	addRow(moduleText("Designer.IconScale"), iconScale);
 
 	/*
 	 * Where down the frame an Action section fires: a share of the canvas height, like a sticky
@@ -1505,6 +1654,64 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(subtitleGap, &QSpinBox::valueChanged, this, notify);
 	connect(subtitleOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(spacerHeight, &QSpinBox::valueChanged, this, notify);
+	connect(paragraphGap, &QSpinBox::valueChanged, this, notify);
+	connect(justifyText, &QCheckBox::toggled, this, notify);
+	connect(qrTextEdit, &QLineEdit::textChanged, this, notify);
+	connect(qrSize, &QSpinBox::valueChanged, this, notify);
+	connect(qrQuietZone, &QSpinBox::valueChanged, this, notify);
+	connect(qrErrorCorrection, &QComboBox::currentIndexChanged, this, notify);
+	connect(qrForeground, &ColorButton::colorChanged, this, notify);
+	connect(qrBackground, &ColorButton::colorChanged, this, notify);
+
+	/* A look sets the shape rows in one go; editing any of them reads the look back. */
+	connect(qrLook, &QComboBox::currentIndexChanged, this, [this] {
+		if (loading)
+			return;
+		const int index = qrLook->currentData().toInt();
+		if (index < 0 || index >= qrLooks().size())
+			return;
+
+		QrDesign design = currentQrDesign();
+		applyQrLook(design, qrLooks().at(index));
+		const bool wasLoading = loading;
+		loading = true;
+		selectByData(qrModuleShape, static_cast<int>(design.moduleShape));
+		qrModuleScale->setValue(qRound(design.moduleScale * 100.0));
+		selectByData(qrEyeFrame, static_cast<int>(design.eyeFrame));
+		selectByData(qrEyePupil, static_cast<int>(design.eyePupil));
+		qrPlateRadius->setValue(qRound(design.plateRadius));
+		loading = wasLoading;
+		emitChanged();
+	});
+	const auto qrShapeEdited = [this] {
+		if (loading)
+			return;
+		refreshQrLook();
+		emitChanged();
+	};
+	for (QComboBox *box : {qrModuleShape, qrEyeFrame, qrEyePupil})
+		connect(box, &QComboBox::currentIndexChanged, this, qrShapeEdited);
+	connect(qrModuleScale, &QSpinBox::valueChanged, this, qrShapeEdited);
+	connect(qrPlateRadius, &QSpinBox::valueChanged, this, qrShapeEdited);
+	connect(qrEyeFrameColor, &ColorButton::colorChanged, this, notify);
+	connect(qrEyePupilColor, &ColorButton::colorChanged, this, notify);
+	connect(qrGradient, &GradientEditor::changed, this, notify);
+	connect(qrLogoSize, &QSpinBox::valueChanged, this, notify);
+	connect(qrLogoClear, &QCheckBox::toggled, this, notify);
+	/* These three decide which of the rows around them apply. */
+	connect(qrEyeColors, &QCheckBox::toggled, this, revisitVisibility);
+	connect(qrFill, &QComboBox::currentIndexChanged, this, [this, revisitVisibility] {
+		qrGradient->setFill(static_cast<TextFill>(qrFill->currentData().toInt()));
+		revisitVisibility();
+	});
+	connect(qrLogoPath, &QLineEdit::textChanged, this, revisitVisibility);
+	connect(qrLogoBrowse, &QToolButton::clicked, this, [this] {
+		const QString path = QFileDialog::getOpenFileName(this, moduleText("Designer.ChooseLogo"),
+								  qrLogoPath->text(), imageFilter());
+		if (!path.isEmpty())
+			qrLogoPath->setText(path);
+	});
+	connect(iconScale, &QDoubleSpinBox::valueChanged, this, notify);
 	connect(actionLine, &QSpinBox::valueChanged, this, notify);
 	connect(paddingTop, &QSpinBox::valueChanged, this, notify);
 	connect(paddingBottom, &QSpinBox::valueChanged, this, notify);
@@ -1648,6 +1855,33 @@ void SectionEditor::setSection(const Section &source)
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
 	spacerHeight->setValue(source.spacerHeight);
+	paragraphGap->setValue(source.paragraphGap);
+	justifyText->setChecked(source.justifyText);
+	qrTextEdit->setText(source.qrText);
+	qrSize->setValue(source.qrSize);
+	qrQuietZone->setValue(source.qrQuietZone);
+	selectByData(qrErrorCorrection, static_cast<int>(source.qrErrorCorrection));
+	qrForeground->setColor(source.qrForeground);
+	qrBackground->setColor(source.qrBackground);
+	{
+		const QrDesign &design = source.qrDesign;
+		selectByData(qrModuleShape, static_cast<int>(design.moduleShape));
+		qrModuleScale->setValue(qRound(design.moduleScale * 100.0));
+		selectByData(qrEyeFrame, static_cast<int>(design.eyeFrame));
+		selectByData(qrEyePupil, static_cast<int>(design.eyePupil));
+		qrEyeColors->setChecked(design.eyeColors);
+		qrEyeFrameColor->setColor(design.eyeFrameColor);
+		qrEyePupilColor->setColor(design.eyePupilColor);
+		selectByData(qrFill, static_cast<int>(design.fill));
+		qrGradient->setGradient(design.gradient);
+		qrGradient->setFill(design.fill);
+		qrPlateRadius->setValue(qRound(design.plateRadius));
+		qrLogoPath->setText(design.logo.path);
+		qrLogoSize->setValue(qRound(design.logoSize * 100.0));
+		qrLogoClear->setChecked(design.logoClear);
+		refreshQrLook();
+	}
+	iconScale->setValue(source.iconScale);
 	actionLine->setValue(qRound(source.actionLine * 100.0));
 	actionList->setActions(source.actions);
 	selectByData(stickyEntrance, static_cast<int>(source.stickyEntrance));
@@ -1749,6 +1983,16 @@ Section SectionEditor::section() const
 	result.subtitleGap = subtitleGap->value();
 	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
+	result.paragraphGap = paragraphGap->value();
+	result.justifyText = justifyText->isChecked();
+	result.qrText = qrTextEdit->text();
+	result.qrSize = qrSize->value();
+	result.qrQuietZone = qrQuietZone->value();
+	result.qrErrorCorrection = static_cast<QrErrorCorrection>(qrErrorCorrection->currentData().toInt());
+	result.qrForeground = qrForeground->color();
+	result.qrBackground = qrBackground->color();
+	result.qrDesign = currentQrDesign();
+	result.iconScale = iconScale->value();
 	result.actionLine = actionLine->value() / 100.0;
 	result.actions = actionList->actions();
 	result.stickyEntrance = static_cast<StickyEntrance>(stickyEntrance->currentData().toInt());
@@ -1853,6 +2097,46 @@ void SectionEditor::addRow(const QString &label, QWidget *field)
 	capFieldWidth(field);
 	form->addRow(label, field);
 	rowOwner.insert(field, form);
+}
+
+QrDesign SectionEditor::currentQrDesign() const
+{
+	QrDesign design = current.qrDesign;
+	design.moduleShape = static_cast<QrModuleShape>(qrModuleShape->currentData().toInt());
+	design.moduleScale = qrModuleScale->value() / 100.0;
+	design.eyeFrame = static_cast<QrEyeShape>(qrEyeFrame->currentData().toInt());
+	design.eyePupil = static_cast<QrEyeShape>(qrEyePupil->currentData().toInt());
+	design.eyeColors = qrEyeColors->isChecked();
+	design.eyeFrameColor = qrEyeFrameColor->color();
+	design.eyePupilColor = qrEyePupilColor->color();
+	design.fill = static_cast<TextFill>(qrFill->currentData().toInt());
+	design.gradient = qrGradient->gradient();
+	design.plateRadius = qrPlateRadius->value();
+	design.logo.path = qrLogoPath->text().trimmed();
+	design.logoSize = qrLogoSize->value() / 100.0;
+	design.logoClear = qrLogoClear->isChecked();
+	return design;
+}
+
+void SectionEditor::refreshQrLook()
+{
+	const QrLook *look = matchingQrLook(currentQrDesign());
+	const int index = look ? static_cast<int>(look - qrLooks().constData()) : -1;
+	const QSignalBlocker blocker(qrLook);
+	selectByData(qrLook, index);
+}
+
+void SectionEditor::setRowLabel(QWidget *field, const QString &label)
+{
+	if (QWidget *shownAs = rowAlias.value(field))
+		field = shownAs;
+
+	QFormLayout *owner = rowOwner.value(field);
+	if (!owner)
+		return;
+
+	if (auto *text = qobject_cast<QLabel *>(owner->labelForField(field)))
+		text->setText(label);
 }
 
 void SectionEditor::setRowVisible(QWidget *field, bool visible)
@@ -2059,7 +2343,17 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool sectionLogo = hasLogos && !hasEntries;
 	const bool logoBesideText = sectionLogo && hasText;
 
+	const bool paragraph = type == SectionType::Paragraph;
+	const bool qrCode = type == SectionType::QrCode;
+	const bool stacks = sectionStacksLines(type);
+	const bool cards = sectionUsesCards(type);
+	const bool icons = sectionUsesIcons(type);
+
 	setRowVisible(textEdit, singleLineText);
+	/* Prose wants room to be read in; a heading or a caption is a line or two. */
+	textEdit->setMaximumHeight(paragraph ? 260 : 80);
+	setRowLabel(textEdit, moduleText(qrCode ? "Designer.QrCaption" : "Designer.Text"));
+	setRowVisible(qrTextEdit, qrCode);
 	/*
 	 * A heading's own subtitle. The list types stack one too, but theirs is the entry table's
 	 * second column, so the field belongs to the single-heading shapes alone.
@@ -2075,8 +2369,45 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	setRowVisible(logoLoop->parentWidget(), false);
 	setRowVisible(logoAnimatedShadow, false);
-	setRowVisible(logoSide, logoBesideText);
-	setRowVisible(logoGap, logoBesideText);
+	setRowVisible(logoSide, logoBesideText || icons);
+	/*
+	 * The gap between a picture and its words, whichever picture it is: a logo beside a heading, a
+	 * card's picture over its caption, an icon before its line, a code over its caption.
+	 */
+	setRowVisible(logoGap, logoBesideText || cards || icons || qrCode);
+	setRowLabel(logoGap, moduleText(cards    ? "Designer.CardGap"
+					: icons  ? "Designer.IconGap"
+					: qrCode ? "Designer.QrCaptionGap"
+						 : "Designer.LogoGap"));
+	setRowVisible(paragraphGap, paragraph);
+	setRowVisible(justifyText, paragraph);
+	setRowVisible(qrSize, qrCode);
+	setRowVisible(qrQuietZone, qrCode);
+	setRowVisible(qrErrorCorrection, qrCode);
+	const auto qrFillMode = static_cast<TextFill>(qrFill->currentData().toInt());
+	const bool qrLogo = !qrLogoPath->text().trimmed().isEmpty();
+	/* A gradient takes over from the single color, so only one of the two rows is offered. */
+	setRowVisible(qrForeground, qrCode && qrFillMode == TextFill::Solid);
+	setRowVisible(qrGradient, qrCode && qrFillMode != TextFill::Solid);
+	setRowVisible(qrLook, qrCode);
+	setRowVisible(qrModuleShape, qrCode);
+	setRowVisible(qrModuleScale, qrCode);
+	setRowVisible(qrEyeFrame, qrCode);
+	setRowVisible(qrEyePupil, qrCode);
+	setRowVisible(qrEyeColors, qrCode);
+	setRowVisible(qrEyeFrameColor, qrCode && qrEyeColors->isChecked());
+	setRowVisible(qrEyePupilColor, qrCode && qrEyeColors->isChecked());
+	setRowVisible(qrFill, qrCode);
+	setRowVisible(qrPlateRadius, qrCode);
+	setRowVisible(qrLogoPath->parentWidget(), qrCode);
+	setRowVisible(qrLogoSize, qrCode && qrLogo);
+	setRowVisible(qrLogoClear, qrCode && qrLogo);
+	/* A logo hides squares the code has to recover, so the level is High whatever is picked. */
+	qrErrorCorrection->setEnabled(!qrLogo);
+	qrErrorCorrection->setToolTip(
+		moduleText(qrLogo ? "Designer.QrErrorCorrection.Logo" : "Designer.QrErrorCorrection.Tip"));
+	setRowVisible(qrBackground, qrCode);
+	setRowVisible(iconScale, icons);
 	const bool bridged = type == SectionType::Bridged;
 	/*
 	 * The fill the row will really be laid out with, not the one the combo happens to hold: an
@@ -2135,8 +2466,12 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * the subtitles off and on again returns the styles the user set rather than the defaults.
 	 */
 	const bool rowSubtitlesOn = bridged && rowSubtitles->isChecked();
-	rowSubtitleStyleGroup->setVisible(rowSubtitlesOn);
-	rowSecondarySubtitleStyleGroup->setVisible(rowSubtitlesOn);
+	/* A stack's third and fourth lines are drawn in the same two styles; see Section::rowSubtitleStyle. */
+	rowSubtitleStyleGroup->setVisible(rowSubtitlesOn || stacks);
+	rowSecondarySubtitleStyleGroup->setVisible(rowSubtitlesOn || stacks);
+	rowSubtitleStyleGroup->setTitle(moduleText(stacks ? "Designer.Line3Style" : "Designer.RowSubtitleStyle"));
+	rowSecondarySubtitleStyleGroup->setTitle(
+		moduleText(stacks ? "Designer.Line4Style" : "Designer.RowSecondarySubtitleStyle"));
 	const bool divider = type == SectionType::SectionDivider;
 	/*
 	 * A user's own SVG anywhere in the divider, which is what decides whether drawing files in the
@@ -2175,7 +2510,9 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool hasSubtitles = sectionUsesSubtitles(type);
 	const bool stacksSubtitles = hasSubtitles || (bridged && rowSubtitles->isChecked());
 	setRowVisible(subtitleGap, stacksSubtitles);
-	setRowVisible(subtitleOrder, stacksSubtitles);
+	setRowLabel(subtitleGap, moduleText(stacks ? "Designer.LineGap" : "Designer.SubtitleGap"));
+	/* A stack's lines are drawn in the order they are typed; there is no pair to flip. */
+	setRowVisible(subtitleOrder, stacksSubtitles && !stacks);
 	setRowVisible(spacerHeight, type == SectionType::Spacer);
 
 	/*
@@ -2187,9 +2524,9 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * An Action section is a marker with no size at all, so nothing about a box -- its width, its
 	 * margins, its padding -- has anything to act on.
 	 */
-	const bool marker = type == SectionType::Action;
-	setRowVisible(actionLine, marker);
-	actionsGroup->setVisible(marker);
+	const bool marker = type == SectionType::Action || type == SectionType::PageBreak;
+	setRowVisible(actionLine, type == SectionType::Action);
+	actionsGroup->setVisible(type == SectionType::Action);
 
 	const bool placeable = type != SectionType::StickyBlock && !marker;
 	/* A spacer draws nothing, so there is nothing of it to nudge sideways. */
@@ -2231,8 +2568,9 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * after the one being edited rather than after the Bridged section it was written for.
 	 */
 	secondaryGroup->setVisible(sectionUsesSecondaryText(type));
-	secondaryGroup->setTitle(hasSubtitles ? moduleText("Designer.SubtitleStyle")
-					      : moduleText("Designer.SecondaryStyle"));
+	secondaryGroup->setTitle(stacks         ? moduleText("Designer.Line2Style")
+				 : hasSubtitles ? moduleText("Designer.SubtitleStyle")
+						: moduleText("Designer.SecondaryStyle"));
 	/*
 	 * Both shapes that draw a bridge have one to ink separately -- except a custom file left in
 	 * the colors it was authored with, which is painted straight to the strip with nothing here
@@ -2326,6 +2664,25 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		headers = {moduleText("Designer.Column.Logo"), moduleText("Designer.Column.Height")};
 		break;
 
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList:
+		headers = {moduleText("Designer.Column.Line").arg(1), moduleText("Designer.Column.Line").arg(2),
+			   moduleText("Designer.Column.Line").arg(3), moduleText("Designer.Column.Line").arg(4)};
+		break;
+
+	case SectionType::CardList:
+	case SectionType::MultiCardList:
+		/* The picture first, as in a logo list, and the pair that captions it after. */
+		headers = {moduleText("Designer.Column.Picture"), moduleText("Designer.Column.Height"),
+			   moduleText("Designer.Column.EntryTitle"), moduleText("Designer.Column.Subtitle")};
+		break;
+
+	case SectionType::IconList:
+	case SectionType::MultiIconList:
+		/* No height: an icon is sized by the text it leads. */
+		headers = {moduleText("Designer.Column.Icon"), moduleText("Designer.Column.Text")};
+		break;
+
 	default:
 		headers = {moduleText("Designer.Column.Text")};
 		break;
@@ -2358,7 +2715,7 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 	header->setSectionResizeMode(QHeaderView::Interactive);
 	header->setSectionResizeMode(logoEntries ? 0 : indentColumn - 1, QHeaderView::Stretch);
 
-	if (logoEntries)
+	if (logoEntries && !sectionUsesIcons(type))
 		entryTable->setColumnWidth(1, kEntryHeightColumnWidth);
 
 	entryTable->setColumnWidth(indentColumn, kEntryIndentColumnWidth);
@@ -2383,8 +2740,25 @@ void SectionEditor::writeEntriesToTable(const Section &source)
 		entryTable->setItem(row, entryTable->columnCount() - 1,
 				    new QTableWidgetItem(QString::number(entry.indent)));
 
+		if (logoMode && sectionUsesIcons(source.type)) {
+			entryTable->setItem(row, 1, new QTableWidgetItem(entry.text));
+			continue;
+		}
+
 		if (logoMode) {
 			entryTable->setItem(row, 1, new QTableWidgetItem(QString::number(entry.logo.maxHeight)));
+			if (sectionUsesCards(source.type)) {
+				entryTable->setItem(row, 2, new QTableWidgetItem(entry.text));
+				entryTable->setItem(row, 3, new QTableWidgetItem(entry.secondaryText));
+			}
+			continue;
+		}
+
+		/* A stack's four lines, in the order they are drawn. */
+		if (sectionStacksLines(source.type)) {
+			entryTable->setItem(row, 1, new QTableWidgetItem(entry.secondaryText));
+			entryTable->setItem(row, 2, new QTableWidgetItem(entry.subtitle));
+			entryTable->setItem(row, 3, new QTableWidgetItem(entry.secondarySubtitle));
 			continue;
 		}
 
@@ -2426,10 +2800,23 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 
 		entry.indent = cell(entryTable->columnCount() - 1).toInt();
 
-		if (logoMode) {
+		if (logoMode && sectionUsesIcons(target->type)) {
+			/* The height an icon is drawn at comes from the text, so the stored one is left alone. */
+			entry.logo.path = cell(0);
+			entry.text = cell(1);
+		} else if (logoMode) {
 			entry.logo.path = cell(0);
 			const int height = cell(1).toInt();
 			entry.logo.maxHeight = height > 0 ? height : 96;
+			if (sectionUsesCards(target->type)) {
+				entry.text = cell(2);
+				entry.secondaryText = cell(3);
+			}
+		} else if (sectionStacksLines(target->type)) {
+			entry.text = cell(0);
+			entry.secondaryText = cell(1);
+			entry.subtitle = cell(2);
+			entry.secondarySubtitle = cell(3);
 		} else if (subtitleColumns) {
 			entry.text = cell(0);
 			entry.subtitle = cell(1);
@@ -2623,7 +3010,8 @@ void SectionEditor::browseForEntryLogo()
 	else
 		entryTable->setItem(row, 0, new QTableWidgetItem(path));
 
-	if (!entryTable->item(row, 1))
+	/* An icon list's second column is its text, which a picked file has no height to put in. */
+	if (!entryTable->item(row, 1) && !sectionUsesIcons(type))
 		entryTable->setItem(row, 1, new QTableWidgetItem(QStringLiteral("96")));
 
 	refreshLogoPlayback();
@@ -2694,7 +3082,11 @@ bool layoutDiffers(const Section &a, const Section &b)
 	       a.stickyEntrance != b.stickyEntrance || a.stickyFadeIn != b.stickyFadeIn ||
 	       a.stickyAnchor != b.stickyAnchor || pct(a.stickyCanvasPosition) != pct(b.stickyCanvasPosition) ||
 	       px(a.stickyOffset) != px(b.stickyOffset) || a.stickyHold != b.stickyHold ||
-	       a.stickyHoldForever != b.stickyHoldForever || a.stickyRelease != b.stickyRelease;
+	       a.stickyHoldForever != b.stickyHoldForever || a.stickyRelease != b.stickyRelease ||
+	       a.paragraphGap != b.paragraphGap || a.justifyText != b.justifyText || a.qrSize != b.qrSize ||
+	       a.qrQuietZone != b.qrQuietZone || a.qrErrorCorrection != b.qrErrorCorrection ||
+	       a.qrForeground != b.qrForeground || a.qrBackground != b.qrBackground || !(a.qrDesign == b.qrDesign) ||
+	       pct(a.iconScale) != pct(b.iconScale);
 }
 
 bool styleDiffers(const Section &a, const Section &b)

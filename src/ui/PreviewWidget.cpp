@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QtMath>
 #include <QPointer>
 #include <QResizeEvent>
 #include <QWheelEvent>
@@ -573,6 +574,7 @@ void PreviewWidget::paintEvent(QPaintEvent *)
 	if (layoutBoxesVisible)
 		paintLayoutBoxes(painter, canvasColumn, scale);
 	paintActionMarkers(painter, canvasColumn, scale);
+	paintPageMarkers(painter, canvasColumn, scale);
 	paintSelection(painter);
 
 	painter.setBrush(Qt::NoBrush);
@@ -667,6 +669,13 @@ void PreviewWidget::paintPlayback(QPainter &painter, const QRect &canvasColumn)
 		view.stripTop *= scaleNow;
 		view.clipTop = 0.0;
 		view.clipBottom = framedHeight * dpr;
+		/* The edge fade the source draws, so the preview shows the roll as it will go out. */
+		if (layout->document) {
+			view.fadeTop = layout->document->edgeFadeTop * scaleNow;
+			view.fadeBottom = layout->document->edgeFadeBottom * scaleNow;
+			view.fadeEdgeTop = 0.0;
+			view.fadeEdgeBottom = canvasHeight() * scaleNow;
+		}
 		const DrawList visible = composeFrame(*layout, playbackFrame, view);
 		requestPictures(visible, visible);
 
@@ -674,7 +683,7 @@ void PreviewWidget::paintPlayback(QPainter &painter, const QRect &canvasColumn)
 		painter.setClipRect(onAir);
 		painter.setRenderHints(QPainter::SmoothPixmapTransform | QPainter::Antialiasing);
 		painter.scale(1.0 / dpr, 1.0 / dpr);
-		paintDrawList(
+		paintDrawListFaded(
 			painter, visible,
 			[&](const DrawSource &source) -> QImage {
 				if (source.kind != DrawSource::Kind::Chunk)
@@ -687,6 +696,7 @@ void PreviewWidget::paintPlayback(QPainter &painter, const QRect &canvasColumn)
 				it->lastPainted = paintCount;
 				return it->image;
 			},
+			view, QRect(0, 0, qCeil(canvasColumn.width() * dpr), qCeil(framedHeight * dpr)),
 			QPointF(canvasColumn.left() * dpr, 0.0));
 		painter.restore();
 
@@ -769,6 +779,75 @@ void PreviewWidget::paintLayoutBoxes(QPainter &painter, const QRect &canvasColum
 	draw(LayoutBox::Kind::Bridge);
 	draw(LayoutBox::Kind::Divider);
 	draw(LayoutBox::Kind::Sticky);
+
+	painter.restore();
+}
+
+void PreviewWidget::paintPageMarkers(QPainter &painter, const QRect &canvasColumn, qreal scale) const
+{
+	if (!layout || !layout->document)
+		return;
+
+	const bool paged = layout->document->playbackMode == PlaybackMode::Pages;
+
+	/* Each line: where in the strip, what it says, and whether it is in force. */
+	struct Line {
+		double top;
+		QString label;
+		bool active;
+	};
+	QVector<Line> lines;
+
+	if (paged) {
+		const RollTimeline timeline(layout->timelineInputs());
+		const auto &pages = timeline.pages();
+		for (int i = 1; i < pages.size(); ++i)
+			lines.append(
+				Line{pages.at(i).top,
+				     QStringLiteral("✂ ") + QString::fromUtf8(obs_module_text("Designer.Preview.Page"))
+								    .arg(i + 1)
+								    .arg(pages.size()),
+				     true});
+	} else {
+		for (const RollSpan &span : layout->spans) {
+			if (span.pageBreak)
+				lines.append(Line{static_cast<double>(span.top),
+						  QStringLiteral("✂ ") + QString::fromUtf8(obs_module_text(
+										 "Designer.Preview.PageBreakIdle")),
+						  false});
+		}
+	}
+
+	if (lines.isEmpty())
+		return;
+
+	painter.save();
+	painter.setRenderHint(QPainter::Antialiasing, false);
+	QFont font = painter.font();
+	font.setPointSizeF(std::max(7.0, font.pointSizeF() * 0.85));
+	painter.setFont(font);
+	const QFontMetrics metrics(font);
+
+	for (const Line &line : lines) {
+		const qreal y = std::round(line.top * scale - scroll) + 0.5;
+		if (y < -metrics.height() || y > height() + metrics.height())
+			continue;
+
+		QColor color(255, 170, 60);
+		color.setAlpha(line.active ? 255 : 110);
+		QPen pen(color, 1);
+		pen.setStyle(Qt::DashDotLine);
+		painter.setPen(pen);
+		painter.drawLine(QPointF(canvasColumn.left(), y), QPointF(canvasColumn.right(), y));
+
+		const QString text =
+			metrics.elidedText(line.label, Qt::ElideRight, std::max(40, canvasColumn.width() - 12));
+		const QRectF tag(canvasColumn.right() - metrics.horizontalAdvance(text) - 12, y + 2,
+				 metrics.horizontalAdvance(text) + 8, metrics.height() + 2);
+		painter.fillRect(tag, QColor(0, 0, 0, line.active ? 180 : 110));
+		painter.setPen(color);
+		painter.drawText(tag.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
+	}
 
 	painter.restore();
 }

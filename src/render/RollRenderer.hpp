@@ -430,6 +430,16 @@ quint64 chunkKey(const RollLayer &layer, int chunk, qreal scale);
  * thread that draws it. Immutable once built, and shared, because the source and the designer keep
  * drawing from one long after the job that built it has gone.
  */
+/*
+ * One top-level section's extent in the strip, or a Page Break's position: what a roll played as
+ * pages is cut from. Sections that take no room are left out.
+ */
+struct RollSpan {
+	int top = 0;
+	int height = 0;
+	bool pageBreak = false;
+};
+
 struct RollLayout {
 	/* The document as it was laid out, with its fonts resolved. Rasterizing reads it. */
 	std::shared_ptr<const Document> document;
@@ -443,6 +453,8 @@ struct RollLayout {
 	QVector<AnimatedLogoPlacement> animatedLogos;
 	/* Every Action section's marker, in document order. */
 	QVector<ActionCuePlacement> cues;
+	/* Every visible top-level section's extent, and every Page Break, in document order. */
+	QVector<RollSpan> spans;
 	/* Collected only when asked for; see RollRenderer::layout. */
 	LayoutBoxes boxes;
 

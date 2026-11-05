@@ -11,6 +11,8 @@ file(
   "${CMAKE_SOURCE_DIR}/src/model/*.cpp"
   "${CMAKE_SOURCE_DIR}/src/render/*.cpp"
   "${CMAKE_SOURCE_DIR}/src/util/*.cpp"
+  # The QR encoder the QR Code section draws with.
+  "${CMAKE_SOURCE_DIR}/src/third-party/qrcodegen/*.cpp"
 )
 
 # The preview widget is the one piece of the designer worth driving here, and the only one with a moc.

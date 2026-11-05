@@ -155,6 +155,12 @@ private:
 	void paintLayoutBoxes(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
 	/* Draws each Action section's marker as a labeled line, overlay or not; see the definition. */
 	void paintActionMarkers(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
+	/*
+	 * Where the pages fall, for a roll played as pages: a line where each page after the first
+	 * starts, whether a Page Break put it there or the frame filling up did. A roll that scrolls
+	 * shows its Page Break sections instead, dimmed, since they mean nothing until it is paged.
+	 */
+	void paintPageMarkers(QPainter &painter, const QRect &canvasColumn, qreal scale) const;
 	/* Where a marker sits in strip space: a marker on a card is drawn back in the card's slot. */
 	double markerTop(const ActionCuePlacement &cue) const;
 

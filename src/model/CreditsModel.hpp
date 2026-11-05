@@ -61,6 +61,36 @@ enum class SectionType {
 	MultiTextList,
 	MultiTitleSubtitleList,
 	MultiLogoList,
+	/*
+	 * A list whose entries are a run of up to four lines, each in a style of its own -- a song
+	 * title over who wrote it, who performed it and whose courtesy it is used by. The line under
+	 * the title/subtitle pair that the two-line lists stop at. See `sectionStackLines`.
+	 */
+	StackedList,
+	MultiStackedList,
+	/*
+	 * A list of cards: a picture with a title and a subtitle under it, the three of them one
+	 * item. A headshot over a name and a role, a sponsor's mark over its tier. The caption
+	 * belongs to its picture, which two sections -- one of logos, one of names -- cannot say.
+	 */
+	CardList,
+	MultiCardList,
+	/*
+	 * A list of lines each led by a small picture sized to the text rather than to a height of
+	 * its own: a platform's mark beside a handle, a flag beside a country.
+	 */
+	IconList,
+	MultiIconList,
+	/*
+	 * Running prose: a dedication, a thank-you, the licensing lines at the foot of a roll. Breaks
+	 * into paragraphs at blank lines and can be set justified. See `Section::justifyText`.
+	 */
+	Paragraph,
+	/*
+	 * A QR code drawn from the text it encodes, with an optional caption under it. Drawn as
+	 * squares rather than decoded from a picture, so it is sharp at any size. See `Section::qrText`.
+	 */
+	QrCode,
 	SectionDivider,
 	Spacer,
 	/*
@@ -73,6 +103,12 @@ enum class SectionType {
 	 * draws nothing; see `Section::actions`.
 	 */
 	Action,
+	/*
+	 * Where one page ends and the next begins, when the roll is played as pages rather than
+	 * scrolled (see `PlaybackMode`). Takes no room and draws nothing, and means nothing to a roll
+	 * that scrolls -- so a roll can be built once and played either way.
+	 */
+	PageBreak,
 };
 
 const char *sectionTypeId(SectionType type);
@@ -119,8 +155,67 @@ bool sectionUsesSecondaryText(SectionType type);
  */
 QVector<BackgroundSlot> backgroundSlotsFor(SectionType type);
 
-/* What a list holds, which with a column count is the whole of what tells the six list types apart. */
-enum class SectionListContent { Text, Pairs, Logos };
+/*
+ * What a list holds, which with a column count is the whole of what tells the list types apart:
+ * single lines, title/subtitle pairs, logos, stacks of up to four lines, cards (a picture over a
+ * pair), and lines each led by an icon.
+ */
+enum class SectionListContent { Text, Pairs, Logos, Stacks, Cards, Icons };
+
+/* True for the two Stacked list types, whose entries are up to four lines rather than a pair. */
+bool sectionStacksLines(SectionType type);
+/* True for the two Card list types, whose entries are a picture with a pair of lines under it. */
+bool sectionUsesCards(SectionType type);
+/* True for the two Icon list types, whose entries are a line of text led by a small picture. */
+bool sectionUsesIcons(SectionType type);
+
+/* How many lines one entry of a Stacked list can hold. */
+constexpr int kStackLines = 4;
+
+/*
+ * How much of a QR code can be lost and still be read: roughly 7, 15, 25 and 30 percent. More
+ * recovery costs room, so the same text needs more, smaller squares at a higher level.
+ */
+enum class QrErrorCorrection { Low, Medium, Quartile, High };
+
+const char *qrErrorCorrectionId(QrErrorCorrection level);
+QrErrorCorrection qrErrorCorrectionFromId(const char *id, QrErrorCorrection fallback = QrErrorCorrection::Medium);
+
+/*
+ * How each dark square of a QR code is drawn.
+ *
+ *   Square    - the plain square every reader expects.
+ *   Rounded   - squares with their corners rounded off.
+ *   Dots      - a circle per square.
+ *   Diamond   - a square turned on its corner.
+ *   Connected - squares that flow into their neighbors, rounded only where a run ends: the
+ *               "liquid" look, where the code reads as strokes rather than as a grid.
+ *
+ * A reader samples the middle of each square, so every shape keeps the middle dark; the shapes
+ * differ only in how much of the square's edge they fill.
+ */
+enum class QrModuleShape { Square, Rounded, Dots, Diamond, Connected };
+
+const char *qrModuleShapeId(QrModuleShape shape);
+QrModuleShape qrModuleShapeFromId(const char *id, QrModuleShape fallback = QrModuleShape::Square);
+
+/*
+ * The shape of a finder pattern -- the three big "eyes" in the corners -- drawn as a frame
+ * around a pupil. Each is chosen apart, which is most of what makes a styled code look styled.
+ * Diamond is a pupil shape only: as a frame it is thin along the diagonals and is missed by ZXing,
+ * the decoder behind most Android cameras, so a frame asked to be one is drawn square.
+ */
+enum class QrEyeShape { Square, Rounded, Circle, Diamond };
+
+const char *qrEyeShapeId(QrEyeShape shape);
+QrEyeShape qrEyeShapeFromId(const char *id, QrEyeShape fallback = QrEyeShape::Square);
+
+/*
+ * The most bytes of UTF-8 a QR code can carry at `level`: the capacity of the largest symbol
+ * (version 40) in byte mode. Text past this is cut there when the code is drawn, rather than
+ * the code failing to draw at all.
+ */
+int qrCapacityBytes(QrErrorCorrection level);
 
 /*
  * A section type taken apart into the handful of plain answers it stands for.
@@ -223,6 +318,36 @@ bool stickyReleaseEndsAtHold(StickyRelease release);
  * release either ends the roll at a moment of its own or leaves the ending to the rest of it.
  */
 bool stickyReleaseEndsAtExit(StickyRelease release);
+
+/*
+ * How the roll is played.
+ *
+ *   Scroll - the strip travels up the frame, as a credit roll does.
+ *   Pages  - the roll is cut into pages that each fill the frame, and each is shown, held and
+ *            replaced by the next. A page ends where the frame is full or at a Page Break section,
+ *            whichever comes first; see `Document::pageHold` and the settings beside it.
+ *
+ * The layout is the same either way. Pages are cut from the strip as it is laid out, so a roll is
+ * built once and played either way, and switching between the two lays nothing out again.
+ */
+enum class PlaybackMode { Scroll, Pages };
+
+const char *playbackModeId(PlaybackMode mode);
+PlaybackMode playbackModeFromId(const char *id, PlaybackMode fallback = PlaybackMode::Scroll);
+
+/*
+ * How one page gives way to the next.
+ *
+ *   Cut       - the next page is simply there.
+ *   Fade      - each page fades out to an empty frame and the next fades in from it.
+ *   Crossfade - the next page fades in over the last as it fades out.
+ *   Slide     - the pages travel up the frame, the next pushing the last off the top: a scroll that
+ *               stops at every page.
+ */
+enum class PageTransition { Cut, Fade, Crossfade, Slide };
+
+const char *pageTransitionId(PageTransition transition);
+PageTransition pageTransitionFromId(const char *id, PageTransition fallback = PageTransition::Fade);
 
 enum class HAlign { Left, Center, Right };
 
@@ -561,6 +686,11 @@ struct LogoRef {
  *   MultiTitleSubtitleList -> the same pair, placed into columns in the section's fill order
  *   LogoList               -> logo
  *   MultiLogoList          -> logo, placed into columns in the section's fill order
+ *   StackedList            -> up to four lines: text, secondaryText, subtitle, secondarySubtitle,
+ *                             top to bottom, each in a style of its own; MultiStackedList in columns
+ *   CardList               -> logo, with text (title) and secondaryText (subtitle) under it;
+ *                             MultiCardList in columns
+ *   IconList               -> logo (the icon, sized to the text) and text; MultiIconList in columns
  */
 struct Entry {
 	QString text;
@@ -822,6 +952,72 @@ struct Divider {
 /* The plainest divider there is: one lane with one line across it. */
 Divider plainDivider();
 
+/*
+ * Everything that makes a QR code look like more than a grid of squares. All of it is drawing:
+ * none of it changes what the code encodes or how big it is, so a styled code is the same code.
+ */
+struct QrDesign {
+	QrModuleShape moduleShape = QrModuleShape::Square;
+	/*
+	 * How much of its square each module fills, 0.5 to 1.0. Under 1.0 the modules stand apart with
+	 * the plate showing between them, which suits dots and diamonds; a reader still finds them, as
+	 * long as the middle of each square stays dark.
+	 */
+	double moduleScale = 1.0;
+
+	QrEyeShape eyeFrame = QrEyeShape::Square;
+	QrEyeShape eyePupil = QrEyeShape::Square;
+	/* Draw the eyes in colors of their own rather than the modules' fill. */
+	bool eyeColors = false;
+	QColor eyeFrameColor = QColor(0, 0, 0);
+	QColor eyePupilColor = QColor(0, 0, 0);
+
+	/*
+	 * What the modules -- and the eyes, unless they have colors of their own -- are filled with.
+	 * A gradient is mapped over the whole code, so the sweep runs across it as one picture.
+	 */
+	TextFill fill = TextFill::Solid;
+	GradientSpec gradient;
+
+	/* Rounds the corners of the plate the code is drawn on, in pixels. */
+	double plateRadius = 0.0;
+
+	/*
+	 * A picture in the middle of the code -- a channel's mark, a sponsor's -- and how wide it is
+	 * as a share of the code. The modules behind it are cleared, which the code survives by
+	 * spending its error correction on them; that is why a code with a logo is always encoded at
+	 * High, whatever level is set, and why the logo is held to at most 30 % of the code's width.
+	 */
+	LogoRef logo;
+	double logoSize = 0.22;
+	/* Clears the modules behind the logo, with a square's margin, rather than drawing it over them. */
+	bool logoClear = true;
+
+	bool hasLogo() const { return !logo.isEmpty(); }
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+
+	bool operator==(const QrDesign &other) const = default;
+};
+
+/* A ready-made design, for the designer's picker. `id` is never shown; `name` is the English name. */
+struct QrLook {
+	const char *id;
+	const char *name;
+	QrModuleShape moduleShape;
+	double moduleScale;
+	QrEyeShape eyeFrame;
+	QrEyeShape eyePupil;
+	double plateRadius;
+};
+
+const QVector<QrLook> &qrLooks();
+
+/* The look `design` matches in every field a look sets, or null. */
+const QrLook *matchingQrLook(const QrDesign &design);
+void applyQrLook(QrDesign &design, const QrLook &look);
+
 struct Section {
 	SectionType type = SectionType::Title;
 
@@ -1003,6 +1199,13 @@ struct Section {
 	 */
 	TextStyle rowSubtitleStyle;
 	TextStyle rowSecondarySubtitleStyle;
+	/*
+	 * A Stacked list has four lines to style rather than two, and spends these two on its third
+	 * and fourth: `style`, `secondaryStyle`, `rowSubtitleStyle`, `rowSecondarySubtitleStyle`,
+	 * top to bottom. The same four styles in the same order the four texts of an entry are kept
+	 * in, so switching a bridged list with subtitles to a stacked one keeps every line in the
+	 * style it was drawn in.
+	 */
 
 	/*
 	 * Names of the document style presets this section follows, or empty to use the
@@ -1091,6 +1294,51 @@ struct Section {
 	HAlign sectionAlign = HAlign::Center;
 	/* Spacer sections only: how tall the blank run is, in pixels. */
 	int spacerHeight = 120;
+
+	/*
+	 * Paragraph sections only.
+	 *
+	 * The text is `text`, broken into paragraphs wherever it holds a blank line; a single line
+	 * break is a break inside a paragraph, which is how an address or a verse is set. Paragraphs
+	 * are held `paragraphGap` apart, which is what makes them read as paragraphs rather than as
+	 * one long run with a short line in it.
+	 *
+	 * `justifyText` stretches every line but each paragraph's last to the full width of the
+	 * column, which is how a block of legal text is set. The last line still follows the style's
+	 * alignment, so a justified block can end flush left or centered.
+	 */
+	int paragraphGap = 16;
+	bool justifyText = false;
+
+	/*
+	 * QR Code sections only.
+	 *
+	 * `qrText` is what the code encodes -- a link, usually -- and `text` is the optional caption
+	 * set under it in the section's style, `logoGap` below it. The code is drawn `qrSize` pixels
+	 * square at most: each square is a whole number of pixels so the edges stay crisp, which can
+	 * leave it a few pixels smaller than asked for.
+	 *
+	 * It is drawn on a plate of `qrBackground` that runs `qrQuietZone` squares out past the code
+	 * on every side. A reader needs that margin of plain light around the code to find it; four
+	 * squares is what the standard asks for, and a plate of nothing at all leaves the code to
+	 * whatever the roll is over. Dark on light is what every reader reads; light on dark is
+	 * read by most phones but not all.
+	 */
+	QString qrText;
+	int qrSize = 240;
+	int qrQuietZone = 4;
+	QrErrorCorrection qrErrorCorrection = QrErrorCorrection::Medium;
+	QColor qrForeground = QColor(0, 0, 0);
+	QColor qrBackground = QColor(255, 255, 255);
+	/* How the code is drawn: module and eye shapes, fill, rounded plate, a logo in the middle. */
+	QrDesign qrDesign;
+
+	/*
+	 * Icon list sections only: how tall each icon is drawn, as a multiple of the height of the
+	 * text's capital letters. At 1.0 an icon stands exactly as tall as a capital beside it; it is
+	 * centered on the capitals either way, so a larger icon grows above and below the line evenly.
+	 */
+	double iconScale = 1.4;
 
 	/*
 	 * Sticky Ending Block sections only.
@@ -1224,6 +1472,43 @@ struct Document {
 
 	/* Scroll rate in pixels per second of the credits strip traveling upward. */
 	double scrollSpeed = 90.0;
+
+	/* Scrolled, or played as pages. See PlaybackMode. */
+	PlaybackMode playbackMode = PlaybackMode::Scroll;
+
+	/*
+	 * Play the roll in `fitSeconds` rather than at a speed: the scroll speed -- or, played as pages,
+	 * how long each page holds -- is worked out so the roll finishes exactly then. Credits are cut to
+	 * a piece of music far more often than to a number of pixels a second.
+	 *
+	 * What is fitted is the roll itself, from the moment it starts moving to the moment it is over:
+	 * the start delay comes before it, and a card's hold and fade are counted in it, since they are
+	 * part of how long the roll takes. A roll that never ends is fitted to one pass -- the strip's
+	 * travel for a loop or for a roll held open by a card that holds for ever. When the time cannot
+	 * be met -- the cards' own holds already take longer -- the roll plays as fast as it can.
+	 */
+	bool fitDuration = false;
+	double fitSeconds = 60.0;
+
+	/*
+	 * Fade the roll out over this many pixels at the top of the frame and in over this many at the
+	 * bottom, rather than cutting it off at the edges. Zero is a hard edge. Drawing only: nothing is
+	 * laid out or rasterized again for it. A sticky card fades with the roll while it travels with it,
+	 * and is left at full strength while it is held, since the roll then runs behind it.
+	 */
+	int edgeFadeTop = 0;
+	int edgeFadeBottom = 0;
+
+	/*
+	 * Played as pages: how long each page holds, how it gives way to the next and how long that
+	 * takes, where on the frame a page that does not fill it sits, and how much of the frame is kept
+	 * clear at the top and bottom -- which is also what decides how much fits on a page.
+	 */
+	double pageHold = 4.0;
+	PageTransition pageTransition = PageTransition::Fade;
+	double pageTransitionTime = 0.6;
+	StickyAnchor pageAnchor = StickyAnchor::Center;
+	int pageMargin = 48;
 
 	/*
 	 * Park the roll at `scrollPosition` instead of advancing it, so a position in the middle of

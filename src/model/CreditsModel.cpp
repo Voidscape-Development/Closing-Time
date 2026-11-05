@@ -76,6 +76,23 @@ const SectionTypeInfo kSectionTypes[] = {
 	 true, true, true},
 	{SectionType::MultiLogoList, "multi_logo_list", "Multi-List of Logos", false, true, true, true, false},
 	/*
+	 * A stack answers yes to `subtitles` because its second line *is* the subtitle of a pair --
+	 * same field, same style, same `subtitleGap` -- with two more lines under it.
+	 */
+	{SectionType::StackedList, "stacked_list", "Stacked List", true, false, true, false, true},
+	{SectionType::MultiStackedList, "multi_stacked_list", "Stacked Multi-List", true, false, true, true, true},
+	/* A card is a title/subtitle pair with a picture over it, so it says yes to both. */
+	{SectionType::CardList, "card_list", "Image Card List", true, true, true, false, true},
+	{SectionType::MultiCardList, "multi_card_list", "Image Card Multi-List", true, true, true, true, true},
+	{SectionType::IconList, "icon_list", "Icon List", true, true, true, false, false},
+	{SectionType::MultiIconList, "multi_icon_list", "Icon Multi-List", true, true, true, true, false},
+	/*
+	 * Prose and a QR code both set text -- the paragraphs, the code's caption -- and nothing else
+	 * this table asks about. The code itself is neither a logo (there is no file) nor text.
+	 */
+	{SectionType::Paragraph, "paragraph", "Paragraph", true, false, false, false, false},
+	{SectionType::QrCode, "qr_code", "QR Code", true, false, false, false, false},
+	/*
 	 * Every flag is false: a divider has no section text, no section logo and no entry list.
 	 * The text and the logos it can carry live in its own center stack, which is a different
 	 * shape from an entry list and is edited by a table of its own -- so answering yes to any
@@ -92,6 +109,8 @@ const SectionTypeInfo kSectionTypes[] = {
 	{SectionType::StickyBlock, "sticky_block", "Sticky Ending Block", false, false, false, false, false},
 	/* A marker with no content at all: it is the actions it runs. */
 	{SectionType::Action, "action", "Action", false, false, false, false, false},
+	/* Another marker, read only by a roll played as pages. */
+	{SectionType::PageBreak, "page_break", "Page Break", false, false, false, false, false},
 };
 
 const SectionTypeInfo &sectionTypeInfo(SectionType type)
@@ -180,6 +199,229 @@ bool sectionUsesSubtitles(SectionType type)
 	return sectionTypeInfo(type).subtitles;
 }
 
+bool sectionStacksLines(SectionType type)
+{
+	return type == SectionType::StackedList || type == SectionType::MultiStackedList;
+}
+
+bool sectionUsesCards(SectionType type)
+{
+	return type == SectionType::CardList || type == SectionType::MultiCardList;
+}
+
+bool sectionUsesIcons(SectionType type)
+{
+	return type == SectionType::IconList || type == SectionType::MultiIconList;
+}
+
+const char *qrErrorCorrectionId(QrErrorCorrection level)
+{
+	switch (level) {
+	case QrErrorCorrection::Low:
+		return "low";
+	case QrErrorCorrection::Quartile:
+		return "quartile";
+	case QrErrorCorrection::High:
+		return "high";
+	case QrErrorCorrection::Medium:
+	default:
+		return "medium";
+	}
+}
+
+QrErrorCorrection qrErrorCorrectionFromId(const char *id, QrErrorCorrection fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "low") == 0)
+		return QrErrorCorrection::Low;
+	if (strcmp(id, "medium") == 0)
+		return QrErrorCorrection::Medium;
+	if (strcmp(id, "quartile") == 0)
+		return QrErrorCorrection::Quartile;
+	if (strcmp(id, "high") == 0)
+		return QrErrorCorrection::High;
+	return fallback;
+}
+
+const char *qrModuleShapeId(QrModuleShape shape)
+{
+	switch (shape) {
+	case QrModuleShape::Rounded:
+		return "rounded";
+	case QrModuleShape::Dots:
+		return "dots";
+	case QrModuleShape::Diamond:
+		return "diamond";
+	case QrModuleShape::Connected:
+		return "connected";
+	case QrModuleShape::Square:
+	default:
+		return "square";
+	}
+}
+
+QrModuleShape qrModuleShapeFromId(const char *id, QrModuleShape fallback)
+{
+	if (!id)
+		return fallback;
+	for (QrModuleShape shape : {QrModuleShape::Square, QrModuleShape::Rounded, QrModuleShape::Dots,
+				    QrModuleShape::Diamond, QrModuleShape::Connected}) {
+		if (strcmp(id, qrModuleShapeId(shape)) == 0)
+			return shape;
+	}
+	return fallback;
+}
+
+const char *qrEyeShapeId(QrEyeShape shape)
+{
+	switch (shape) {
+	case QrEyeShape::Rounded:
+		return "rounded";
+	case QrEyeShape::Circle:
+		return "circle";
+	case QrEyeShape::Diamond:
+		return "diamond";
+	case QrEyeShape::Square:
+	default:
+		return "square";
+	}
+}
+
+QrEyeShape qrEyeShapeFromId(const char *id, QrEyeShape fallback)
+{
+	if (!id)
+		return fallback;
+	for (QrEyeShape shape : {QrEyeShape::Square, QrEyeShape::Rounded, QrEyeShape::Circle, QrEyeShape::Diamond}) {
+		if (strcmp(id, qrEyeShapeId(shape)) == 0)
+			return shape;
+	}
+	return fallback;
+}
+
+void QrDesign::save(obs_data_t *data) const
+{
+	obs_data_set_string(data, "module_shape", qrModuleShapeId(moduleShape));
+	obs_data_set_double(data, "module_scale", moduleScale);
+	obs_data_set_string(data, "eye_frame", qrEyeShapeId(eyeFrame));
+	obs_data_set_string(data, "eye_pupil", qrEyeShapeId(eyePupil));
+	obs_data_set_bool(data, "eye_colors", eyeColors);
+	obs_data_set_int(data, "eye_frame_color", static_cast<long long>(eyeFrameColor.rgba()));
+	obs_data_set_int(data, "eye_pupil_color", static_cast<long long>(eyePupilColor.rgba()));
+	obs_data_set_string(data, "fill", textFillId(fill));
+
+	OBSDataAutoRelease gradientData = obs_data_create();
+	gradient.save(gradientData);
+	obs_data_set_obj(data, "gradient", gradientData);
+
+	obs_data_set_double(data, "plate_radius", plateRadius);
+
+	OBSDataAutoRelease logoData = obs_data_create();
+	logo.save(logoData);
+	obs_data_set_obj(data, "logo", logoData);
+	obs_data_set_double(data, "logo_size", logoSize);
+	obs_data_set_bool(data, "logo_clear", logoClear);
+}
+
+void QrDesign::load(obs_data_t *data)
+{
+	const QrDesign defaults;
+
+	moduleShape = qrModuleShapeFromId(obs_data_get_string(data, "module_shape"), QrModuleShape::Square);
+	moduleScale = obs_data_has_user_value(data, "module_scale") ? obs_data_get_double(data, "module_scale")
+								    : defaults.moduleScale;
+	/* Under half a square, a module is too small for a reader to be sure of. */
+	moduleScale = std::clamp(moduleScale, 0.5, 1.0);
+	eyeFrame = qrEyeShapeFromId(obs_data_get_string(data, "eye_frame"), QrEyeShape::Square);
+	/*
+	 * A diamond frame is thin along the diagonals a reader also samples, and ZXing -- the decoder
+	 * behind most Android cameras -- misses it often enough that it is a pupil shape only.
+	 */
+	if (eyeFrame == QrEyeShape::Diamond)
+		eyeFrame = QrEyeShape::Square;
+	eyePupil = qrEyeShapeFromId(obs_data_get_string(data, "eye_pupil"), QrEyeShape::Square);
+	eyeColors = obs_data_get_bool(data, "eye_colors");
+	eyeFrameColor = obs_data_has_user_value(data, "eye_frame_color")
+				? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "eye_frame_color")))
+				: defaults.eyeFrameColor;
+	eyePupilColor = obs_data_has_user_value(data, "eye_pupil_color")
+				? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "eye_pupil_color")))
+				: defaults.eyePupilColor;
+	fill = textFillFromId(obs_data_get_string(data, "fill"), TextFill::Solid);
+
+	gradient = defaults.gradient;
+	OBSDataAutoRelease gradientData = obs_data_get_obj(data, "gradient");
+	if (gradientData)
+		gradient.load(gradientData);
+
+	plateRadius = std::clamp(obs_data_get_double(data, "plate_radius"), 0.0, 4096.0);
+
+	logo = LogoRef{};
+	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");
+	if (logoData)
+		logo.load(logoData);
+	logoSize = obs_data_has_user_value(data, "logo_size") ? obs_data_get_double(data, "logo_size")
+							      : defaults.logoSize;
+	/* Past 30 % of the width the cleared squares are more than High correction can stand in for. */
+	logoSize = std::clamp(logoSize, 0.05, 0.3);
+	logoClear = obs_data_has_user_value(data, "logo_clear") ? obs_data_get_bool(data, "logo_clear") : true;
+}
+
+const QVector<QrLook> &qrLooks()
+{
+	/*
+	 * The looks people reach for in a styled code, each a module shape with eyes that suit it.
+	 * Colors, gradients and a logo are left alone by a look, so picking one restyles the shapes
+	 * without undoing the rest.
+	 */
+	static const QVector<QrLook> looks = {
+		{"classic", "Classic", QrModuleShape::Square, 1.0, QrEyeShape::Square, QrEyeShape::Square, 0.0},
+		{"rounded", "Rounded", QrModuleShape::Rounded, 1.0, QrEyeShape::Rounded, QrEyeShape::Rounded, 16.0},
+		{"dots", "Dots", QrModuleShape::Dots, 0.9, QrEyeShape::Circle, QrEyeShape::Circle, 16.0},
+		{"liquid", "Liquid", QrModuleShape::Connected, 1.0, QrEyeShape::Rounded, QrEyeShape::Circle, 24.0},
+		{"soft", "Soft", QrModuleShape::Rounded, 0.8, QrEyeShape::Circle, QrEyeShape::Rounded, 16.0},
+		{"diamond", "Diamond", QrModuleShape::Diamond, 1.0, QrEyeShape::Square, QrEyeShape::Diamond, 0.0},
+	};
+	return looks;
+}
+
+const QrLook *matchingQrLook(const QrDesign &design)
+{
+	for (const QrLook &look : qrLooks()) {
+		if (design.moduleShape == look.moduleShape &&
+		    qFuzzyCompare(design.moduleScale + 1.0, look.moduleScale + 1.0) &&
+		    design.eyeFrame == look.eyeFrame && design.eyePupil == look.eyePupil &&
+		    qFuzzyCompare(design.plateRadius + 1.0, look.plateRadius + 1.0))
+			return &look;
+	}
+	return nullptr;
+}
+
+void applyQrLook(QrDesign &design, const QrLook &look)
+{
+	design.moduleShape = look.moduleShape;
+	design.moduleScale = look.moduleScale;
+	design.eyeFrame = look.eyeFrame;
+	design.eyePupil = look.eyePupil;
+	design.plateRadius = look.plateRadius;
+}
+
+int qrCapacityBytes(QrErrorCorrection level)
+{
+	/* Version 40 in byte mode, from the standard's capacity table. */
+	switch (level) {
+	case QrErrorCorrection::Low:
+		return 2953;
+	case QrErrorCorrection::Quartile:
+		return 1663;
+	case QrErrorCorrection::High:
+		return 1273;
+	case QrErrorCorrection::Medium:
+	default:
+		return 2331;
+	}
+}
+
 void visitSections(const QVector<Section> &sections, const std::function<void(const Section &)> &visit)
 {
 	for (const Section &section : sections) {
@@ -233,7 +475,7 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 		return used;
 
 	/* An Action section has no height, so there is nothing for any panel to be the size of. */
-	if (type == SectionType::Action)
+	if (type == SectionType::Action || type == SectionType::PageBreak)
 		return {};
 
 	if (type == SectionType::SectionDivider)
@@ -256,7 +498,8 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 			used.append(BackgroundSlot::Subtitle);
 	}
 
-	if (sectionUsesLogos(type))
+	/* A QR code is a picture as far as a card behind it goes, though it is drawn rather than loaded. */
+	if (sectionUsesLogos(type) || type == SectionType::QrCode)
 		used.append(BackgroundSlot::Logo);
 
 	/*
@@ -265,7 +508,8 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 	 * logo-carrying heading rather than only to the ones currently set that way. Offering it and
 	 * drawing nothing is the same bargain every other setting here strikes when its switch is off.
 	 */
-	if (type == SectionType::Bridged || sectionUsesLogos(type))
+	if (type == SectionType::Bridged ||
+	    (sectionUsesLogos(type) && !sectionUsesCards(type) && !sectionUsesIcons(type)))
 		used.append(BackgroundSlot::Bridge);
 
 	return used;
@@ -298,6 +542,12 @@ SectionTypeSwitches decomposeSectionType(SectionType type)
 	case SectionType::MultiTextList:
 	case SectionType::MultiTitleSubtitleList:
 	case SectionType::MultiLogoList:
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList:
+	case SectionType::CardList:
+	case SectionType::MultiCardList:
+	case SectionType::IconList:
+	case SectionType::MultiIconList:
 		switches.base = SectionType::TextList;
 		break;
 
@@ -316,6 +566,18 @@ SectionTypeSwitches decomposeSectionType(SectionType type)
 		case SectionType::LogoList:
 		case SectionType::MultiLogoList:
 			switches.content = SectionListContent::Logos;
+			break;
+		case SectionType::StackedList:
+		case SectionType::MultiStackedList:
+			switches.content = SectionListContent::Stacks;
+			break;
+		case SectionType::CardList:
+		case SectionType::MultiCardList:
+			switches.content = SectionListContent::Cards;
+			break;
+		case SectionType::IconList:
+		case SectionType::MultiIconList:
+			switches.content = SectionListContent::Icons;
 			break;
 		default:
 			switches.content = SectionListContent::Text;
@@ -361,6 +623,12 @@ SectionType composeSectionType(const SectionTypeSwitches &switches)
 						    : SectionType::TitleSubtitleList;
 		case SectionListContent::Logos:
 			return switches.multiColumn ? SectionType::MultiLogoList : SectionType::LogoList;
+		case SectionListContent::Stacks:
+			return switches.multiColumn ? SectionType::MultiStackedList : SectionType::StackedList;
+		case SectionListContent::Cards:
+			return switches.multiColumn ? SectionType::MultiCardList : SectionType::CardList;
+		case SectionListContent::Icons:
+			return switches.multiColumn ? SectionType::MultiIconList : SectionType::IconList;
 		case SectionListContent::Text:
 		default:
 			return switches.multiColumn ? SectionType::MultiTextList : SectionType::TextList;
@@ -368,6 +636,49 @@ SectionType composeSectionType(const SectionTypeSwitches &switches)
 	}
 
 	return switches.base;
+}
+
+const char *playbackModeId(PlaybackMode mode)
+{
+	return mode == PlaybackMode::Pages ? "pages" : "scroll";
+}
+
+PlaybackMode playbackModeFromId(const char *id, PlaybackMode fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "pages") == 0)
+		return PlaybackMode::Pages;
+	if (strcmp(id, "scroll") == 0)
+		return PlaybackMode::Scroll;
+	return fallback;
+}
+
+const char *pageTransitionId(PageTransition transition)
+{
+	switch (transition) {
+	case PageTransition::Cut:
+		return "cut";
+	case PageTransition::Crossfade:
+		return "crossfade";
+	case PageTransition::Slide:
+		return "slide";
+	case PageTransition::Fade:
+	default:
+		return "fade";
+	}
+}
+
+PageTransition pageTransitionFromId(const char *id, PageTransition fallback)
+{
+	if (!id)
+		return fallback;
+	for (PageTransition transition :
+	     {PageTransition::Cut, PageTransition::Fade, PageTransition::Crossfade, PageTransition::Slide}) {
+		if (strcmp(id, pageTransitionId(transition)) == 0)
+			return transition;
+	}
+	return fallback;
 }
 
 const char *stickyAnchorId(StickyAnchor anchor)
@@ -949,6 +1260,20 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "section_width", sectionWidth);
 	obs_data_set_string(data, "section_align", hAlignId(sectionAlign));
 	obs_data_set_int(data, "spacer_height", spacerHeight);
+	obs_data_set_int(data, "paragraph_gap", paragraphGap);
+	obs_data_set_bool(data, "justify_text", justifyText);
+	obs_data_set_string(data, "qr_text", qrText.toUtf8().constData());
+	obs_data_set_int(data, "qr_size", qrSize);
+	obs_data_set_int(data, "qr_quiet_zone", qrQuietZone);
+	obs_data_set_string(data, "qr_error_correction", qrErrorCorrectionId(qrErrorCorrection));
+	obs_data_set_int(data, "qr_foreground", static_cast<long long>(qrForeground.rgba()));
+	obs_data_set_int(data, "qr_background", static_cast<long long>(qrBackground.rgba()));
+	obs_data_set_double(data, "icon_scale", iconScale);
+	{
+		OBSDataAutoRelease designData = obs_data_create();
+		qrDesign.save(designData);
+		obs_data_set_obj(data, "qr_design", designData);
+	}
 	obs_data_set_string(data, "sticky_entrance", stickyEntranceId(stickyEntrance));
 	obs_data_set_double(data, "sticky_fade_in", stickyFadeIn);
 	obs_data_set_string(data, "sticky_anchor", stickyAnchorId(stickyAnchor));
@@ -1129,6 +1454,41 @@ void Section::load(obs_data_t *data)
 	sectionWidth = std::clamp(sectionWidth, 0.0, 1.0);
 	sectionAlign = hAlignFromId(obs_data_get_string(data, "section_align"), HAlign::Center);
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
+	/*
+	 * Every key below is absent from anything written before its type existed, and each is read
+	 * the careful way -- a stored zero told apart from a missing key -- wherever zero means
+	 * something: paragraphs set tight together, a code drawn with no quiet zone at all.
+	 */
+	paragraphGap = obs_data_has_user_value(data, "paragraph_gap")
+			       ? static_cast<int>(obs_data_get_int(data, "paragraph_gap"))
+			       : 16;
+	paragraphGap = std::clamp(paragraphGap, 0, 4096);
+	justifyText = obs_data_get_bool(data, "justify_text");
+	qrText = QString::fromUtf8(obs_data_get_string(data, "qr_text"));
+	qrSize = obs_data_has_user_value(data, "qr_size") ? static_cast<int>(obs_data_get_int(data, "qr_size")) : 240;
+	/* A code the size of nothing draws nothing, and one past the strip's width is a typo. */
+	qrSize = std::clamp(qrSize, 21, 8192);
+	qrQuietZone = obs_data_has_user_value(data, "qr_quiet_zone")
+			      ? static_cast<int>(obs_data_get_int(data, "qr_quiet_zone"))
+			      : 4;
+	qrQuietZone = std::clamp(qrQuietZone, 0, 16);
+	qrErrorCorrection =
+		qrErrorCorrectionFromId(obs_data_get_string(data, "qr_error_correction"), QrErrorCorrection::Medium);
+	qrForeground = obs_data_has_user_value(data, "qr_foreground")
+			       ? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "qr_foreground")))
+			       : QColor(0, 0, 0);
+	qrBackground = obs_data_has_user_value(data, "qr_background")
+			       ? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "qr_background")))
+			       : QColor(255, 255, 255);
+	iconScale = obs_data_has_user_value(data, "icon_scale") ? obs_data_get_double(data, "icon_scale") : 1.4;
+	iconScale = std::clamp(iconScale, 0.1, 10.0);
+	/* Absent from a code written before codes could be styled, which drew plain squares. */
+	qrDesign = QrDesign{};
+	{
+		OBSDataAutoRelease designData = obs_data_get_obj(data, "qr_design");
+		if (designData)
+			qrDesign.load(designData);
+	}
 	stickyEntrance = stickyEntranceFromId(obs_data_get_string(data, "sticky_entrance"), StickyEntrance::WithRoll);
 	/* Zero is a cut rather than no answer, so a stored one has to be told apart from a missing key. */
 	stickyFadeIn = obs_data_has_user_value(data, "sticky_fade_in") ? obs_data_get_double(data, "sticky_fade_in")
@@ -1440,6 +1800,106 @@ Section Section::makeDefault(SectionType type)
 			section.entries.append(Entry{});
 		break;
 
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList: {
+		/*
+		 * A music cue, which is what a stack of four lines is most often for: the song set
+		 * heaviest, the credits under it a size down, and the licensing line smaller and
+		 * dimmer again, since it is the line a reader is least looking for.
+		 */
+		section.style.pixelSize = 32;
+		section.style.bold = true;
+		section.secondaryStyle = section.style;
+		section.secondaryStyle.pixelSize = 26;
+		section.secondaryStyle.bold = false;
+		section.useSecondaryStyle = true;
+		section.entryGap = 32;
+
+		const bool multi = type == SectionType::MultiStackedList;
+		if (multi) {
+			section.columns = 2;
+			section.marginX = 120;
+		}
+		for (int i = 0; i < (multi ? 2 : 1); ++i)
+			section.entries.append(Entry{QStringLiteral("\"Song Title\""),
+						     QStringLiteral("Written by A. Writer"),
+						     QStringLiteral("Performed by The Band"),
+						     QStringLiteral("Courtesy of Label Records"),
+						     {}});
+		break;
+	}
+
+	case SectionType::CardList:
+	case SectionType::MultiCardList: {
+		/*
+		 * A cast grid: a portrait over a name over a role. The picture is the card, so the
+		 * text under it is set smaller than a list's would be and held close to it.
+		 */
+		section.style.pixelSize = 28;
+		section.style.bold = true;
+		section.secondaryStyle = section.style;
+		section.secondaryStyle.pixelSize = 22;
+		section.secondaryStyle.bold = false;
+		section.useSecondaryStyle = true;
+		section.logoGap = 12;
+		section.entryGap = 40;
+
+		const bool multi = type == SectionType::MultiCardList;
+		if (multi) {
+			section.columns = 4;
+			section.columnGap = 32;
+			section.marginX = 120;
+		}
+		for (int i = 0; i < (multi ? 4 : 1); ++i) {
+			Entry entry{QStringLiteral("Full Name"), QStringLiteral("Role"), {}, {}, {}};
+			entry.logo.maxHeight = 200;
+			section.entries.append(entry);
+		}
+		break;
+	}
+
+	case SectionType::IconList:
+	case SectionType::MultiIconList: {
+		/* Where to find the show afterwards: a mark and a handle a line. */
+		section.style.pixelSize = 32;
+		section.logoGap = 14;
+		section.logoSide = LogoSide::Left;
+
+		const bool multi = type == SectionType::MultiIconList;
+		if (multi) {
+			section.columns = 2;
+			section.marginX = 160;
+		}
+		for (int i = 0; i < (multi ? 2 : 1); ++i)
+			section.entries.append(Entry{QStringLiteral("@handle"), {}, {}, {}, {}});
+		break;
+	}
+
+	case SectionType::Paragraph:
+		/*
+		 * Prose is read rather than glanced at, so it is set smaller than a credit, with more
+		 * room between its lines and held in from the edges to a measure a reader can follow.
+		 */
+		section.text =
+			QStringLiteral("In loving memory.\n\nThe events, characters and firms depicted in this "
+				       "program are fictitious. Any similarity to actual persons, living or dead, "
+				       "or to actual firms is purely coincidental.");
+		section.style.pixelSize = 26;
+		section.style.lineSpacing = 1.25;
+		section.sectionWidth = 0.6;
+		section.paddingTop = 24;
+		section.paddingBottom = 24;
+		break;
+
+	case SectionType::QrCode:
+		section.qrText = QStringLiteral("https://example.com");
+		section.text = QStringLiteral("Scan to visit");
+		section.style.pixelSize = 26;
+		section.logoGap = 16;
+		section.paddingTop = 32;
+		section.paddingBottom = 32;
+		break;
+
 	case SectionType::SectionDivider:
 		/*
 		 * The arrow rule: a plain bar between two arrowheads, broken in the middle by a
@@ -1463,6 +1923,11 @@ Section Section::makeDefault(SectionType type)
 		break;
 
 	case SectionType::Spacer:
+		section.paddingTop = 0;
+		section.paddingBottom = 0;
+		break;
+
+	case SectionType::PageBreak:
 		section.paddingTop = 0;
 		section.paddingBottom = 0;
 		break;
@@ -1498,7 +1963,7 @@ Section Section::makeDefault(SectionType type)
 	 * stays the load-time fallback, so documents predating the setting keep the layout they
 	 * were built against.
 	 */
-	if (sectionUsesLogos(type) && sectionUsesText(type))
+	if (sectionUsesLogos(type) && sectionUsesText(type) && !sectionUsesEntries(type))
 		section.logoPlacement = LogoPlacement::Hug;
 
 	/*
@@ -1506,7 +1971,8 @@ Section Section::makeDefault(SectionType type)
 	 * gap, rather than a string of full stops that depends on the font to look like a leader.
 	 * Text stays the load-time fallback for documents written before the art types existed.
 	 */
-	if (type == SectionType::Bridged || (sectionUsesLogos(type) && sectionUsesText(type))) {
+	if (type == SectionType::Bridged ||
+	    (sectionUsesLogos(type) && sectionUsesText(type) && !sectionUsesEntries(type))) {
 		section.bridgeType = BridgeType::Dots;
 		section.bridgeFill = BridgeFill::Repeat;
 	}
@@ -1530,6 +1996,18 @@ Section Section::makeDefault(SectionType type)
 	section.rowSubtitleStyle = subtitleOf(section.style);
 	section.rowSecondarySubtitleStyle =
 		subtitleOf(section.useSecondaryStyle ? section.secondaryStyle : section.style);
+
+	/*
+	 * A stack's third and fourth lines are those same two styles. The third is the second line's
+	 * size; the fourth, the courtesy line, a size down again and dimmed.
+	 */
+	if (sectionStacksLines(type)) {
+		section.rowSubtitleStyle = section.secondaryStyle;
+		section.rowSecondarySubtitleStyle = section.secondaryStyle;
+		section.rowSecondarySubtitleStyle.pixelSize = 20;
+		section.rowSecondarySubtitleStyle.italic = true;
+		section.rowSecondarySubtitleStyle.color = QColor(200, 200, 200);
+	}
 
 	return section;
 }
@@ -1587,6 +2065,19 @@ QString Section::displayLabel() const
 							       QString::fromUtf8(dividerShapeName(line)));
 	}
 
+	case SectionType::Paragraph: {
+		/* Named by its opening words, which is what a reader will recognize it by. */
+		const QString opening = text.simplified();
+		if (opening.isEmpty())
+			return QString::fromUtf8(sectionTypeName(type));
+		return opening.size() > 32 ? opening.left(31) + QChar(0x2026) : opening;
+	}
+
+	case SectionType::QrCode:
+		return qrText.isEmpty()
+			       ? QString::fromUtf8(sectionTypeName(type))
+			       : QStringLiteral("%1: %2").arg(QString::fromUtf8(sectionTypeName(type)), qrText);
+
 	case SectionType::Spacer:
 		return QStringLiteral("%1 (%2 px)").arg(QString::fromUtf8(sectionTypeName(type))).arg(spacerHeight);
 
@@ -1599,6 +2090,9 @@ QString Section::displayLabel() const
 			return QStringLiteral("%1: %2").arg(name, actions.front().summary());
 		return QStringLiteral("%1: %2 +%3").arg(name, actions.front().summary()).arg(actions.size() - 1);
 	}
+
+	case SectionType::PageBreak:
+		return QString::fromUtf8(sectionTypeName(type));
 
 	case SectionType::StickyBlock:
 		/*
@@ -2002,6 +2496,10 @@ QVector<FontUse> Document::usedFonts() const
 		if (!sectionUsesText(section.type) && !dividerText)
 			return;
 
+		/* A code with no caption draws no text at all. */
+		if (section.type == SectionType::QrCode && section.text.isEmpty())
+			return;
+
 		consider(effectiveStyle(section));
 		consider(effectiveSecondaryStyle(section));
 
@@ -2013,6 +2511,18 @@ QVector<FontUse> Document::usedFonts() const
 		if (sectionStacksSubtitles(section) && section.type == SectionType::Bridged) {
 			consider(effectiveRowSubtitleStyle(section));
 			consider(effectiveRowSecondarySubtitleStyle(section));
+		}
+
+		/* A stack's third and fourth lines, the same two styles, drawn whenever they hold text. */
+		if (sectionStacksLines(section.type)) {
+			const auto holds = [&section](QString Entry::*field) {
+				return std::any_of(section.entries.cbegin(), section.entries.cend(),
+						   [field](const Entry &entry) { return !(entry.*field).isEmpty(); });
+			};
+			if (holds(&Entry::subtitle))
+				consider(effectiveRowSubtitleStyle(section));
+			if (holds(&Entry::secondarySubtitle))
+				consider(effectiveRowSecondarySubtitleStyle(section));
 		}
 	});
 
@@ -2180,6 +2690,22 @@ Document Document::contentOnly() const
 	content.manualScroll = false;
 	content.scrollPosition = 0.0;
 	content.endingAction = EndingActionConfig();
+	/*
+	 * The playback mode, the fit, the edge fade and the page settings all decide when and where
+	 * pictures are shown, never what is in them: pages are cut from the strip as it is laid out, and
+	 * a fade is applied as the frame is drawn.
+	 */
+	const Document plain;
+	content.playbackMode = plain.playbackMode;
+	content.fitDuration = plain.fitDuration;
+	content.fitSeconds = plain.fitSeconds;
+	content.edgeFadeTop = plain.edgeFadeTop;
+	content.edgeFadeBottom = plain.edgeFadeBottom;
+	content.pageHold = plain.pageHold;
+	content.pageTransition = plain.pageTransition;
+	content.pageTransitionTime = plain.pageTransitionTime;
+	content.pageAnchor = plain.pageAnchor;
+	content.pageMargin = plain.pageMargin;
 
 	return content;
 }
@@ -2203,6 +2729,16 @@ void Document::save(obs_data_t *data) const
 	obs_data_set_double(data, "start_delay", startDelay);
 	obs_data_set_bool(data, "manual_scroll", manualScroll);
 	obs_data_set_double(data, "scroll_position", scrollPosition);
+	obs_data_set_string(data, "playback_mode", playbackModeId(playbackMode));
+	obs_data_set_bool(data, "fit_duration", fitDuration);
+	obs_data_set_double(data, "fit_seconds", fitSeconds);
+	obs_data_set_int(data, "edge_fade_top", edgeFadeTop);
+	obs_data_set_int(data, "edge_fade_bottom", edgeFadeBottom);
+	obs_data_set_double(data, "page_hold", pageHold);
+	obs_data_set_string(data, "page_transition", pageTransitionId(pageTransition));
+	obs_data_set_double(data, "page_transition_time", pageTransitionTime);
+	obs_data_set_string(data, "page_anchor", stickyAnchorId(pageAnchor));
+	obs_data_set_int(data, "page_margin", pageMargin);
 
 	endingAction.save(data);
 
@@ -2288,6 +2824,34 @@ void Document::load(obs_data_t *data, bool *migrated)
 		leadOut = 0;
 	if (startDelay < 0.0)
 		startDelay = 0.0;
+
+	/*
+	 * Every key below is absent from a roll written before it existed, which scrolled at its speed
+	 * with hard edges. Each is read the careful way, so a stored zero -- no fade, a cut with no time
+	 * to it, pages with no margin -- is kept rather than taken for the default.
+	 */
+	const auto number = [data](const char *key, double fallback) {
+		return obs_data_has_user_value(data, key) || obs_data_has_default_value(data, key)
+			       ? obs_data_get_double(data, key)
+			       : fallback;
+	};
+	const auto whole = [data](const char *key, int fallback) {
+		return obs_data_has_user_value(data, key) || obs_data_has_default_value(data, key)
+			       ? static_cast<int>(obs_data_get_int(data, key))
+			       : fallback;
+	};
+
+	playbackMode = playbackModeFromId(obs_data_get_string(data, "playback_mode"), PlaybackMode::Scroll);
+	fitDuration = obs_data_get_bool(data, "fit_duration");
+	/* Under a second is not a credit roll, and a day is a typo. */
+	fitSeconds = std::clamp(number("fit_seconds", 60.0), 1.0, 86400.0);
+	edgeFadeTop = std::clamp(whole("edge_fade_top", 0), 0, 4096);
+	edgeFadeBottom = std::clamp(whole("edge_fade_bottom", 0), 0, 4096);
+	pageHold = std::clamp(number("page_hold", 4.0), 0.0, 3600.0);
+	pageTransition = pageTransitionFromId(obs_data_get_string(data, "page_transition"), PageTransition::Fade);
+	pageTransitionTime = std::clamp(number("page_transition_time", 0.6), 0.0, 60.0);
+	pageAnchor = stickyAnchorFromId(obs_data_get_string(data, "page_anchor"), StickyAnchor::Center);
+	pageMargin = std::clamp(whole("page_margin", 48), 0, 4096);
 
 	endingAction.load(data);
 
@@ -2400,6 +2964,16 @@ void Document::defaults(obs_data_t *data)
 	obs_data_set_default_double(data, "start_delay", 0.0);
 	obs_data_set_default_bool(data, "manual_scroll", false);
 	obs_data_set_default_double(data, "scroll_position", 0.0);
+	obs_data_set_default_string(data, "playback_mode", "scroll");
+	obs_data_set_default_bool(data, "fit_duration", false);
+	obs_data_set_default_double(data, "fit_seconds", 60.0);
+	obs_data_set_default_int(data, "edge_fade_top", 0);
+	obs_data_set_default_int(data, "edge_fade_bottom", 0);
+	obs_data_set_default_double(data, "page_hold", 4.0);
+	obs_data_set_default_string(data, "page_transition", "fade");
+	obs_data_set_default_double(data, "page_transition_time", 0.6);
+	obs_data_set_default_string(data, "page_anchor", "center");
+	obs_data_set_default_int(data, "page_margin", 48);
 	obs_data_set_default_bool(data, "bundle_fonts", true);
 
 	EndingActionConfig::defaults(data);

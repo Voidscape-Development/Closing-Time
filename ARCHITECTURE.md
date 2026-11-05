@@ -1845,6 +1845,39 @@ same reason: reporting it would send the user after a font nothing uses.
 
 ### Addressed since the first cut
 
+- Three playback features, all of them playback settings rather than content -- `contentOnly` blanks
+  them, so changing one lays nothing out again and the source rebuilds only its timeline.
+  *Fit to a length* bisects the scroll speed against the timeline itself (a faster roll is never
+  longer, which is all bisection needs, and holds and fades are fixed time a formula would get wrong);
+  played as pages it solves for the hold instead. *Edge fade* is a per-draw flag on the draw list and
+  a per-pixel ramp: the GPU shader computes it from each pixel's canvas row, and the designer paints
+  fading runs into a buffer and masks it with the same `edgeFadeAt`; a sticky card fades only while
+  it moves with the roll (`BlockFrame::held`). *Pages* are cut by the timeline from the layout's
+  section extents (`RollLayout::spans`) and Page Break markers, so the layout and every picture are
+  shared with the scrolling roll; the timeline schedules each page's entrance, hold and exit and
+  `composeFrame` draws each page's own layers at the page's position and opacity. The live harness
+  checks the GPU against the designer for both, row by row for the fade.
+
+- Five more kinds of section: a stacked list (up to four lines per entry, in four styles), image
+  cards (a picture over a title/subtitle pair, with a row of pictures sharing a band so captions
+  line up), an icon list (a picture sized to the capitals of its line), a paragraph (blank-line
+  paragraphs, optionally justified) and a QR code (encoded by the vendored `qrcodegen`, drawn as
+  whole-pixel squares on a plate with a quiet zone). The three lists come in one-column and
+  multi-column forms and share one grid in the renderer, so a list in one column is a grid of one
+  column; they are offered as further answers to the list editor's "each entry is" question
+  rather than as new base types. A stack spends the bridged row's two subtitle styles on its third
+  and fourth lines, so the entry's four texts and the section's four styles stay paired the same
+  way in every type. A code's text is cut to the byte-mode capacity of a version 40 symbol before
+  it is encoded, which is what guarantees the encoder never refuses it -- the code is always drawn.
+- A QR code can be styled (`QrDesign`): module shapes, separately shaped and colored eyes, a
+  gradient mapped over the whole code, rounded plate corners and a centre logo that clears the
+  squares behind it and forces High error correction. The eyes are drawn apart from the data
+  squares, as a frame and a pupil each, and every part is concentric along the lines through an
+  eye's middle -- where a reader looks for the 1:1:3:1:1 run -- so a round eye reads as the square
+  it replaces. None of it changes the code's size or position. Shapes that ZXing or WeChat failed
+  to decode in a sweep of every shape, module size and logo combination (leaf eyes, diamond eye
+  frames) are not offered; a diamond frame in a document is drawn square.
+
 - The renderer was rebuilt around a picture per section rather than one picture of the whole roll
   (see `docs/design/layered-renderer.md`). Editing one section redraws one section; a long roll holds
   only the part of itself near the frame, on the GPU and in memory; a rebuild keeps every picture it

@@ -36,7 +36,7 @@ namespace {
  */
 void addDraw(DrawList *list, const ComposeView &view, const DrawSource &source, const QRectF &target,
 	     const QRectF &sourceRect, double alpha, double clipLeft = -std::numeric_limits<double>::infinity(),
-	     double clipRight = std::numeric_limits<double>::infinity())
+	     double clipRight = std::numeric_limits<double>::infinity(), bool edgeFade = false)
 {
 	if (target.isEmpty() || sourceRect.isEmpty() || alpha <= 0.0)
 		return;
@@ -61,6 +61,7 @@ void addDraw(DrawList *list, const ComposeView &view, const DrawSource &source, 
 				 sourceRect.top() + (top - target.top()) * perRow, (right - left) * perColumn,
 				 (bottom - top) * perRow);
 	item.alpha = std::min(1.0, alpha);
+	item.edgeFade = edgeFade;
 	list->append(item);
 }
 
@@ -91,7 +92,7 @@ bool revealClip(const RollLayer &layer, const ComposeView &view, double *clipLef
 
 /* Every chunk of one layer, with the layer's origin at `originTop` view pixels. */
 void emitLayer(DrawList *list, const RollLayout &layout, int layerIndex, double originTop, const ComposeView &view,
-	       double alpha)
+	       double alpha, bool edgeFade)
 {
 	const RollLayer &layer = layout.layers.at(layerIndex);
 	const double width = qCeil(layer.width * view.scale);
@@ -113,13 +114,13 @@ void emitLayer(DrawList *list, const RollLayout &layout, int layerIndex, double 
 		source.layer = layerIndex;
 		source.chunk = chunk;
 		addDraw(list, view, source, QRectF(0.0, top, width, rows.height), QRectF(0.0, 0.0, width, rows.height),
-			alpha, clipLeft, clipRight);
+			alpha, clipLeft, clipRight, edgeFade);
 	}
 }
 
 /* One animated logo, its shadow under it, with its owner's origin at `originTop`. */
 void emitLogo(DrawList *list, const RollLayout &layout, const RollFrame &frame, int index, double originTop,
-	      double originStripTop, const ComposeView &view, double alpha)
+	      double originStripTop, const ComposeView &view, double alpha, bool edgeFade)
 {
 	const AnimatedLogoPlacement &placement = layout.animatedLogos.at(index);
 	if (!placement.animation || placement.animation->frames.isEmpty())
@@ -158,7 +159,7 @@ void emitLogo(DrawList *list, const RollLayout &layout, const RollFrame &frame, 
 		addDraw(list, view, source,
 			QRectF(at.x() * scale, top + placement.shadowOffset.y() * scale, shadow.width() * scale,
 			       shadow.height() * scale),
-			QRectF(QPointF(0, 0), shadow.size()), alpha, clipLeft, clipRight);
+			QRectF(QPointF(0, 0), shadow.size()), alpha, clipLeft, clipRight, edgeFade);
 	}
 
 	const QImage &image = placement.animation->frames.at(frameIndex).image;
@@ -169,7 +170,7 @@ void emitLogo(DrawList *list, const RollLayout &layout, const RollFrame &frame, 
 	addDraw(list, view, source,
 		QRectF(placement.rect.left() * scale, top, placement.rect.width() * scale,
 		       placement.rect.height() * scale),
-		QRectF(QPointF(0, 0), image.size()), alpha, clipLeft, clipRight);
+		QRectF(QPointF(0, 0), image.size()), alpha, clipLeft, clipRight, edgeFade);
 }
 
 } // namespace
@@ -186,21 +187,89 @@ ComposeView ComposeView::canvas(const RollFrame &frame, int canvasHeight)
 	return view;
 }
 
+double edgeFadeAt(const ComposeView &view, double y)
+{
+	const auto ramp = [](double distance, double over) {
+		if (over <= 0.0)
+			return 1.0;
+		const double p = std::clamp(distance / over, 0.0, 1.0);
+		return p * p * (3.0 - 2.0 * p);
+	};
+	return ramp(y - view.fadeEdgeTop, view.fadeTop) * ramp(view.fadeEdgeBottom - y, view.fadeBottom);
+}
+
+namespace {
+
+/*
+ * One page of a roll played as pages: every section laid out in its range of the strip, with its
+ * logos, and every card whose slot is in it drawn in that slot -- at the page's own position and
+ * opacity. A page is not cut to its range: what a section paints past its own box, a shadow or a
+ * panel's outset, is drawn as it is in the scrolling roll, and nothing from another page is drawn.
+ */
+void emitPage(DrawList *list, const RollLayout &layout, const RollFrame &frame, const PageFrame &page,
+	      const ComposeView &view)
+{
+	const auto onPage = [&page](double stripY) {
+		return stripY >= page.top && stripY < page.bottom;
+	};
+
+	ComposeView pageView = view;
+	pageView.stripTop = page.stripTop * view.scale;
+
+	QVector<int> sections;
+	for (int index = 0; index < layout.layers.size(); ++index) {
+		const RollLayer &layer = layout.layers.at(index);
+		if (layer.kind != RollLayer::Kind::Section || !onPage(layer.sectionTop))
+			continue;
+		emitLayer(list, layout, index, pageView.stripTop, pageView, page.alpha, true);
+		sections.append(layer.section);
+	}
+
+	for (int index = 0; index < layout.animatedLogos.size(); ++index) {
+		const AnimatedLogoPlacement &placement = layout.animatedLogos.at(index);
+		if (placement.block < 0 && sections.contains(placement.section))
+			emitLogo(list, layout, frame, index, pageView.stripTop, 0.0, pageView, page.alpha, true);
+	}
+
+	for (int block = 0; block < layout.blocks.size(); ++block) {
+		const StickyBlockPlacement &placement = layout.blocks.at(block);
+		if (placement.layer < 0 || !onPage(placement.rect.top()))
+			continue;
+
+		const double top = pageView.stripTop + placement.rect.top() * view.scale;
+		emitLayer(list, layout, placement.layer, top, pageView, page.alpha, true);
+		for (int index = 0; index < layout.animatedLogos.size(); ++index) {
+			if (layout.animatedLogos.at(index).block == block)
+				emitLogo(list, layout, frame, index, top, placement.rect.top(), pageView, page.alpha,
+					 true);
+		}
+	}
+}
+
+} // namespace
+
 DrawList composeFrame(const RollLayout &layout, const RollFrame &frame, const ComposeView &view)
 {
 	DrawList list;
 	if (layout.isEmpty())
 		return list;
 
+	/* A roll played as pages, looked at as the canvas: the pages on show, oldest first. */
+	if (frame.paged && view.blocks == ComposeView::Blocks::Timeline) {
+		for (const PageFrame &page : frame.pages)
+			emitPage(&list, layout, frame, page, view);
+		return list;
+	}
+
 	/* The roll itself: every section, in order, then the logos playing in its holes. */
 	for (int index = 0; index < layout.layers.size(); ++index) {
 		if (layout.layers.at(index).kind == RollLayer::Kind::Section)
-			emitLayer(&list, layout, index, view.stripTop, view, 1.0);
+			emitLayer(&list, layout, index, view.stripTop, view, 1.0, true);
 	}
 
 	for (int index = 0; index < layout.animatedLogos.size(); ++index) {
 		if (layout.animatedLogos.at(index).block < 0)
-			emitLogo(&list, layout, frame, index, view.stripTop, 0.0, view, 1.0);
+			emitLogo(&list, layout, frame, index, view.stripTop, 0.0, view, 1.0, true);
 	}
 
 	/*
@@ -215,6 +284,8 @@ DrawList composeFrame(const RollLayout &layout, const RollFrame &frame, const Co
 
 		double top = 0.0;
 		double alpha = 1.0;
+		/* A card fades at the edges only while it moves with the roll; held, it stands apart from it. */
+		bool fades = true;
 		if (view.blocks == ComposeView::Blocks::InSlots) {
 			top = view.stripTop + placement.rect.top() * view.scale;
 		} else {
@@ -222,13 +293,14 @@ DrawList composeFrame(const RollLayout &layout, const RollFrame &frame, const Co
 				continue;
 			top = frame.blocks.at(block).top * view.scale;
 			alpha = frame.blocks.at(block).alpha;
+			fades = !frame.blocks.at(block).held;
 		}
 
-		emitLayer(&list, layout, placement.layer, top, view, alpha);
+		emitLayer(&list, layout, placement.layer, top, view, alpha, fades);
 
 		for (int index = 0; index < layout.animatedLogos.size(); ++index) {
 			if (layout.animatedLogos.at(index).block == block)
-				emitLogo(&list, layout, frame, index, top, placement.rect.top(), view, alpha);
+				emitLogo(&list, layout, frame, index, top, placement.rect.top(), view, alpha, fades);
 		}
 	}
 
@@ -300,6 +372,48 @@ void paintDrawList(QPainter &painter, const DrawList &list, const DrawImageLooku
 	}
 
 	painter.setOpacity(opacity);
+}
+
+void paintDrawListFaded(QPainter &painter, const DrawList &list, const DrawImageLookup &image, const ComposeView &view,
+			const QRect &area, QPointF origin)
+{
+	if (!view.fades() || area.isEmpty()) {
+		paintDrawList(painter, list, image, origin);
+		return;
+	}
+
+	/* The fade as a mask over `area`, built once: a column of alpha, stretched across. */
+	QImage mask(1, area.height(), QImage::Format_ARGB32_Premultiplied);
+	for (int row = 0; row < area.height(); ++row) {
+		const int alpha = qRound(255.0 * edgeFadeAt(view, area.top() + row + 0.5));
+		mask.setPixel(0, row, qRgba(alpha, alpha, alpha, alpha));
+	}
+
+	/* Runs of draws that fade and runs that do not, in order. */
+	int start = 0;
+	while (start < list.size()) {
+		const bool fading = list.at(start).edgeFade;
+		int end = start;
+		while (end < list.size() && list.at(end).edgeFade == fading)
+			++end;
+
+		const DrawList run(list.cbegin() + start, list.cbegin() + end);
+		if (!fading) {
+			paintDrawList(painter, run, image, origin);
+		} else {
+			QImage buffer(area.size(), QImage::Format_ARGB32_Premultiplied);
+			buffer.fill(Qt::transparent);
+			{
+				QPainter inner(&buffer);
+				inner.setRenderHints(painter.renderHints());
+				paintDrawList(inner, run, image, -QPointF(area.topLeft()));
+				inner.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+				inner.drawImage(QRect(QPoint(0, 0), area.size()), mask);
+			}
+			painter.drawImage(QPointF(area.topLeft()) + origin, buffer);
+		}
+		start = end;
+	}
 }
 
 QImage RasterCache::find(quint64 key)

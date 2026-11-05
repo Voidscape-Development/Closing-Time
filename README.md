@@ -34,6 +34,11 @@ columns — which between them cover every shape in the table below:
 | Multi-List of Text | Names across a configurable number of columns |
 | Title and Subtitle Multi-List | The same stacked pairs, across a configurable number of columns |
 | Multi-List of Logos | Sponsor logos across a configurable number of columns |
+| Stacked List, Stacked Multi-List | Entries of up to four lines, each in a style of its own — a music cue: the song, who wrote it, who performed it, whose courtesy it is used by |
+| Image Card List, Image Card Multi-List | A picture with a title and a subtitle under it — a headshot over a name and a role — in one column or a grid |
+| Icon List, Icon Multi-List | Lines each led by a small picture sized to the text — a platform's mark beside a handle |
+| Paragraph | Running prose — a dedication, a thank-you, legal text — broken into paragraphs at blank lines, optionally justified |
+| QR Code | A scannable code for a link or any text, drawn as sharp squares at any size, with an optional caption |
 | Section Divider | An ornamental rule between sections, built from lanes of lines and shapes by dragging, symmetric by default |
 | Spacer | A blank run, for pacing |
 | Sticky Ending Block | Sections that hold still on the frame while the rest of the roll scrolls past behind them — a closing card that stays up, and can be the end of the roll |
@@ -42,6 +47,41 @@ columns — which between them cover every shape in the table below:
 Any section can carry a **background** — a color, a gradient or an image, with rounded corners and
 a border — behind the whole section or behind the individual things it draws. See *Backgrounds*
 below.
+
+A **stacked** list carries up to four lines per entry — `Line 1` to `Line 4`
+in the entry table — drawn top to bottom in four styles of their own and held apart by the line
+gap. A blank line takes no room, so a cue with no courtesy line is three lines tall, and an
+entry with only its first line is a heading inside the list. A CSV with four columns imports
+straight into it.
+
+An **image card** puts a picture over a title/subtitle pair, so the caption belongs to the
+picture rather than living in a second section beside it. Across a row of a grid the pictures
+share a band and stand on its bottom edge, so every caption starts on the same line however
+differently shaped the pictures above them are. An **icon list** sizes each entry's picture to
+the capital letters of its line (Icon Size, as a multiple of the cap height), centers it on
+them, and holds it the icon gap before or after the text; a row with no file is a plain line.
+
+A **paragraph** is set from one block of text: a blank line starts a new paragraph, a single
+line break stays inside one, and the space between paragraphs is a setting of its own.
+*Justify* stretches every line but each paragraph's last to the full width of the section.
+
+A **QR code** encodes whatever is typed into it — usually a link — at a choice of error
+correction, and is drawn as squares rather than an image, each a whole number of pixels, so it
+stays sharp in the roll and in a scaled preview. It sits on a plate (white by default, with the
+standard's four squares of quiet zone) because a reader needs a margin of plain light around a
+code to find it; the plate can be recolored or made transparent. Text past what the largest code
+can hold is cut at a character boundary rather than leaving nothing drawn. A code can be styled
+too: pick a **look** — Classic, Rounded, Dots, Liquid, Soft or Diamond — or set the parts one at
+a time: the squares (square, rounded, dots, diamond, or connected into flowing strokes, at 50–100 %
+of their cell), the eye frames and pupils (square, rounded, circle; diamond for pupils), eye
+colors of their own, a linear or radial gradient swept across the whole code, rounded plate
+corners, and a **centre logo** of up to 30 % of the code's width with the squares behind it
+cleared. A code with a logo is always encoded at High error correction. Every combination the
+designer offers was checked to decode with ZXing (the decoder behind most Android cameras) and
+WeChat's decoder; a leaf-shaped eye and a diamond eye frame were tried and left out because one or
+the other of them missed it. Encoding uses Project
+Nayuki's [QR Code generator](https://www.nayuki.io/page/qr-code-generator-library) (MIT),
+vendored in `src/third-party/qrcodegen`.
 
 A **title and subtitle** list is the other way to set what a bridged row sets on one line: the
 position on top and the name under it, each with its own font, size, weight, color and
@@ -226,6 +266,20 @@ lead-out padding, start behavior, looping, and the ending action.
 - Per-source hotkeys for **start/resume**, **pause**, and **restart**.
 - Optional looping, which wraps seamlessly.
 - Lead-in and lead-out padding so the roll eases on and fully clears the frame.
+- **Fit to a length**: give the roll a running time (say 1:30, to match the music) instead of a
+  speed, and the scroll speed is worked out so it finishes exactly then. Cards' holds and fades are
+  counted; the start delay comes before it; a loop is fitted one pass at a time. If the time can't be
+  met — the cards' own holds already take longer — the roll plays as close as it can and the
+  designer says so.
+- **Edge fade**: fade the roll out over a set number of pixels at the top and bottom of the frame
+  instead of cutting it off there. A sticky card fades with the roll while it travels and stays at
+  full strength once it is pinned.
+- **Pages**: play the roll as pages instead of scrolling it. The roll is cut into pages that fit the
+  frame (between a top and bottom margin), with a **Page Break** section to start a new page by hand;
+  each page holds for a set time and gives way to the next by a cut, a fade through empty, a
+  crossfade, or a slide up. Pages sit at the top, middle or bottom of the frame. Fit to a length works
+  here too, by setting the hold. Action sections fire as their page comes in, cards are shown in place
+  on their page, and looping goes back to page one. The designer marks where each page starts.
 - Driven over **obs-websocket** too, when it is installed: the vendor `closing-time` takes
   `Start`, `Pause`, `Resume`, `Restart` and `GetState` requests with a `sourceName`, and emits a
   `RollFinished` event — so a Stream Deck or a show-control system can run the roll and know when it

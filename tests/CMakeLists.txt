@@ -24,6 +24,8 @@ target_sources(
     suites/Layout.cpp
     suites/LogoRows.cpp
     suites/NaturalOrder.cpp
+    suites/NewSectionTypes.cpp
+    suites/Playback.cpp
     suites/Persistence.cpp
     suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp
