@@ -2070,8 +2070,9 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		y += section.spacerHeight;
 		break;
 
-	/* Never reached: an Action section returns before anything is measured, at the top of this call. */
+	/* Never reached: a marker -- an Action or a Page Break -- returns at the top of this call. */
 	case SectionType::Action:
+	case SectionType::PageBreak:
 		break;
 
 	case SectionType::StickyBlock: {
