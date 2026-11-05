@@ -57,23 +57,43 @@ QByteArray qrPayload(const QString &text, QrErrorCorrection level);
 QrMatrix encodeQr(const QString &text, QrErrorCorrection level);
 
 /*
+ * The level a code is really encoded at. A logo in the middle hides squares the code has to
+ * recover, so a code carrying one is always encoded at High.
+ */
+QrErrorCorrection effectiveQrLevel(const Section &section);
+
+/*
  * Where a code's plate and squares land when it is drawn at most `maxSize` pixels square, with a
  * quiet zone `quietZone` squares deep, its left edge at `x` and its top at `y`.
  *
  * Every square is a whole number of pixels, so its edges fall on pixel boundaries and a reader sees
  * clean squares rather than a blur between them; the plate shrinks to the largest whole multiple
  * that fits, which can leave it a few pixels short of `maxSize`.
+ *
+ * The squares come back in three parts, because a styled code fills them three ways: the data
+ * squares in the module shape, and the three finder patterns as a frame and a pupil each, which can
+ * take shapes and colors of their own.
  */
 struct QrPlacement {
 	QRect plate;
 	int module = 0;
-	/* The dark squares, merged into runs along each row so neighbors share no edge to seam along. */
+	/* The code itself, inside the quiet zone: what a gradient is mapped over. */
+	QRect code;
+	/* The data squares, in the design's module shape. */
 	QPainterPath ink;
+	QPainterPath eyeFrames;
+	QPainterPath eyePupils;
+	/* Where the centre logo goes, or a null rectangle when there is none. */
+	QRect logo;
 };
 
 /* The side of the square plate a code comes to, without laying it out. */
 int qrPlateSize(const QrMatrix &matrix, int maxSize, int quietZone);
 
-QrPlacement placeQr(const QrMatrix &matrix, int maxSize, int quietZone, int x, int y);
+QrPlacement placeQr(const QrMatrix &matrix, int maxSize, int quietZone, int x, int y,
+		    const QrDesign &design = QrDesign());
+
+/* True when square (x, y) belongs to one of the three finder patterns. */
+bool qrInFinder(const QrMatrix &matrix, int x, int y);
 
 } // namespace closingtime

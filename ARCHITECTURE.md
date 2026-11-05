@@ -1856,6 +1856,14 @@ same reason: reporting it would send the user after a font nothing uses.
   and fourth lines, so the entry's four texts and the section's four styles stay paired the same
   way in every type. A code's text is cut to the byte-mode capacity of a version 40 symbol before
   it is encoded, which is what guarantees the encoder never refuses it -- the code is always drawn.
+- A QR code can be styled (`QrDesign`): module shapes, separately shaped and colored eyes, a
+  gradient mapped over the whole code, rounded plate corners and a centre logo that clears the
+  squares behind it and forces High error correction. The eyes are drawn apart from the data
+  squares, as a frame and a pupil each, and every part is concentric along the lines through an
+  eye's middle -- where a reader looks for the 1:1:3:1:1 run -- so a round eye reads as the square
+  it replaces. None of it changes the code's size or position. Shapes that ZXing or WeChat failed
+  to decode in a sweep of every shape, module size and logo combination (leaf eyes, diamond eye
+  frames) are not offered; a diamond frame in a document is drawn square.
 
 - The renderer was rebuilt around a picture per section rather than one picture of the whole roll
   (see `docs/design/layered-renderer.md`). Editing one section redraws one section; a long roll holds

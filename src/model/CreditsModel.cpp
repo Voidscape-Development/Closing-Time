@@ -242,6 +242,168 @@ QrErrorCorrection qrErrorCorrectionFromId(const char *id, QrErrorCorrection fall
 	return fallback;
 }
 
+const char *qrModuleShapeId(QrModuleShape shape)
+{
+	switch (shape) {
+	case QrModuleShape::Rounded:
+		return "rounded";
+	case QrModuleShape::Dots:
+		return "dots";
+	case QrModuleShape::Diamond:
+		return "diamond";
+	case QrModuleShape::Connected:
+		return "connected";
+	case QrModuleShape::Square:
+	default:
+		return "square";
+	}
+}
+
+QrModuleShape qrModuleShapeFromId(const char *id, QrModuleShape fallback)
+{
+	if (!id)
+		return fallback;
+	for (QrModuleShape shape : {QrModuleShape::Square, QrModuleShape::Rounded, QrModuleShape::Dots,
+				    QrModuleShape::Diamond, QrModuleShape::Connected}) {
+		if (strcmp(id, qrModuleShapeId(shape)) == 0)
+			return shape;
+	}
+	return fallback;
+}
+
+const char *qrEyeShapeId(QrEyeShape shape)
+{
+	switch (shape) {
+	case QrEyeShape::Rounded:
+		return "rounded";
+	case QrEyeShape::Circle:
+		return "circle";
+	case QrEyeShape::Diamond:
+		return "diamond";
+	case QrEyeShape::Square:
+	default:
+		return "square";
+	}
+}
+
+QrEyeShape qrEyeShapeFromId(const char *id, QrEyeShape fallback)
+{
+	if (!id)
+		return fallback;
+	for (QrEyeShape shape : {QrEyeShape::Square, QrEyeShape::Rounded, QrEyeShape::Circle, QrEyeShape::Diamond}) {
+		if (strcmp(id, qrEyeShapeId(shape)) == 0)
+			return shape;
+	}
+	return fallback;
+}
+
+void QrDesign::save(obs_data_t *data) const
+{
+	obs_data_set_string(data, "module_shape", qrModuleShapeId(moduleShape));
+	obs_data_set_double(data, "module_scale", moduleScale);
+	obs_data_set_string(data, "eye_frame", qrEyeShapeId(eyeFrame));
+	obs_data_set_string(data, "eye_pupil", qrEyeShapeId(eyePupil));
+	obs_data_set_bool(data, "eye_colors", eyeColors);
+	obs_data_set_int(data, "eye_frame_color", static_cast<long long>(eyeFrameColor.rgba()));
+	obs_data_set_int(data, "eye_pupil_color", static_cast<long long>(eyePupilColor.rgba()));
+	obs_data_set_string(data, "fill", textFillId(fill));
+
+	OBSDataAutoRelease gradientData = obs_data_create();
+	gradient.save(gradientData);
+	obs_data_set_obj(data, "gradient", gradientData);
+
+	obs_data_set_double(data, "plate_radius", plateRadius);
+
+	OBSDataAutoRelease logoData = obs_data_create();
+	logo.save(logoData);
+	obs_data_set_obj(data, "logo", logoData);
+	obs_data_set_double(data, "logo_size", logoSize);
+	obs_data_set_bool(data, "logo_clear", logoClear);
+}
+
+void QrDesign::load(obs_data_t *data)
+{
+	const QrDesign defaults;
+
+	moduleShape = qrModuleShapeFromId(obs_data_get_string(data, "module_shape"), QrModuleShape::Square);
+	moduleScale = obs_data_has_user_value(data, "module_scale") ? obs_data_get_double(data, "module_scale")
+								    : defaults.moduleScale;
+	/* Under half a square, a module is too small for a reader to be sure of. */
+	moduleScale = std::clamp(moduleScale, 0.5, 1.0);
+	eyeFrame = qrEyeShapeFromId(obs_data_get_string(data, "eye_frame"), QrEyeShape::Square);
+	/*
+	 * A diamond frame is thin along the diagonals a reader also samples, and ZXing -- the decoder
+	 * behind most Android cameras -- misses it often enough that it is a pupil shape only.
+	 */
+	if (eyeFrame == QrEyeShape::Diamond)
+		eyeFrame = QrEyeShape::Square;
+	eyePupil = qrEyeShapeFromId(obs_data_get_string(data, "eye_pupil"), QrEyeShape::Square);
+	eyeColors = obs_data_get_bool(data, "eye_colors");
+	eyeFrameColor = obs_data_has_user_value(data, "eye_frame_color")
+				? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "eye_frame_color")))
+				: defaults.eyeFrameColor;
+	eyePupilColor = obs_data_has_user_value(data, "eye_pupil_color")
+				? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "eye_pupil_color")))
+				: defaults.eyePupilColor;
+	fill = textFillFromId(obs_data_get_string(data, "fill"), TextFill::Solid);
+
+	gradient = defaults.gradient;
+	OBSDataAutoRelease gradientData = obs_data_get_obj(data, "gradient");
+	if (gradientData)
+		gradient.load(gradientData);
+
+	plateRadius = std::clamp(obs_data_get_double(data, "plate_radius"), 0.0, 4096.0);
+
+	logo = LogoRef{};
+	OBSDataAutoRelease logoData = obs_data_get_obj(data, "logo");
+	if (logoData)
+		logo.load(logoData);
+	logoSize = obs_data_has_user_value(data, "logo_size") ? obs_data_get_double(data, "logo_size")
+							      : defaults.logoSize;
+	/* Past 30 % of the width the cleared squares are more than High correction can stand in for. */
+	logoSize = std::clamp(logoSize, 0.05, 0.3);
+	logoClear = obs_data_has_user_value(data, "logo_clear") ? obs_data_get_bool(data, "logo_clear") : true;
+}
+
+const QVector<QrLook> &qrLooks()
+{
+	/*
+	 * The looks people reach for in a styled code, each a module shape with eyes that suit it.
+	 * Colors, gradients and a logo are left alone by a look, so picking one restyles the shapes
+	 * without undoing the rest.
+	 */
+	static const QVector<QrLook> looks = {
+		{"classic", "Classic", QrModuleShape::Square, 1.0, QrEyeShape::Square, QrEyeShape::Square, 0.0},
+		{"rounded", "Rounded", QrModuleShape::Rounded, 1.0, QrEyeShape::Rounded, QrEyeShape::Rounded, 16.0},
+		{"dots", "Dots", QrModuleShape::Dots, 0.9, QrEyeShape::Circle, QrEyeShape::Circle, 16.0},
+		{"liquid", "Liquid", QrModuleShape::Connected, 1.0, QrEyeShape::Rounded, QrEyeShape::Circle, 24.0},
+		{"soft", "Soft", QrModuleShape::Rounded, 0.8, QrEyeShape::Circle, QrEyeShape::Rounded, 16.0},
+		{"diamond", "Diamond", QrModuleShape::Diamond, 1.0, QrEyeShape::Square, QrEyeShape::Diamond, 0.0},
+	};
+	return looks;
+}
+
+const QrLook *matchingQrLook(const QrDesign &design)
+{
+	for (const QrLook &look : qrLooks()) {
+		if (design.moduleShape == look.moduleShape &&
+		    qFuzzyCompare(design.moduleScale + 1.0, look.moduleScale + 1.0) &&
+		    design.eyeFrame == look.eyeFrame && design.eyePupil == look.eyePupil &&
+		    qFuzzyCompare(design.plateRadius + 1.0, look.plateRadius + 1.0))
+			return &look;
+	}
+	return nullptr;
+}
+
+void applyQrLook(QrDesign &design, const QrLook &look)
+{
+	design.moduleShape = look.moduleShape;
+	design.moduleScale = look.moduleScale;
+	design.eyeFrame = look.eyeFrame;
+	design.eyePupil = look.eyePupil;
+	design.plateRadius = look.plateRadius;
+}
+
 int qrCapacityBytes(QrErrorCorrection level)
 {
 	/* Version 40 in byte mode, from the standard's capacity table. */
@@ -1062,6 +1224,11 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_int(data, "qr_foreground", static_cast<long long>(qrForeground.rgba()));
 	obs_data_set_int(data, "qr_background", static_cast<long long>(qrBackground.rgba()));
 	obs_data_set_double(data, "icon_scale", iconScale);
+	{
+		OBSDataAutoRelease designData = obs_data_create();
+		qrDesign.save(designData);
+		obs_data_set_obj(data, "qr_design", designData);
+	}
 	obs_data_set_string(data, "sticky_entrance", stickyEntranceId(stickyEntrance));
 	obs_data_set_double(data, "sticky_fade_in", stickyFadeIn);
 	obs_data_set_string(data, "sticky_anchor", stickyAnchorId(stickyAnchor));
@@ -1270,6 +1437,13 @@ void Section::load(obs_data_t *data)
 			       : QColor(255, 255, 255);
 	iconScale = obs_data_has_user_value(data, "icon_scale") ? obs_data_get_double(data, "icon_scale") : 1.4;
 	iconScale = std::clamp(iconScale, 0.1, 10.0);
+	/* Absent from a code written before codes could be styled, which drew plain squares. */
+	qrDesign = QrDesign{};
+	{
+		OBSDataAutoRelease designData = obs_data_get_obj(data, "qr_design");
+		if (designData)
+			qrDesign.load(designData);
+	}
 	stickyEntrance = stickyEntranceFromId(obs_data_get_string(data, "sticky_entrance"), StickyEntrance::WithRoll);
 	/* Zero is a cut rather than no answer, so a stored one has to be told apart from a missing key. */
 	stickyFadeIn = obs_data_has_user_value(data, "sticky_fade_in") ? obs_data_get_double(data, "sticky_fade_in")

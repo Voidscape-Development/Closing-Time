@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "harness/Fixtures.hpp"
 
+#include <algorithm>
+
 #include <QFile>
 #include <QImage>
 #include <QPainter>
@@ -582,6 +584,45 @@ const QVector<Scene> &scenes()
 				    "A stacked multi-list of music cues, a grid of cards with pictures of two heights, "
 				    "an icon list, a justified paragraph and a QR code with a caption"),
 			    documentWith({cue, cards, icons, prose, code}));
+		}
+
+		/* --- styled QR codes ------------------------------------------------------------ */
+
+		{
+			QVector<Section> codes;
+			for (const QrLook &look : qrLooks()) {
+				Section code = Section::makeDefault(SectionType::QrCode);
+				code.qrText = QStringLiteral("https://closingtime.example/%1")
+						      .arg(QString::fromLatin1(look.id));
+				code.text = QString::fromUtf8(look.name);
+				applyQrLook(code.qrDesign, look);
+				code.paddingTop = 24;
+				codes.append(code);
+			}
+
+			/* The same code, dressed: a gradient, eyes of their own, and a logo in the middle. */
+			Section dressed = Section::makeDefault(SectionType::QrCode);
+			dressed.qrText = QStringLiteral("https://closingtime.example/dressed");
+			dressed.text = QStringLiteral("Liquid, gradient, colored eyes, logo");
+			applyQrLook(dressed.qrDesign,
+				    *std::find_if(qrLooks().cbegin(), qrLooks().cend(),
+						  [](const QrLook &l) { return QByteArray(l.id) == "liquid"; }));
+			dressed.qrDesign.fill = TextFill::LinearGradient;
+			dressed.qrDesign.gradient.angle = 45;
+			dressed.qrDesign.gradient.stops = {GradientStop{0.0, QColor(40, 20, 120)},
+							   GradientStop{1.0, QColor(150, 20, 90)}};
+			dressed.qrDesign.eyeColors = true;
+			dressed.qrDesign.eyeFrameColor = QColor(30, 30, 60);
+			dressed.qrDesign.eyePupilColor = QColor(200, 40, 80);
+			dressed.qrDesign.logo.path = testLogoPath();
+			dressed.qrSize = 300;
+			codes.append(dressed);
+
+			add(QStringLiteral("qr-looks"),
+			    QStringLiteral(
+				    "A QR code in every ready-made look, then one dressed with a gradient, colored "
+				    "eyes and a logo in the middle"),
+			    documentWith(codes));
 		}
 
 		/* --- everything -------------------------------------------------------------- */

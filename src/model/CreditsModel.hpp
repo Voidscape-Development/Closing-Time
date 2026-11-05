@@ -176,6 +176,35 @@ const char *qrErrorCorrectionId(QrErrorCorrection level);
 QrErrorCorrection qrErrorCorrectionFromId(const char *id, QrErrorCorrection fallback = QrErrorCorrection::Medium);
 
 /*
+ * How each dark square of a QR code is drawn.
+ *
+ *   Square    - the plain square every reader expects.
+ *   Rounded   - squares with their corners rounded off.
+ *   Dots      - a circle per square.
+ *   Diamond   - a square turned on its corner.
+ *   Connected - squares that flow into their neighbors, rounded only where a run ends: the
+ *               "liquid" look, where the code reads as strokes rather than as a grid.
+ *
+ * A reader samples the middle of each square, so every shape keeps the middle dark; the shapes
+ * differ only in how much of the square's edge they fill.
+ */
+enum class QrModuleShape { Square, Rounded, Dots, Diamond, Connected };
+
+const char *qrModuleShapeId(QrModuleShape shape);
+QrModuleShape qrModuleShapeFromId(const char *id, QrModuleShape fallback = QrModuleShape::Square);
+
+/*
+ * The shape of a finder pattern -- the three big "eyes" in the corners -- drawn as a frame
+ * around a pupil. Each is chosen apart, which is most of what makes a styled code look styled.
+ * Diamond is a pupil shape only: as a frame it is thin along the diagonals and is missed by ZXing,
+ * the decoder behind most Android cameras, so a frame asked to be one is drawn square.
+ */
+enum class QrEyeShape { Square, Rounded, Circle, Diamond };
+
+const char *qrEyeShapeId(QrEyeShape shape);
+QrEyeShape qrEyeShapeFromId(const char *id, QrEyeShape fallback = QrEyeShape::Square);
+
+/*
  * The most bytes of UTF-8 a QR code can carry at `level`: the capacity of the largest symbol
  * (version 40) in byte mode. Text past this is cut there when the code is drawn, rather than
  * the code failing to draw at all.
@@ -887,6 +916,72 @@ struct Divider {
 /* The plainest divider there is: one lane with one line across it. */
 Divider plainDivider();
 
+/*
+ * Everything that makes a QR code look like more than a grid of squares. All of it is drawing:
+ * none of it changes what the code encodes or how big it is, so a styled code is the same code.
+ */
+struct QrDesign {
+	QrModuleShape moduleShape = QrModuleShape::Square;
+	/*
+	 * How much of its square each module fills, 0.5 to 1.0. Under 1.0 the modules stand apart with
+	 * the plate showing between them, which suits dots and diamonds; a reader still finds them, as
+	 * long as the middle of each square stays dark.
+	 */
+	double moduleScale = 1.0;
+
+	QrEyeShape eyeFrame = QrEyeShape::Square;
+	QrEyeShape eyePupil = QrEyeShape::Square;
+	/* Draw the eyes in colors of their own rather than the modules' fill. */
+	bool eyeColors = false;
+	QColor eyeFrameColor = QColor(0, 0, 0);
+	QColor eyePupilColor = QColor(0, 0, 0);
+
+	/*
+	 * What the modules -- and the eyes, unless they have colors of their own -- are filled with.
+	 * A gradient is mapped over the whole code, so the sweep runs across it as one picture.
+	 */
+	TextFill fill = TextFill::Solid;
+	GradientSpec gradient;
+
+	/* Rounds the corners of the plate the code is drawn on, in pixels. */
+	double plateRadius = 0.0;
+
+	/*
+	 * A picture in the middle of the code -- a channel's mark, a sponsor's -- and how wide it is
+	 * as a share of the code. The modules behind it are cleared, which the code survives by
+	 * spending its error correction on them; that is why a code with a logo is always encoded at
+	 * High, whatever level is set, and why the logo is held to at most 30 % of the code's width.
+	 */
+	LogoRef logo;
+	double logoSize = 0.22;
+	/* Clears the modules behind the logo, with a square's margin, rather than drawing it over them. */
+	bool logoClear = true;
+
+	bool hasLogo() const { return !logo.isEmpty(); }
+
+	void save(obs_data_t *data) const;
+	void load(obs_data_t *data);
+
+	bool operator==(const QrDesign &other) const = default;
+};
+
+/* A ready-made design, for the designer's picker. `id` is never shown; `name` is the English name. */
+struct QrLook {
+	const char *id;
+	const char *name;
+	QrModuleShape moduleShape;
+	double moduleScale;
+	QrEyeShape eyeFrame;
+	QrEyeShape eyePupil;
+	double plateRadius;
+};
+
+const QVector<QrLook> &qrLooks();
+
+/* The look `design` matches in every field a look sets, or null. */
+const QrLook *matchingQrLook(const QrDesign &design);
+void applyQrLook(QrDesign &design, const QrLook &look);
+
 struct Section {
 	SectionType type = SectionType::Title;
 
@@ -1199,6 +1294,8 @@ struct Section {
 	QrErrorCorrection qrErrorCorrection = QrErrorCorrection::Medium;
 	QColor qrForeground = QColor(0, 0, 0);
 	QColor qrBackground = QColor(255, 255, 255);
+	/* How the code is drawn: module and eye shapes, fill, rounded plate, a logo in the middle. */
+	QrDesign qrDesign;
 
 	/*
 	 * Icon list sections only: how tall each icon is drawn, as a multiple of the height of the

@@ -491,6 +491,29 @@ private:
 	ColorButton *qrForeground = nullptr;
 	ColorButton *qrBackground = nullptr;
 
+	/*
+	 * The code's design. A look sets the shapes in one pick; the rows under it adjust them one at
+	 * a time, and the look reads back as "your own" as soon as one differs from it.
+	 */
+	QComboBox *qrLook = nullptr;
+	QComboBox *qrModuleShape = nullptr;
+	QSpinBox *qrModuleScale = nullptr;
+	QComboBox *qrEyeFrame = nullptr;
+	QComboBox *qrEyePupil = nullptr;
+	QCheckBox *qrEyeColors = nullptr;
+	ColorButton *qrEyeFrameColor = nullptr;
+	ColorButton *qrEyePupilColor = nullptr;
+	QComboBox *qrFill = nullptr;
+	GradientEditor *qrGradient = nullptr;
+	QSpinBox *qrPlateRadius = nullptr;
+	QLineEdit *qrLogoPath = nullptr;
+	QToolButton *qrLogoBrowse = nullptr;
+	QSpinBox *qrLogoSize = nullptr;
+	QCheckBox *qrLogoClear = nullptr;
+	/* Points the look picker at the look the shape rows add up to, or at "your own". */
+	void refreshQrLook();
+	QrDesign currentQrDesign() const;
+
 	/* Icon lists only: how tall an icon stands against the capitals beside it. */
 	QDoubleSpinBox *iconScale = nullptr;
 

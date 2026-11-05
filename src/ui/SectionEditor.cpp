@@ -1211,6 +1211,95 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	qrBackground->setToolTip(moduleText("Designer.QrBackground.Tip"));
 	addRow(moduleText("Designer.QrBackground"), qrBackground);
 
+	qrLook = new QComboBox(this);
+	qrLook->addItem(moduleText("Designer.QrLook.Own"), -1);
+	for (int i = 0; i < qrLooks().size(); ++i) {
+		const QrLook &look = qrLooks().at(i);
+		const QString key = QStringLiteral("Designer.QrLook.") + QString::fromLatin1(look.id);
+		const QString text = QString::fromUtf8(obs_module_text(key.toUtf8().constData()));
+		qrLook->addItem(text == key ? QString::fromUtf8(look.name) : text, i);
+	}
+	qrLook->setToolTip(moduleText("Designer.QrLook.Tip"));
+	addRow(moduleText("Designer.QrLook"), qrLook);
+
+	const auto eyeShapes = [](QComboBox *box) {
+		box->addItem(moduleText("Designer.QrShape.Square"), static_cast<int>(QrEyeShape::Square));
+		box->addItem(moduleText("Designer.QrShape.Rounded"), static_cast<int>(QrEyeShape::Rounded));
+		box->addItem(moduleText("Designer.QrShape.Circle"), static_cast<int>(QrEyeShape::Circle));
+		box->addItem(moduleText("Designer.QrShape.Diamond"), static_cast<int>(QrEyeShape::Diamond));
+	};
+
+	qrModuleShape = new QComboBox(this);
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Square"), static_cast<int>(QrModuleShape::Square));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Rounded"), static_cast<int>(QrModuleShape::Rounded));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Dots"), static_cast<int>(QrModuleShape::Dots));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Diamond"), static_cast<int>(QrModuleShape::Diamond));
+	qrModuleShape->addItem(moduleText("Designer.QrShape.Connected"), static_cast<int>(QrModuleShape::Connected));
+	addRow(moduleText("Designer.QrModuleShape"), qrModuleShape);
+
+	qrModuleScale = new QSpinBox(this);
+	qrModuleScale->setRange(50, 100);
+	qrModuleScale->setSuffix(QStringLiteral(" %"));
+	qrModuleScale->setToolTip(moduleText("Designer.QrModuleScale.Tip"));
+	addRow(moduleText("Designer.QrModuleScale"), qrModuleScale);
+
+	qrEyeFrame = new QComboBox(this);
+	eyeShapes(qrEyeFrame);
+	/* A pupil shape only: a diamond frame is missed by too many phone readers. */
+	qrEyeFrame->removeItem(qrEyeFrame->findData(static_cast<int>(QrEyeShape::Diamond)));
+	addRow(moduleText("Designer.QrEyeFrame"), qrEyeFrame);
+
+	qrEyePupil = new QComboBox(this);
+	eyeShapes(qrEyePupil);
+	addRow(moduleText("Designer.QrEyePupil"), qrEyePupil);
+
+	qrEyeColors = new QCheckBox(moduleText("Designer.QrEyeColors"), this);
+	addRow(QString(), qrEyeColors);
+
+	qrEyeFrameColor = new ColorButton(this);
+	qrEyeFrameColor->setDialogTitle(moduleText("Designer.QrEyeFrameColor"));
+	addRow(moduleText("Designer.QrEyeFrameColor"), qrEyeFrameColor);
+
+	qrEyePupilColor = new ColorButton(this);
+	qrEyePupilColor->setDialogTitle(moduleText("Designer.QrEyePupilColor"));
+	addRow(moduleText("Designer.QrEyePupilColor"), qrEyePupilColor);
+
+	qrFill = new QComboBox(this);
+	qrFill->addItem(moduleText("Designer.QrFill.Solid"), static_cast<int>(TextFill::Solid));
+	qrFill->addItem(moduleText("Designer.QrFill.Linear"), static_cast<int>(TextFill::LinearGradient));
+	qrFill->addItem(moduleText("Designer.QrFill.Radial"), static_cast<int>(TextFill::RadialGradient));
+	addRow(moduleText("Designer.QrFill"), qrFill);
+
+	qrGradient = new GradientEditor(this);
+	addRow(moduleText("Designer.Gradient"), qrGradient);
+
+	qrPlateRadius = new QSpinBox(this);
+	qrPlateRadius->setRange(0, 4096);
+	qrPlateRadius->setSuffix(QStringLiteral(" px"));
+	addRow(moduleText("Designer.QrPlateRadius"), qrPlateRadius);
+
+	auto *qrLogoRow = new QWidget(this);
+	auto *qrLogoLayout = new QHBoxLayout(qrLogoRow);
+	qrLogoLayout->setContentsMargins(0, 0, 0, 0);
+	qrLogoPath = new QLineEdit(qrLogoRow);
+	qrLogoPath->setPlaceholderText(moduleText("Designer.QrLogo.None"));
+	qrLogoBrowse = new QToolButton(qrLogoRow);
+	qrLogoBrowse->setText(QStringLiteral("..."));
+	qrLogoLayout->addWidget(qrLogoPath);
+	qrLogoLayout->addWidget(qrLogoBrowse);
+	qrLogoRow->setToolTip(moduleText("Designer.QrLogo.Tip"));
+	addRow(moduleText("Designer.QrLogo"), qrLogoRow);
+
+	qrLogoSize = new QSpinBox(this);
+	qrLogoSize->setRange(5, 30);
+	qrLogoSize->setSuffix(QStringLiteral(" %"));
+	qrLogoSize->setToolTip(moduleText("Designer.QrLogoSize.Tip"));
+	addRow(moduleText("Designer.QrLogoSize"), qrLogoSize);
+
+	qrLogoClear = new QCheckBox(moduleText("Designer.QrLogoClear"), this);
+	qrLogoClear->setToolTip(moduleText("Designer.QrLogoClear.Tip"));
+	addRow(QString(), qrLogoClear);
+
 	iconScale = new QDoubleSpinBox(this);
 	iconScale->setRange(0.1, 10.0);
 	iconScale->setSingleStep(0.1);
@@ -1573,6 +1662,55 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(qrErrorCorrection, &QComboBox::currentIndexChanged, this, notify);
 	connect(qrForeground, &ColorButton::colorChanged, this, notify);
 	connect(qrBackground, &ColorButton::colorChanged, this, notify);
+
+	/* A look sets the shape rows in one go; editing any of them reads the look back. */
+	connect(qrLook, &QComboBox::currentIndexChanged, this, [this] {
+		if (loading)
+			return;
+		const int index = qrLook->currentData().toInt();
+		if (index < 0 || index >= qrLooks().size())
+			return;
+
+		QrDesign design = currentQrDesign();
+		applyQrLook(design, qrLooks().at(index));
+		const bool wasLoading = loading;
+		loading = true;
+		selectByData(qrModuleShape, static_cast<int>(design.moduleShape));
+		qrModuleScale->setValue(qRound(design.moduleScale * 100.0));
+		selectByData(qrEyeFrame, static_cast<int>(design.eyeFrame));
+		selectByData(qrEyePupil, static_cast<int>(design.eyePupil));
+		qrPlateRadius->setValue(qRound(design.plateRadius));
+		loading = wasLoading;
+		emitChanged();
+	});
+	const auto qrShapeEdited = [this] {
+		if (loading)
+			return;
+		refreshQrLook();
+		emitChanged();
+	};
+	for (QComboBox *box : {qrModuleShape, qrEyeFrame, qrEyePupil})
+		connect(box, &QComboBox::currentIndexChanged, this, qrShapeEdited);
+	connect(qrModuleScale, &QSpinBox::valueChanged, this, qrShapeEdited);
+	connect(qrPlateRadius, &QSpinBox::valueChanged, this, qrShapeEdited);
+	connect(qrEyeFrameColor, &ColorButton::colorChanged, this, notify);
+	connect(qrEyePupilColor, &ColorButton::colorChanged, this, notify);
+	connect(qrGradient, &GradientEditor::changed, this, notify);
+	connect(qrLogoSize, &QSpinBox::valueChanged, this, notify);
+	connect(qrLogoClear, &QCheckBox::toggled, this, notify);
+	/* These three decide which of the rows around them apply. */
+	connect(qrEyeColors, &QCheckBox::toggled, this, revisitVisibility);
+	connect(qrFill, &QComboBox::currentIndexChanged, this, [this, revisitVisibility] {
+		qrGradient->setFill(static_cast<TextFill>(qrFill->currentData().toInt()));
+		revisitVisibility();
+	});
+	connect(qrLogoPath, &QLineEdit::textChanged, this, revisitVisibility);
+	connect(qrLogoBrowse, &QToolButton::clicked, this, [this] {
+		const QString path = QFileDialog::getOpenFileName(this, moduleText("Designer.ChooseLogo"),
+								  qrLogoPath->text(), imageFilter());
+		if (!path.isEmpty())
+			qrLogoPath->setText(path);
+	});
 	connect(iconScale, &QDoubleSpinBox::valueChanged, this, notify);
 	connect(actionLine, &QSpinBox::valueChanged, this, notify);
 	connect(paddingTop, &QSpinBox::valueChanged, this, notify);
@@ -1725,6 +1863,24 @@ void SectionEditor::setSection(const Section &source)
 	selectByData(qrErrorCorrection, static_cast<int>(source.qrErrorCorrection));
 	qrForeground->setColor(source.qrForeground);
 	qrBackground->setColor(source.qrBackground);
+	{
+		const QrDesign &design = source.qrDesign;
+		selectByData(qrModuleShape, static_cast<int>(design.moduleShape));
+		qrModuleScale->setValue(qRound(design.moduleScale * 100.0));
+		selectByData(qrEyeFrame, static_cast<int>(design.eyeFrame));
+		selectByData(qrEyePupil, static_cast<int>(design.eyePupil));
+		qrEyeColors->setChecked(design.eyeColors);
+		qrEyeFrameColor->setColor(design.eyeFrameColor);
+		qrEyePupilColor->setColor(design.eyePupilColor);
+		selectByData(qrFill, static_cast<int>(design.fill));
+		qrGradient->setGradient(design.gradient);
+		qrGradient->setFill(design.fill);
+		qrPlateRadius->setValue(qRound(design.plateRadius));
+		qrLogoPath->setText(design.logo.path);
+		qrLogoSize->setValue(qRound(design.logoSize * 100.0));
+		qrLogoClear->setChecked(design.logoClear);
+		refreshQrLook();
+	}
 	iconScale->setValue(source.iconScale);
 	actionLine->setValue(qRound(source.actionLine * 100.0));
 	actionList->setActions(source.actions);
@@ -1835,6 +1991,7 @@ Section SectionEditor::section() const
 	result.qrErrorCorrection = static_cast<QrErrorCorrection>(qrErrorCorrection->currentData().toInt());
 	result.qrForeground = qrForeground->color();
 	result.qrBackground = qrBackground->color();
+	result.qrDesign = currentQrDesign();
 	result.iconScale = iconScale->value();
 	result.actionLine = actionLine->value() / 100.0;
 	result.actions = actionList->actions();
@@ -1940,6 +2097,33 @@ void SectionEditor::addRow(const QString &label, QWidget *field)
 	capFieldWidth(field);
 	form->addRow(label, field);
 	rowOwner.insert(field, form);
+}
+
+QrDesign SectionEditor::currentQrDesign() const
+{
+	QrDesign design = current.qrDesign;
+	design.moduleShape = static_cast<QrModuleShape>(qrModuleShape->currentData().toInt());
+	design.moduleScale = qrModuleScale->value() / 100.0;
+	design.eyeFrame = static_cast<QrEyeShape>(qrEyeFrame->currentData().toInt());
+	design.eyePupil = static_cast<QrEyeShape>(qrEyePupil->currentData().toInt());
+	design.eyeColors = qrEyeColors->isChecked();
+	design.eyeFrameColor = qrEyeFrameColor->color();
+	design.eyePupilColor = qrEyePupilColor->color();
+	design.fill = static_cast<TextFill>(qrFill->currentData().toInt());
+	design.gradient = qrGradient->gradient();
+	design.plateRadius = qrPlateRadius->value();
+	design.logo.path = qrLogoPath->text().trimmed();
+	design.logoSize = qrLogoSize->value() / 100.0;
+	design.logoClear = qrLogoClear->isChecked();
+	return design;
+}
+
+void SectionEditor::refreshQrLook()
+{
+	const QrLook *look = matchingQrLook(currentQrDesign());
+	const int index = look ? static_cast<int>(look - qrLooks().constData()) : -1;
+	const QSignalBlocker blocker(qrLook);
+	selectByData(qrLook, index);
 }
 
 void SectionEditor::setRowLabel(QWidget *field, const QString &label)
@@ -2200,7 +2384,28 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	setRowVisible(qrSize, qrCode);
 	setRowVisible(qrQuietZone, qrCode);
 	setRowVisible(qrErrorCorrection, qrCode);
-	setRowVisible(qrForeground, qrCode);
+	const auto qrFillMode = static_cast<TextFill>(qrFill->currentData().toInt());
+	const bool qrLogo = !qrLogoPath->text().trimmed().isEmpty();
+	/* A gradient takes over from the single color, so only one of the two rows is offered. */
+	setRowVisible(qrForeground, qrCode && qrFillMode == TextFill::Solid);
+	setRowVisible(qrGradient, qrCode && qrFillMode != TextFill::Solid);
+	setRowVisible(qrLook, qrCode);
+	setRowVisible(qrModuleShape, qrCode);
+	setRowVisible(qrModuleScale, qrCode);
+	setRowVisible(qrEyeFrame, qrCode);
+	setRowVisible(qrEyePupil, qrCode);
+	setRowVisible(qrEyeColors, qrCode);
+	setRowVisible(qrEyeFrameColor, qrCode && qrEyeColors->isChecked());
+	setRowVisible(qrEyePupilColor, qrCode && qrEyeColors->isChecked());
+	setRowVisible(qrFill, qrCode);
+	setRowVisible(qrPlateRadius, qrCode);
+	setRowVisible(qrLogoPath->parentWidget(), qrCode);
+	setRowVisible(qrLogoSize, qrCode && qrLogo);
+	setRowVisible(qrLogoClear, qrCode && qrLogo);
+	/* A logo hides squares the code has to recover, so the level is High whatever is picked. */
+	qrErrorCorrection->setEnabled(!qrLogo);
+	qrErrorCorrection->setToolTip(
+		moduleText(qrLogo ? "Designer.QrErrorCorrection.Logo" : "Designer.QrErrorCorrection.Tip"));
 	setRowVisible(qrBackground, qrCode);
 	setRowVisible(iconScale, icons);
 	const bool bridged = type == SectionType::Bridged;
@@ -2880,7 +3085,7 @@ bool layoutDiffers(const Section &a, const Section &b)
 	       a.stickyHoldForever != b.stickyHoldForever || a.stickyRelease != b.stickyRelease ||
 	       a.paragraphGap != b.paragraphGap || a.justifyText != b.justifyText || a.qrSize != b.qrSize ||
 	       a.qrQuietZone != b.qrQuietZone || a.qrErrorCorrection != b.qrErrorCorrection ||
-	       a.qrForeground != b.qrForeground || a.qrBackground != b.qrBackground ||
+	       a.qrForeground != b.qrForeground || a.qrBackground != b.qrBackground || !(a.qrDesign == b.qrDesign) ||
 	       pct(a.iconScale) != pct(b.iconScale);
 }
 

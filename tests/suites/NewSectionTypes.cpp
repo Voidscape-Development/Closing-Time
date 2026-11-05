@@ -424,3 +424,133 @@ CT_SUITE(new_types_fonts, "Only lines that are drawn report a font")
 	check(!document.usedFontFamilies().contains(QStringLiteral("Caption Face")),
 	      "a code without a caption sets no text");
 }
+
+CT_SUITE(qr_design, "A styled QR code: shapes, eyes, fill and a logo, none of which move anything")
+{
+	/* --- the model ----------------------------------------------------------------------- */
+
+	Section section = unpadded(SectionType::QrCode);
+	section.text.clear();
+	section.qrDesign.moduleShape = QrModuleShape::Connected;
+	section.qrDesign.moduleScale = 0.8;
+	section.qrDesign.eyeFrame = QrEyeShape::Rounded;
+	section.qrDesign.eyePupil = QrEyeShape::Circle;
+	section.qrDesign.eyeColors = true;
+	section.qrDesign.eyeFrameColor = QColor(255, 0, 0);
+	section.qrDesign.eyePupilColor = QColor(0, 0, 255);
+	section.qrDesign.fill = TextFill::RadialGradient;
+	section.qrDesign.plateRadius = 20;
+	section.qrDesign.logo.path = testLogoPath();
+	section.qrDesign.logoSize = 0.25;
+	section.qrDesign.logoClear = false;
+	check(roundTrip(section).qrDesign == section.qrDesign, "every design field survives a save and a load");
+
+	OBSDataAutoRelease bare = obs_data_create();
+	obs_data_set_string(bare, "type", "qr_code");
+	Section old;
+	old.load(bare);
+	check(old.qrDesign == QrDesign{}, "a code written before codes could be styled loads as plain squares");
+
+	OBSDataAutoRelease diamondFrame = obs_data_create();
+	OBSDataAutoRelease diamondDesign = obs_data_create();
+	obs_data_set_string(diamondDesign, "eye_frame", "diamond");
+	obs_data_set_string(diamondDesign, "eye_pupil", "diamond");
+	obs_data_set_obj(diamondFrame, "qr_design", diamondDesign);
+	Section diamonds;
+	diamonds.load(diamondFrame);
+	check(diamonds.qrDesign.eyeFrame == QrEyeShape::Square, "a diamond frame, which phones misread, loads square");
+	check(diamonds.qrDesign.eyePupil == QrEyeShape::Diamond, "while a diamond pupil is kept");
+
+	OBSDataAutoRelease wild = obs_data_create();
+	OBSDataAutoRelease wildDesign = obs_data_create();
+	obs_data_set_double(wildDesign, "module_scale", 0.1);
+	obs_data_set_double(wildDesign, "logo_size", 0.9);
+	obs_data_set_obj(wild, "qr_design", wildDesign);
+	Section clamped;
+	clamped.load(wild);
+	checkNear(clamped.qrDesign.moduleScale, 0.5, 1e-9, "a module scale too small to read is held at half");
+	checkNear(clamped.qrDesign.logoSize, 0.3, 1e-9, "a logo too big to recover from is held at 30 %");
+
+	for (const QrLook &look : qrLooks()) {
+		const Context context(QString::fromLatin1(look.id));
+		QrDesign design;
+		design.fill = TextFill::LinearGradient;
+		applyQrLook(design, look);
+		check(matchingQrLook(design) == &look, "a look applied is the look matched");
+		check(design.fill == TextFill::LinearGradient, "and leaves the fill alone");
+	}
+	QrDesign own;
+	own.moduleShape = QrModuleShape::Dots;
+	own.eyeFrame = QrEyeShape::Diamond;
+	check(matchingQrLook(own) == nullptr, "a mix no look makes is the user's own");
+
+	/* --- a logo is High, and clears the middle --------------------------------------------- */
+
+	Section plain = unpadded(SectionType::QrCode);
+	plain.text.clear();
+	plain.qrErrorCorrection = QrErrorCorrection::Low;
+	check(effectiveQrLevel(plain) == QrErrorCorrection::Low, "with no logo, the chosen level is used");
+	Section logo = plain;
+	logo.qrDesign.logo.path = testLogoPath();
+	check(effectiveQrLevel(logo) == QrErrorCorrection::High, "with a logo, the code is encoded at High");
+
+	const QrMatrix matrix = encodeQr(logo.qrText, QrErrorCorrection::High);
+	QrDesign withLogo = logo.qrDesign;
+	const QrPlacement placed = placeQr(matrix, 300, 4, 0, 0, withLogo);
+	check(!placed.logo.isNull(), "the logo has a square");
+	checkNear(placed.logo.center().x(), placed.code.center().x(), placed.module, "centered on the code");
+	check(!placed.ink.intersects(QRectF(placed.logo)), "no square is drawn under a cleared logo");
+	withLogo.logoClear = false;
+	check(placeQr(matrix, 300, 4, 0, 0, withLogo).ink.intersects(QRectF(placed.logo)),
+	      "and the squares stay when clearing is off");
+
+	const Document logoDocument = documentWith(logo);
+	checkEq(boxesOf(logoDocument, LayoutBox::Kind::Logo).size(), 2, "the plate and the logo are both placed");
+	check(boxOf(logoDocument, LayoutBox::Kind::Logo).contains(boxOf(logoDocument, LayoutBox::Kind::Logo, 1)),
+	      "the logo sits inside the plate");
+
+	/* --- the eyes are drawn apart from the data -------------------------------------------- */
+
+	const QrPlacement square = placeQr(matrix, 300, 4, 0, 0, QrDesign());
+	const QRectF topLeftEye(square.code.left(), square.code.top(), 7 * square.module, 7 * square.module);
+	check(!square.ink.intersects(topLeftEye.adjusted(1, 1, -1, -1)), "the data squares leave the eyes out");
+	check(square.eyeFrames.intersects(topLeftEye) && square.eyePupils.intersects(topLeftEye),
+	      "which are drawn as a frame and a pupil");
+
+	Section colored = plain;
+	colored.qrDesign.eyeColors = true;
+	colored.qrDesign.eyeFrameColor = QColor(255, 0, 0);
+	colored.qrDesign.eyePupilColor = QColor(0, 0, 255);
+	const QImage image = renderImage(documentWith(colored));
+	const QRectF plate = boxOf(documentWith(colored), LayoutBox::Kind::Logo);
+	const QrMatrix plainMatrix = encodeQr(colored.qrText, effectiveQrLevel(colored));
+	const int m = qRound(plate.width()) / (plainMatrix.size + 2 * colored.qrQuietZone);
+	const QPoint eye = plate.topLeft().toPoint() + QPoint(4 * m, 4 * m);
+	const QRgb frame = image.pixel(eye + QPoint(m / 2, 3 * m));
+	const QRgb pupil = image.pixel(eye + QPoint(3 * m + m / 2, 3 * m + m / 2));
+	check(qRed(frame) > 200 && qBlue(frame) < 60, "the eye's frame takes its own color");
+	check(qBlue(pupil) > 200 && qRed(pupil) < 60, "and its pupil another");
+
+	/* --- styling draws differently and lays out identically -------------------------------- */
+
+	const int height = measure(documentWith(plain));
+	const QRectF plainPlate = boxOf(documentWith(plain), LayoutBox::Kind::Logo);
+	const double plainShare = inkedShare(renderImage(documentWith([&] {
+						     Section clear = plain;
+						     clear.qrBackground = QColor(0, 0, 0, 0);
+						     return clear;
+					     }())),
+					     plainPlate.toRect());
+	for (const QrLook &look : qrLooks()) {
+		const Context context(QString::fromLatin1(look.id));
+		Section styled = plain;
+		applyQrLook(styled.qrDesign, look);
+		checkEq(measure(documentWith(styled)), height, "a look changes no height");
+		check(boxOf(documentWith(styled), LayoutBox::Kind::Logo) == plainPlate, "nor where the plate is");
+
+		styled.qrBackground = QColor(0, 0, 0, 0);
+		const double share = inkedShare(renderImage(documentWith(styled)), plainPlate.toRect());
+		check(share > plainShare * 0.5 && share < plainShare * 1.3,
+		      "and still inks roughly as much of the code as plain squares do");
+	}
+}

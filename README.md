@@ -70,7 +70,16 @@ correction, and is drawn as squares rather than an image, each a whole number of
 stays sharp in the roll and in a scaled preview. It sits on a plate (white by default, with the
 standard's four squares of quiet zone) because a reader needs a margin of plain light around a
 code to find it; the plate can be recolored or made transparent. Text past what the largest code
-can hold is cut at a character boundary rather than leaving nothing drawn. Encoding uses Project
+can hold is cut at a character boundary rather than leaving nothing drawn. A code can be styled
+too: pick a **look** — Classic, Rounded, Dots, Liquid, Soft or Diamond — or set the parts one at
+a time: the squares (square, rounded, dots, diamond, or connected into flowing strokes, at 50–100 %
+of their cell), the eye frames and pupils (square, rounded, circle; diamond for pupils), eye
+colors of their own, a linear or radial gradient swept across the whole code, rounded plate
+corners, and a **centre logo** of up to 30 % of the code's width with the squares behind it
+cleared. A code with a logo is always encoded at High error correction. Every combination the
+designer offers was checked to decode with ZXing (the decoder behind most Android cameras) and
+WeChat's decoder; a leaf-shaped eye and a diamond eye frame were tried and left out because one or
+the other of them missed it. Encoding uses Project
 Nayuki's [QR Code generator](https://www.nayuki.io/page/qr-code-generator-library) (MIT),
 vendored in `src/third-party/qrcodegen`.
 

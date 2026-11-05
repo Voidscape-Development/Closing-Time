@@ -2665,16 +2665,18 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		 * section is set, and is never wider than the column: a code too big for its section is
 		 * drawn smaller rather than off the edge, since a cut-off code is not a code at all.
 		 */
-		const QrMatrix matrix = encodeQr(section.qrText, section.qrErrorCorrection);
+		const QrDesign &design = section.qrDesign;
+		const QrMatrix matrix = encodeQr(section.qrText, effectiveQrLevel(section));
 		const int maxSize = std::max(1, std::min(section.qrSize, contentWidth));
 		const int side = qrPlateSize(matrix, maxSize, section.qrQuietZone);
 		const int codeX = contentX + qRound(alignOffset(style.align, contentWidth, side));
-		const QrPlacement code = placeQr(matrix, maxSize, section.qrQuietZone, codeX, y);
+		const QrPlacement code = placeQr(matrix, maxSize, section.qrQuietZone, codeX, y, design);
 
 		panels.paint(BackgroundSlot::Logo, QRectF(code.plate));
 
 		if (painter) {
 			painter->save();
+			painter->setRenderHint(QPainter::Antialiasing);
 			if (matrix.isEmpty()) {
 				/* Nothing to encode yet: the same dashed slot a logo with no file draws. */
 				QPen pen(QColor(160, 160, 160, 180));
@@ -2684,16 +2686,50 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 				painter->setBrush(Qt::NoBrush);
 				painter->drawRect(code.plate.adjusted(1, 1, -1, -1));
 			} else {
-				if (section.qrBackground.alpha() > 0)
-					painter->fillRect(code.plate, section.qrBackground);
 				painter->setPen(Qt::NoPen);
-				painter->setBrush(section.qrForeground);
-				painter->drawPath(code.ink);
+				if (section.qrBackground.alpha() > 0) {
+					const qreal radius = std::clamp(design.plateRadius, 0.0, side / 2.0);
+					painter->setBrush(section.qrBackground);
+					painter->drawRoundedRect(QRectF(code.plate), radius, radius);
+				}
+
+				/*
+				 * One brush for the whole code, so a gradient sweeps across it as one picture
+				 * rather than restarting in every square.
+				 */
+				const QBrush ink = design.fill == TextFill::Solid
+							   ? QBrush(section.qrForeground)
+							   : gradientBrush(design.gradient,
+									   design.fill == TextFill::RadialGradient,
+									   QRectF(code.code));
+				painter->fillPath(code.ink, ink);
+				painter->fillPath(code.eyeFrames,
+						  design.eyeColors ? QBrush(design.eyeFrameColor) : ink);
+				painter->fillPath(code.eyePupils,
+						  design.eyeColors ? QBrush(design.eyePupilColor) : ink);
 			}
 			painter->restore();
 		}
 
 		record(LayoutBox::Kind::Logo, QRectF(code.plate));
+
+		/*
+		 * The logo in the middle, fitted to its square and centered in it. Drawn without the
+		 * caption's shadow: it sits inside the code, not on the roll.
+		 */
+		if (!code.logo.isNull()) {
+			LogoRef ref = design.logo;
+			ref.maxHeight = code.logo.height();
+			const LogoArt art = logos.resolve(ref);
+			const QSize size = logoDrawSize(art.poster, ref, code.logo.width());
+			const QRect box(code.logo.left() + (code.logo.width() - size.width()) / 2,
+					code.logo.top() + (code.logo.height() - size.height()) / 2, size.width(),
+					size.height());
+			const TextStyle plain;
+			paintLogo(painter, art, box, plain, ref.playback);
+			recordLogo(art, ref, box, plain);
+		}
+
 		y += code.plate.height();
 
 		if (!section.text.isEmpty()) {
