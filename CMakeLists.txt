@@ -76,6 +76,8 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FileDependencies.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FontResolution.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/FontResolution.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/QrArt.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/render/QrArt.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/ImageEffects.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RenderThread.cpp"
@@ -88,6 +90,9 @@ set(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/RollRenderer.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/render/SvgArt.hpp"
+  # Project Nayuki's QR Code generator, MIT licensed; see the notice at the top of each file.
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/third-party/qrcodegen/qrcodegen.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/third-party/qrcodegen/qrcodegen.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/CsvParser.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/util/FontFiles.cpp"

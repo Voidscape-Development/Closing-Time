@@ -181,6 +181,19 @@ QVector<CsvImportDialog::Field> CsvImportDialog::availableFields() const
 	case SectionType::MultiLogoList:
 		return {Field::Ignore, Field::LogoPath, Field::LogoHeight};
 
+	/* A card is a picture with a pair under it; an icon is a picture that leads a line. */
+	case SectionType::CardList:
+	case SectionType::MultiCardList:
+		return {Field::Ignore, Field::LogoPath, Field::LogoHeight, Field::Text, Field::SecondaryText};
+	case SectionType::IconList:
+	case SectionType::MultiIconList:
+		return {Field::Ignore, Field::LogoPath, Field::Text};
+
+	/* A stack's four lines, in the order they are drawn. */
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList:
+		return {Field::Ignore, Field::Text, Field::SecondaryText, Field::Subtitle, Field::SecondarySubtitle};
+
 	default:
 		/* Four, when a bridged row carries a subtitle under each of its two sides. */
 		if (targetType == SectionType::Bridged && rowSubtitles)
@@ -198,6 +211,26 @@ QVector<CsvImportDialog::Field> CsvImportDialog::availableFields() const
 QString CsvImportDialog::fieldLabel(Field field) const
 {
 	const bool subtitles = sectionUsesSubtitles(targetType);
+
+	/* A stack's columns are its lines, numbered top to bottom. */
+	if (sectionStacksLines(targetType)) {
+		switch (field) {
+		case Field::Text:
+			return moduleText("Designer.Column.Line").arg(1);
+		case Field::SecondaryText:
+			return moduleText("Designer.Column.Line").arg(2);
+		case Field::Subtitle:
+			return moduleText("Designer.Column.Line").arg(3);
+		case Field::SecondarySubtitle:
+			return moduleText("Designer.Column.Line").arg(4);
+		default:
+			break;
+		}
+	}
+	if (sectionUsesIcons(targetType) && field == Field::LogoPath)
+		return moduleText("Designer.Column.Icon");
+	if (sectionUsesCards(targetType) && field == Field::LogoPath)
+		return moduleText("Designer.Column.Picture");
 
 	switch (field) {
 	case Field::Text:

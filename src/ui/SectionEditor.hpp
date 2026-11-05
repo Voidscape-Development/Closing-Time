@@ -479,6 +479,27 @@ private:
 	QSpinBox *subtitleGap = nullptr;
 	QComboBox *subtitleOrder = nullptr;
 
+	/* Paragraph sections only. */
+	QSpinBox *paragraphGap = nullptr;
+	QCheckBox *justifyText = nullptr;
+
+	/* QR Code sections only: what it encodes, and how it is drawn. */
+	QLineEdit *qrTextEdit = nullptr;
+	QSpinBox *qrSize = nullptr;
+	QSpinBox *qrQuietZone = nullptr;
+	QComboBox *qrErrorCorrection = nullptr;
+	ColorButton *qrForeground = nullptr;
+	ColorButton *qrBackground = nullptr;
+
+	/* Icon lists only: how tall an icon stands against the capitals beside it. */
+	QDoubleSpinBox *iconScale = nullptr;
+
+	/*
+	 * Retitles the label of a row whose field means something different for this type -- the text
+	 * box is a code's caption, the logo gap is a card's picture gap -- without a second row for it.
+	 */
+	void setRowLabel(QWidget *field, const QString &label);
+
 	/* Owns the four spin boxes below it; see SpacingDiagram. */
 	SpacingDiagram *spacing = nullptr;
 	SegmentedControl *alignSegments = nullptr;

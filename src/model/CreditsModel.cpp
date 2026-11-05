@@ -76,6 +76,23 @@ const SectionTypeInfo kSectionTypes[] = {
 	 true, true, true},
 	{SectionType::MultiLogoList, "multi_logo_list", "Multi-List of Logos", false, true, true, true, false},
 	/*
+	 * A stack answers yes to `subtitles` because its second line *is* the subtitle of a pair --
+	 * same field, same style, same `subtitleGap` -- with two more lines under it.
+	 */
+	{SectionType::StackedList, "stacked_list", "Stacked List", true, false, true, false, true},
+	{SectionType::MultiStackedList, "multi_stacked_list", "Stacked Multi-List", true, false, true, true, true},
+	/* A card is a title/subtitle pair with a picture over it, so it says yes to both. */
+	{SectionType::CardList, "card_list", "Image Card List", true, true, true, false, true},
+	{SectionType::MultiCardList, "multi_card_list", "Image Card Multi-List", true, true, true, true, true},
+	{SectionType::IconList, "icon_list", "Icon List", true, true, true, false, false},
+	{SectionType::MultiIconList, "multi_icon_list", "Icon Multi-List", true, true, true, true, false},
+	/*
+	 * Prose and a QR code both set text -- the paragraphs, the code's caption -- and nothing else
+	 * this table asks about. The code itself is neither a logo (there is no file) nor text.
+	 */
+	{SectionType::Paragraph, "paragraph", "Paragraph", true, false, false, false, false},
+	{SectionType::QrCode, "qr_code", "QR Code", true, false, false, false, false},
+	/*
 	 * Every flag is false: a divider has no section text, no section logo and no entry list.
 	 * The text and the logos it can carry live in its own center stack, which is a different
 	 * shape from an entry list and is edited by a table of its own -- so answering yes to any
@@ -180,6 +197,67 @@ bool sectionUsesSubtitles(SectionType type)
 	return sectionTypeInfo(type).subtitles;
 }
 
+bool sectionStacksLines(SectionType type)
+{
+	return type == SectionType::StackedList || type == SectionType::MultiStackedList;
+}
+
+bool sectionUsesCards(SectionType type)
+{
+	return type == SectionType::CardList || type == SectionType::MultiCardList;
+}
+
+bool sectionUsesIcons(SectionType type)
+{
+	return type == SectionType::IconList || type == SectionType::MultiIconList;
+}
+
+const char *qrErrorCorrectionId(QrErrorCorrection level)
+{
+	switch (level) {
+	case QrErrorCorrection::Low:
+		return "low";
+	case QrErrorCorrection::Quartile:
+		return "quartile";
+	case QrErrorCorrection::High:
+		return "high";
+	case QrErrorCorrection::Medium:
+	default:
+		return "medium";
+	}
+}
+
+QrErrorCorrection qrErrorCorrectionFromId(const char *id, QrErrorCorrection fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "low") == 0)
+		return QrErrorCorrection::Low;
+	if (strcmp(id, "medium") == 0)
+		return QrErrorCorrection::Medium;
+	if (strcmp(id, "quartile") == 0)
+		return QrErrorCorrection::Quartile;
+	if (strcmp(id, "high") == 0)
+		return QrErrorCorrection::High;
+	return fallback;
+}
+
+int qrCapacityBytes(QrErrorCorrection level)
+{
+	/* Version 40 in byte mode, from the standard's capacity table. */
+	switch (level) {
+	case QrErrorCorrection::Low:
+		return 2953;
+	case QrErrorCorrection::Quartile:
+		return 1663;
+	case QrErrorCorrection::High:
+		return 1273;
+	case QrErrorCorrection::Medium:
+	default:
+		return 2331;
+	}
+}
+
 void visitSections(const QVector<Section> &sections, const std::function<void(const Section &)> &visit)
 {
 	for (const Section &section : sections) {
@@ -256,7 +334,8 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 			used.append(BackgroundSlot::Subtitle);
 	}
 
-	if (sectionUsesLogos(type))
+	/* A QR code is a picture as far as a card behind it goes, though it is drawn rather than loaded. */
+	if (sectionUsesLogos(type) || type == SectionType::QrCode)
 		used.append(BackgroundSlot::Logo);
 
 	/*
@@ -265,7 +344,8 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 	 * logo-carrying heading rather than only to the ones currently set that way. Offering it and
 	 * drawing nothing is the same bargain every other setting here strikes when its switch is off.
 	 */
-	if (type == SectionType::Bridged || sectionUsesLogos(type))
+	if (type == SectionType::Bridged ||
+	    (sectionUsesLogos(type) && !sectionUsesCards(type) && !sectionUsesIcons(type)))
 		used.append(BackgroundSlot::Bridge);
 
 	return used;
@@ -298,6 +378,12 @@ SectionTypeSwitches decomposeSectionType(SectionType type)
 	case SectionType::MultiTextList:
 	case SectionType::MultiTitleSubtitleList:
 	case SectionType::MultiLogoList:
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList:
+	case SectionType::CardList:
+	case SectionType::MultiCardList:
+	case SectionType::IconList:
+	case SectionType::MultiIconList:
 		switches.base = SectionType::TextList;
 		break;
 
@@ -316,6 +402,18 @@ SectionTypeSwitches decomposeSectionType(SectionType type)
 		case SectionType::LogoList:
 		case SectionType::MultiLogoList:
 			switches.content = SectionListContent::Logos;
+			break;
+		case SectionType::StackedList:
+		case SectionType::MultiStackedList:
+			switches.content = SectionListContent::Stacks;
+			break;
+		case SectionType::CardList:
+		case SectionType::MultiCardList:
+			switches.content = SectionListContent::Cards;
+			break;
+		case SectionType::IconList:
+		case SectionType::MultiIconList:
+			switches.content = SectionListContent::Icons;
 			break;
 		default:
 			switches.content = SectionListContent::Text;
@@ -361,6 +459,12 @@ SectionType composeSectionType(const SectionTypeSwitches &switches)
 						    : SectionType::TitleSubtitleList;
 		case SectionListContent::Logos:
 			return switches.multiColumn ? SectionType::MultiLogoList : SectionType::LogoList;
+		case SectionListContent::Stacks:
+			return switches.multiColumn ? SectionType::MultiStackedList : SectionType::StackedList;
+		case SectionListContent::Cards:
+			return switches.multiColumn ? SectionType::MultiCardList : SectionType::CardList;
+		case SectionListContent::Icons:
+			return switches.multiColumn ? SectionType::MultiIconList : SectionType::IconList;
 		case SectionListContent::Text:
 		default:
 			return switches.multiColumn ? SectionType::MultiTextList : SectionType::TextList;
@@ -949,6 +1053,15 @@ void Section::save(obs_data_t *data) const
 	obs_data_set_double(data, "section_width", sectionWidth);
 	obs_data_set_string(data, "section_align", hAlignId(sectionAlign));
 	obs_data_set_int(data, "spacer_height", spacerHeight);
+	obs_data_set_int(data, "paragraph_gap", paragraphGap);
+	obs_data_set_bool(data, "justify_text", justifyText);
+	obs_data_set_string(data, "qr_text", qrText.toUtf8().constData());
+	obs_data_set_int(data, "qr_size", qrSize);
+	obs_data_set_int(data, "qr_quiet_zone", qrQuietZone);
+	obs_data_set_string(data, "qr_error_correction", qrErrorCorrectionId(qrErrorCorrection));
+	obs_data_set_int(data, "qr_foreground", static_cast<long long>(qrForeground.rgba()));
+	obs_data_set_int(data, "qr_background", static_cast<long long>(qrBackground.rgba()));
+	obs_data_set_double(data, "icon_scale", iconScale);
 	obs_data_set_string(data, "sticky_entrance", stickyEntranceId(stickyEntrance));
 	obs_data_set_double(data, "sticky_fade_in", stickyFadeIn);
 	obs_data_set_string(data, "sticky_anchor", stickyAnchorId(stickyAnchor));
@@ -1129,6 +1242,34 @@ void Section::load(obs_data_t *data)
 	sectionWidth = std::clamp(sectionWidth, 0.0, 1.0);
 	sectionAlign = hAlignFromId(obs_data_get_string(data, "section_align"), HAlign::Center);
 	spacerHeight = static_cast<int>(obs_data_get_int(data, "spacer_height"));
+	/*
+	 * Every key below is absent from anything written before its type existed, and each is read
+	 * the careful way -- a stored zero told apart from a missing key -- wherever zero means
+	 * something: paragraphs set tight together, a code drawn with no quiet zone at all.
+	 */
+	paragraphGap = obs_data_has_user_value(data, "paragraph_gap")
+			       ? static_cast<int>(obs_data_get_int(data, "paragraph_gap"))
+			       : 16;
+	paragraphGap = std::clamp(paragraphGap, 0, 4096);
+	justifyText = obs_data_get_bool(data, "justify_text");
+	qrText = QString::fromUtf8(obs_data_get_string(data, "qr_text"));
+	qrSize = obs_data_has_user_value(data, "qr_size") ? static_cast<int>(obs_data_get_int(data, "qr_size")) : 240;
+	/* A code the size of nothing draws nothing, and one past the strip's width is a typo. */
+	qrSize = std::clamp(qrSize, 21, 8192);
+	qrQuietZone = obs_data_has_user_value(data, "qr_quiet_zone")
+			      ? static_cast<int>(obs_data_get_int(data, "qr_quiet_zone"))
+			      : 4;
+	qrQuietZone = std::clamp(qrQuietZone, 0, 16);
+	qrErrorCorrection =
+		qrErrorCorrectionFromId(obs_data_get_string(data, "qr_error_correction"), QrErrorCorrection::Medium);
+	qrForeground = obs_data_has_user_value(data, "qr_foreground")
+			       ? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "qr_foreground")))
+			       : QColor(0, 0, 0);
+	qrBackground = obs_data_has_user_value(data, "qr_background")
+			       ? QColor::fromRgba(static_cast<QRgb>(obs_data_get_int(data, "qr_background")))
+			       : QColor(255, 255, 255);
+	iconScale = obs_data_has_user_value(data, "icon_scale") ? obs_data_get_double(data, "icon_scale") : 1.4;
+	iconScale = std::clamp(iconScale, 0.1, 10.0);
 	stickyEntrance = stickyEntranceFromId(obs_data_get_string(data, "sticky_entrance"), StickyEntrance::WithRoll);
 	/* Zero is a cut rather than no answer, so a stored one has to be told apart from a missing key. */
 	stickyFadeIn = obs_data_has_user_value(data, "sticky_fade_in") ? obs_data_get_double(data, "sticky_fade_in")
@@ -1440,6 +1581,106 @@ Section Section::makeDefault(SectionType type)
 			section.entries.append(Entry{});
 		break;
 
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList: {
+		/*
+		 * A music cue, which is what a stack of four lines is most often for: the song set
+		 * heaviest, the credits under it a size down, and the licensing line smaller and
+		 * dimmer again, since it is the line a reader is least looking for.
+		 */
+		section.style.pixelSize = 32;
+		section.style.bold = true;
+		section.secondaryStyle = section.style;
+		section.secondaryStyle.pixelSize = 26;
+		section.secondaryStyle.bold = false;
+		section.useSecondaryStyle = true;
+		section.entryGap = 32;
+
+		const bool multi = type == SectionType::MultiStackedList;
+		if (multi) {
+			section.columns = 2;
+			section.marginX = 120;
+		}
+		for (int i = 0; i < (multi ? 2 : 1); ++i)
+			section.entries.append(Entry{QStringLiteral("\"Song Title\""),
+						     QStringLiteral("Written by A. Writer"),
+						     QStringLiteral("Performed by The Band"),
+						     QStringLiteral("Courtesy of Label Records"),
+						     {}});
+		break;
+	}
+
+	case SectionType::CardList:
+	case SectionType::MultiCardList: {
+		/*
+		 * A cast grid: a portrait over a name over a role. The picture is the card, so the
+		 * text under it is set smaller than a list's would be and held close to it.
+		 */
+		section.style.pixelSize = 28;
+		section.style.bold = true;
+		section.secondaryStyle = section.style;
+		section.secondaryStyle.pixelSize = 22;
+		section.secondaryStyle.bold = false;
+		section.useSecondaryStyle = true;
+		section.logoGap = 12;
+		section.entryGap = 40;
+
+		const bool multi = type == SectionType::MultiCardList;
+		if (multi) {
+			section.columns = 4;
+			section.columnGap = 32;
+			section.marginX = 120;
+		}
+		for (int i = 0; i < (multi ? 4 : 1); ++i) {
+			Entry entry{QStringLiteral("Full Name"), QStringLiteral("Role"), {}, {}, {}};
+			entry.logo.maxHeight = 200;
+			section.entries.append(entry);
+		}
+		break;
+	}
+
+	case SectionType::IconList:
+	case SectionType::MultiIconList: {
+		/* Where to find the show afterwards: a mark and a handle a line. */
+		section.style.pixelSize = 32;
+		section.logoGap = 14;
+		section.logoSide = LogoSide::Left;
+
+		const bool multi = type == SectionType::MultiIconList;
+		if (multi) {
+			section.columns = 2;
+			section.marginX = 160;
+		}
+		for (int i = 0; i < (multi ? 2 : 1); ++i)
+			section.entries.append(Entry{QStringLiteral("@handle"), {}, {}, {}, {}});
+		break;
+	}
+
+	case SectionType::Paragraph:
+		/*
+		 * Prose is read rather than glanced at, so it is set smaller than a credit, with more
+		 * room between its lines and held in from the edges to a measure a reader can follow.
+		 */
+		section.text =
+			QStringLiteral("In loving memory.\n\nThe events, characters and firms depicted in this "
+				       "program are fictitious. Any similarity to actual persons, living or dead, "
+				       "or to actual firms is purely coincidental.");
+		section.style.pixelSize = 26;
+		section.style.lineSpacing = 1.25;
+		section.sectionWidth = 0.6;
+		section.paddingTop = 24;
+		section.paddingBottom = 24;
+		break;
+
+	case SectionType::QrCode:
+		section.qrText = QStringLiteral("https://example.com");
+		section.text = QStringLiteral("Scan to visit");
+		section.style.pixelSize = 26;
+		section.logoGap = 16;
+		section.paddingTop = 32;
+		section.paddingBottom = 32;
+		break;
+
 	case SectionType::SectionDivider:
 		/*
 		 * The arrow rule: a plain bar between two arrowheads, broken in the middle by a
@@ -1498,7 +1739,7 @@ Section Section::makeDefault(SectionType type)
 	 * stays the load-time fallback, so documents predating the setting keep the layout they
 	 * were built against.
 	 */
-	if (sectionUsesLogos(type) && sectionUsesText(type))
+	if (sectionUsesLogos(type) && sectionUsesText(type) && !sectionUsesEntries(type))
 		section.logoPlacement = LogoPlacement::Hug;
 
 	/*
@@ -1506,7 +1747,8 @@ Section Section::makeDefault(SectionType type)
 	 * gap, rather than a string of full stops that depends on the font to look like a leader.
 	 * Text stays the load-time fallback for documents written before the art types existed.
 	 */
-	if (type == SectionType::Bridged || (sectionUsesLogos(type) && sectionUsesText(type))) {
+	if (type == SectionType::Bridged ||
+	    (sectionUsesLogos(type) && sectionUsesText(type) && !sectionUsesEntries(type))) {
 		section.bridgeType = BridgeType::Dots;
 		section.bridgeFill = BridgeFill::Repeat;
 	}
@@ -1530,6 +1772,18 @@ Section Section::makeDefault(SectionType type)
 	section.rowSubtitleStyle = subtitleOf(section.style);
 	section.rowSecondarySubtitleStyle =
 		subtitleOf(section.useSecondaryStyle ? section.secondaryStyle : section.style);
+
+	/*
+	 * A stack's third and fourth lines are those same two styles. The third is the second line's
+	 * size; the fourth, the courtesy line, a size down again and dimmed.
+	 */
+	if (sectionStacksLines(type)) {
+		section.rowSubtitleStyle = section.secondaryStyle;
+		section.rowSecondarySubtitleStyle = section.secondaryStyle;
+		section.rowSecondarySubtitleStyle.pixelSize = 20;
+		section.rowSecondarySubtitleStyle.italic = true;
+		section.rowSecondarySubtitleStyle.color = QColor(200, 200, 200);
+	}
 
 	return section;
 }
@@ -1586,6 +1840,19 @@ QString Section::displayLabel() const
 			       : QStringLiteral("%1 (%2)").arg(QString::fromUtf8(sectionTypeName(type)),
 							       QString::fromUtf8(dividerShapeName(line)));
 	}
+
+	case SectionType::Paragraph: {
+		/* Named by its opening words, which is what a reader will recognize it by. */
+		const QString opening = text.simplified();
+		if (opening.isEmpty())
+			return QString::fromUtf8(sectionTypeName(type));
+		return opening.size() > 32 ? opening.left(31) + QChar(0x2026) : opening;
+	}
+
+	case SectionType::QrCode:
+		return qrText.isEmpty()
+			       ? QString::fromUtf8(sectionTypeName(type))
+			       : QStringLiteral("%1: %2").arg(QString::fromUtf8(sectionTypeName(type)), qrText);
 
 	case SectionType::Spacer:
 		return QStringLiteral("%1 (%2 px)").arg(QString::fromUtf8(sectionTypeName(type))).arg(spacerHeight);
@@ -2002,6 +2269,10 @@ QVector<FontUse> Document::usedFonts() const
 		if (!sectionUsesText(section.type) && !dividerText)
 			return;
 
+		/* A code with no caption draws no text at all. */
+		if (section.type == SectionType::QrCode && section.text.isEmpty())
+			return;
+
 		consider(effectiveStyle(section));
 		consider(effectiveSecondaryStyle(section));
 
@@ -2013,6 +2284,18 @@ QVector<FontUse> Document::usedFonts() const
 		if (sectionStacksSubtitles(section) && section.type == SectionType::Bridged) {
 			consider(effectiveRowSubtitleStyle(section));
 			consider(effectiveRowSecondarySubtitleStyle(section));
+		}
+
+		/* A stack's third and fourth lines, the same two styles, drawn whenever they hold text. */
+		if (sectionStacksLines(section.type)) {
+			const auto holds = [&section](QString Entry::*field) {
+				return std::any_of(section.entries.cbegin(), section.entries.cend(),
+						   [field](const Entry &entry) { return !(entry.*field).isEmpty(); });
+			};
+			if (holds(&Entry::subtitle))
+				consider(effectiveRowSubtitleStyle(section));
+			if (holds(&Entry::secondarySubtitle))
+				consider(effectiveRowSecondarySubtitleStyle(section));
 		}
 	});
 

@@ -31,6 +31,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPainterPath>
 #include <QRadialGradient>
 #include <QRawFont>
+#include <QRegularExpression>
 #include <QTextLayout>
 #include <QTextOption>
 #include <QtMath>
@@ -49,6 +50,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "render/DividerArtRenderer.hpp"
 #include "render/FontResolution.hpp"
 #include "render/ImageEffects.hpp"
+#include "render/QrArt.hpp"
 
 namespace closingtime {
 
@@ -394,6 +396,92 @@ int layoutPreparedText(QPainter *painter, const QString &text, const TextStyle &
 int layoutText(QPainter *painter, const QString &text, const TextStyle &style, qreal x, qreal y, qreal width)
 {
 	return layoutPreparedText(painter, text, style, makeFont(style), style.align, x, y, width);
+}
+
+/*
+ * One paragraph of a Paragraph section, justified or not.
+ *
+ * Unjustified, it is exactly `layoutText`. Justified, every line is stretched to the column except
+ * the last one and any line the user broke by hand -- the same two exceptions QTextLayout itself
+ * makes, decided here by the same test so that a line's position and its spacing agree -- and those
+ * keep the style's own alignment, which is what lets a justified block end flush left or centered.
+ */
+int layoutParagraph(QPainter *painter, const QString &text, const TextStyle &style, bool justify, qreal x, qreal y,
+		    qreal width)
+{
+	if (!justify)
+		return layoutText(painter, text, style, x, y, width);
+	if (text.isEmpty() || width <= 0.0)
+		return 0;
+
+	const QFont font = makeFont(style);
+	const QFontMetricsF metrics(font);
+	const QString content = layoutContent(text);
+
+	QTextLayout layout(content, font);
+	QTextOption option;
+	option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+	/*
+	 * Justify is the one alignment the option has to carry, since the stretching is done inside
+	 * the layout. It offsets nothing, so the lines that are not stretched are still placed by hand.
+	 */
+	option.setAlignment(Qt::AlignJustify);
+	layout.setTextOption(option);
+
+	const qreal step = metrics.lineSpacing() * style.lineSpacing;
+	qreal inkedLeft = width;
+	qreal inkedRight = 0.0;
+	qreal cursor = 0.0;
+
+	layout.beginLayout();
+	for (;;) {
+		QTextLine line = layout.createLine();
+		if (!line.isValid())
+			break;
+
+		line.setLineWidth(width);
+
+		const int end = line.textStart() + line.textLength();
+		const bool stretched = end < content.size() && end > 0 && content.at(end - 1) != QChar::LineSeparator;
+		const qreal lineWidth = stretched ? width : line.naturalTextWidth();
+		const qreal lineX = stretched ? 0.0 : alignOffset(style.align, width, lineWidth);
+		line.setPosition(QPointF(lineX, cursor));
+
+		inkedLeft = std::min(inkedLeft, lineX);
+		inkedRight = std::max(inkedRight, lineX + lineWidth);
+		cursor += step;
+	}
+	layout.endLayout();
+
+	if (painter) {
+		const QRectF box(x + inkedLeft, y, std::max(0.0, inkedRight - inkedLeft), cursor);
+		paintStyledLayout(painter, layout, style, QPointF(x, y), box);
+	}
+
+	return qCeil(cursor);
+}
+
+/*
+ * A Paragraph section's text, broken at its blank lines. A line holding nothing but spaces counts
+ * as blank, and a run of several is one break: the gap between paragraphs is the section's to set,
+ * not the number of times Enter was pressed.
+ */
+QStringList paragraphsOf(const QString &text)
+{
+	static const QRegularExpression blankLine(QStringLiteral("\\n[ \\t]*(\\n[ \\t]*)+"));
+
+	QStringList paragraphs;
+	QString normalized = text;
+	normalized.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+	for (QString paragraph : normalized.split(blankLine)) {
+		while (paragraph.startsWith(QLatin1Char('\n')))
+			paragraph.remove(0, 1);
+		while (paragraph.endsWith(QLatin1Char('\n')))
+			paragraph.chop(1);
+		if (!paragraph.trimmed().isEmpty())
+			paragraphs.append(paragraph);
+	}
+	return paragraphs;
 }
 
 /*
@@ -2540,6 +2628,342 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 		}
 		if (!section.entries.isEmpty())
 			y -= section.entryGap;
+		break;
+	}
+
+	case SectionType::Paragraph: {
+		/*
+		 * Each paragraph is its own run, held `paragraphGap` from the next, and each takes the
+		 * Title panel on its own -- a card behind each paragraph rather than one behind the block,
+		 * which is what the Section panel is for.
+		 */
+		const QStringList paragraphs = paragraphsOf(section.text);
+		for (int index = 0; index < paragraphs.size(); ++index) {
+			const QString &paragraph = paragraphs.at(index);
+
+			if (panels.wants(BackgroundSlot::Title)) {
+				const int measured = layoutParagraph(nullptr, paragraph, style, section.justifyText,
+								     contentX, y, contentWidth);
+				if (measured > 0)
+					panels.paint(BackgroundSlot::Title,
+						     QRectF(contentX, y, contentWidth, measured));
+			}
+
+			const int height = layoutParagraph(painter, paragraph, style, section.justifyText, contentX, y,
+							   contentWidth);
+			record(LayoutBox::Kind::Text, QRectF(contentX, y, contentWidth, height));
+			y += height;
+			if (index + 1 < paragraphs.size())
+				y += section.paragraphGap;
+		}
+		break;
+	}
+
+	case SectionType::QrCode: {
+		/*
+		 * The code is placed by the caption's alignment so the two line up whichever way the
+		 * section is set, and is never wider than the column: a code too big for its section is
+		 * drawn smaller rather than off the edge, since a cut-off code is not a code at all.
+		 */
+		const QrMatrix matrix = encodeQr(section.qrText, section.qrErrorCorrection);
+		const int maxSize = std::max(1, std::min(section.qrSize, contentWidth));
+		const int side = qrPlateSize(matrix, maxSize, section.qrQuietZone);
+		const int codeX = contentX + qRound(alignOffset(style.align, contentWidth, side));
+		const QrPlacement code = placeQr(matrix, maxSize, section.qrQuietZone, codeX, y);
+
+		panels.paint(BackgroundSlot::Logo, QRectF(code.plate));
+
+		if (painter) {
+			painter->save();
+			if (matrix.isEmpty()) {
+				/* Nothing to encode yet: the same dashed slot a logo with no file draws. */
+				QPen pen(QColor(160, 160, 160, 180));
+				pen.setStyle(Qt::DashLine);
+				pen.setWidth(2);
+				painter->setPen(pen);
+				painter->setBrush(Qt::NoBrush);
+				painter->drawRect(code.plate.adjusted(1, 1, -1, -1));
+			} else {
+				if (section.qrBackground.alpha() > 0)
+					painter->fillRect(code.plate, section.qrBackground);
+				painter->setPen(Qt::NoPen);
+				painter->setBrush(section.qrForeground);
+				painter->drawPath(code.ink);
+			}
+			painter->restore();
+		}
+
+		record(LayoutBox::Kind::Logo, QRectF(code.plate));
+		y += code.plate.height();
+
+		if (!section.text.isEmpty()) {
+			y += section.logoGap;
+			if (panels.wants(BackgroundSlot::Title)) {
+				const int measured =
+					layoutText(nullptr, section.text, style, contentX, y, contentWidth);
+				if (measured > 0)
+					panels.paint(BackgroundSlot::Title,
+						     QRectF(contentX, y, contentWidth, measured));
+			}
+			const int height = layoutText(painter, section.text, style, contentX, y, contentWidth);
+			record(LayoutBox::Kind::Text, QRectF(contentX, y, contentWidth, height));
+			y += height;
+		}
+		break;
+	}
+
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList:
+	case SectionType::CardList:
+	case SectionType::MultiCardList:
+	case SectionType::IconList:
+	case SectionType::MultiIconList: {
+		/*
+		 * The three newer kinds of list share one grid, single-column and multi alike: a list in one
+		 * column is a grid of one column, and walking it the same way is what keeps the two shapes of
+		 * each kind drawing the same cell. What differs is only what goes in a cell.
+		 */
+		const int count = section.entries.size();
+		if (count == 0)
+			break;
+
+		const bool stacks = sectionStacksLines(section.type);
+		const bool cards = sectionUsesCards(section.type);
+		const int columns = sectionUsesColumns(section.type) ? std::max(1, section.columns) : 1;
+		const int gap = columns > 1 ? section.columnGap : 0;
+		const int columnWidth = std::max(1, (contentWidth - (columns - 1) * gap) / columns);
+		const int rows = (count + columns - 1) / columns;
+
+		const TextStyle &secondStyle = document.effectiveSecondaryStyle(section);
+		const TextStyle &thirdStyle = document.effectiveRowSubtitleStyle(section);
+		const TextStyle &fourthStyle = document.effectiveRowSecondarySubtitleStyle(section);
+
+		/*
+		 * An icon stands on the capitals of the line it leads: sized from their height and centered
+		 * on them, so a mark beside a name reads as part of the line rather than hanging off it.
+		 */
+		const QFontMetricsF iconMetrics(makeFont(style));
+		const qreal capHeight = iconMetrics.capHeight() > 0.0 ? iconMetrics.capHeight()
+								      : iconMetrics.ascent() * 0.7;
+		const int iconHeight = std::max(1, qRound(capHeight * section.iconScale));
+
+		const auto indexAt = [&](int row, int column) {
+			return section.fillAcross ? row * columns + column : column * rows + row;
+		};
+		const auto cellX = [&](const Entry &entry, int column) {
+			return qRound(indentedX(section, entry, contentX + column * (columnWidth + gap)));
+		};
+		/* The icon an entry's logo is drawn as: the same file, at the height the text asks for. */
+		const auto iconRef = [&](const Entry &entry) {
+			LogoRef ref = entry.logo;
+			ref.maxHeight = iconHeight;
+			return ref;
+		};
+
+		/*
+		 * How tall the pictures in a row of cards are allowed to be: the tallest of them. Each
+		 * picture sits on the bottom of that band, so every caption across the row starts on the
+		 * same line however differently shaped the pictures above them are.
+		 */
+		const auto rowBand = [&](int row) {
+			if (!cards)
+				return 0;
+			int band = 0;
+			for (int column = 0; column < columns; ++column) {
+				const int index = indexAt(row, column);
+				if (index >= count)
+					continue;
+				const Entry &entry = section.entries.at(index);
+				const LogoArt art = logos.resolve(entry.logo);
+				band = std::max(band, logoDrawSize(art.poster, entry.logo, columnWidth).height());
+			}
+			return band;
+		};
+
+		/*
+		 * One cell: laid out, and drawn when `draw` is set. A measuring call reports nothing and
+		 * paints no panel, so asking a cell's height ahead of drawing it changes nothing on screen.
+		 */
+		const auto layoutCell = [&](const Entry &entry, int x, int top, int band, bool draw) -> int {
+			QPainter *target = draw ? painter : nullptr;
+			const SectionPanels *cellPanels = draw ? &panels : nullptr;
+
+			if (stacks) {
+				/*
+				 * Up to four lines, each in its own style, `subtitleGap` apart. A blank line takes
+				 * no room and no gap, so a cue with no courtesy line is three lines tall and an
+				 * entry with only a first line is a heading inside the list.
+				 */
+				const QString *texts[kStackLines] = {&entry.text, &entry.secondaryText, &entry.subtitle,
+								     &entry.secondarySubtitle};
+				const TextStyle *styles[kStackLines] = {&style, &secondStyle, &thirdStyle,
+									&fourthStyle};
+
+				qreal cursor = top;
+				bool any = false;
+				for (int line = 0; line < kStackLines; ++line) {
+					const QString &text = *texts[line];
+					if (text.isEmpty())
+						continue;
+
+					if (any)
+						cursor += section.subtitleGap;
+
+					const BackgroundSlot slot = line == 0 ? BackgroundSlot::Title
+									      : BackgroundSlot::Subtitle;
+					if (cellPanels && cellPanels->wants(slot)) {
+						const int measured = layoutText(nullptr, text, *styles[line], x, cursor,
+										columnWidth);
+						if (measured > 0)
+							cellPanels->paint(slot,
+									  QRectF(x, cursor, columnWidth, measured));
+					}
+
+					const int height =
+						layoutText(target, text, *styles[line], x, cursor, columnWidth);
+					if (draw)
+						record(LayoutBox::Kind::Text, QRectF(x, cursor, columnWidth, height));
+					cursor += height;
+					any = true;
+				}
+				return qCeil(cursor - top);
+			}
+
+			if (cards) {
+				const LogoArt art = logos.resolve(entry.logo);
+				const QSize size = logoDrawSize(art.poster, entry.logo, columnWidth);
+				const int logoX = x + qRound(alignOffset(style.align, columnWidth, size.width()));
+				const QRect box(QPoint(logoX, top + band - size.height()), size);
+
+				if (draw) {
+					panels.paint(BackgroundSlot::Logo, QRectF(box));
+					paintLogo(painter, art, box, style, entry.logo.playback);
+					recordLogo(art, entry.logo, box, style);
+				}
+
+				/* The pair under the picture, through the same stack a title/subtitle list uses. */
+				const bool hasText = !entry.text.isEmpty() || !entry.secondaryText.isEmpty();
+				if (!hasText)
+					return band;
+
+				const int textTop = top + band + (band > 0 ? section.logoGap : 0);
+				const int textHeight = draw ? layoutTitleSubtitle(painter, section, style, secondStyle,
+										  entry.text, entry.secondaryText, x,
+										  textTop, columnWidth, record, &panels)
+							    : layoutTitleSubtitle(nullptr, section, style, secondStyle,
+										  entry.text, entry.secondaryText, x,
+										  textTop, columnWidth, kIgnoreBoxes);
+				return textTop - top + textHeight;
+			}
+
+			/* An icon list's cell: the mark and the line, measured together and aligned as one. */
+			const bool hasIcon = !entry.logo.isEmpty();
+			const LogoRef ref = iconRef(entry);
+			const LogoArt art = hasIcon ? logos.resolve(ref) : LogoArt();
+			const QSize iconSize = hasIcon ? logoDrawSize(art.poster, ref, std::max(1, columnWidth / 2))
+						       : QSize();
+			const int spacing = hasIcon && !entry.text.isEmpty() ? section.logoGap : 0;
+
+			const qreal textRoom = std::max(1.0, qreal(columnWidth - iconSize.width() - spacing));
+			const qreal textWidth = std::min(textRoom, naturalTextWidth(entry.text, style));
+			const qreal groupWidth = iconSize.width() + spacing + textWidth;
+			const qreal groupX = x + alignOffset(style.align, columnWidth, groupWidth);
+
+			const bool iconLeft = section.logoSide == LogoSide::Left;
+			const qreal iconX = iconLeft ? groupX : groupX + textWidth + spacing;
+			const qreal textX = iconLeft ? groupX + iconSize.width() + spacing : groupX;
+
+			/* The middle of the capitals on the first line, which is where the icon is centered. */
+			const qreal ascent = entry.text.isEmpty() ? iconMetrics.ascent()
+								  : firstBaseline(entry.text, style, textWidth);
+			const qreal iconCenter = ascent - capHeight / 2.0;
+			const qreal iconTop = iconCenter - iconSize.height() / 2.0;
+			/* An icon taller than the line pushes the line down rather than poking above the row. */
+			const qreal shift = std::max(0.0, -iconTop);
+
+			int textHeight = 0;
+			if (!entry.text.isEmpty()) {
+				textHeight = layoutText(target, entry.text, style, textX, top + shift, textWidth);
+				if (draw)
+					record(LayoutBox::Kind::Text,
+					       QRectF(textX, top + shift, textWidth, textHeight));
+			}
+
+			int height = qCeil(shift) + textHeight;
+			if (hasIcon) {
+				const QRect box(QPoint(qRound(iconX), top + qRound(iconTop + shift)), iconSize);
+				if (draw) {
+					panels.paint(BackgroundSlot::Logo, QRectF(box));
+					paintLogo(painter, art, box, style, ref.playback);
+					recordLogo(art, ref, box, style);
+				}
+				height = std::max(height, box.bottom() + 1 - top);
+			}
+			return height;
+		};
+
+		const auto measureRow = [&](int row, int top) {
+			const int band = rowBand(row);
+			int measured = 0;
+			for (int column = 0; column < columns; ++column) {
+				const int index = indexAt(row, column);
+				if (index >= count)
+					continue;
+				const Entry &entry = section.entries.at(index);
+				measured =
+					std::max(measured, layoutCell(entry, cellX(entry, column), top, band, false));
+			}
+			return measured;
+		};
+
+		for (int row = 0; row < rows; ++row) {
+			if (cull.active) {
+				int measured = ledger.height(row);
+				if (measured < 0)
+					measured = measureRow(row, y);
+				if (!cull.reaches(y, measured)) {
+					y += measured + section.entryGap;
+					continue;
+				}
+			}
+
+			/* A cell's panel is the height of its row, as in every other grid; see the Multi-Lists below. */
+			bool rowPaneled = false;
+			for (int column = 0; column < columns && !rowPaneled; ++column) {
+				const int index = indexAt(row, column);
+				if (index < count && panels.wants(panels.entrySlot(index)))
+					rowPaneled = true;
+			}
+			if (rowPaneled) {
+				const int measured = measureRow(row, y);
+				for (int column = 0; column < columns; ++column) {
+					const int index = indexAt(row, column);
+					if (index >= count)
+						continue;
+					const Entry &entry = section.entries.at(index);
+					const qreal panelX = columns > 1 ? cellX(entry, column)
+									 : indentedX(section, entry, contentX);
+					panels.paint(panels.entrySlot(index),
+						     QRectF(panelX, y, columns > 1 ? columnWidth : contentWidth,
+							    measured));
+				}
+			}
+
+			const int band = rowBand(row);
+			int rowHeight = 0;
+			for (int column = 0; column < columns; ++column) {
+				const int index = indexAt(row, column);
+				if (index >= count)
+					continue;
+				const Entry &entry = section.entries.at(index);
+				rowHeight = std::max(rowHeight, layoutCell(entry, cellX(entry, column), y, band, true));
+			}
+
+			ledger.note(rowHeight);
+			y += rowHeight + section.entryGap;
+		}
+
+		y -= section.entryGap;
 		break;
 	}
 

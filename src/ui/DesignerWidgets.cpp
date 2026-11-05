@@ -103,11 +103,21 @@ SectionFamily sectionFamily(SectionType type)
 	case SectionType::TextList:
 	case SectionType::TitleSubtitleList:
 	case SectionType::LogoList:
+	case SectionType::StackedList:
+	case SectionType::CardList:
+	case SectionType::IconList:
 		return SectionFamily::List;
 	case SectionType::MultiTextList:
 	case SectionType::MultiTitleSubtitleList:
 	case SectionType::MultiLogoList:
+	case SectionType::MultiStackedList:
+	case SectionType::MultiCardList:
+	case SectionType::MultiIconList:
 		return SectionFamily::Columns;
+	case SectionType::Paragraph:
+		return SectionFamily::Paragraph;
+	case SectionType::QrCode:
+		return SectionFamily::QrCode;
 	case SectionType::SectionDivider:
 		return SectionFamily::Divider;
 	case SectionType::Spacer:
@@ -141,6 +151,10 @@ QColor familyTileColor(SectionFamily family)
 		return QColor(118, 70, 140);
 	case SectionFamily::Action:
 		return QColor(150, 60, 60);
+	case SectionFamily::Paragraph:
+		return QColor(70, 96, 70);
+	case SectionFamily::QrCode:
+		return QColor(56, 60, 70);
 	}
 	return QColor(84, 90, 104);
 }
@@ -164,6 +178,10 @@ QColor familyMarkColor(SectionFamily family)
 		return QColor(240, 210, 255);
 	case SectionFamily::Action:
 		return QColor(255, 210, 210);
+	case SectionFamily::Paragraph:
+		return QColor(214, 240, 210);
+	case SectionFamily::QrCode:
+		return QColor(240, 242, 248);
 	}
 	return Qt::white;
 }
@@ -271,6 +289,32 @@ void paintTypeBadge(QPainter &painter, const QRectF &rect, SectionType type)
 		painter.fillPath(play, mark);
 		break;
 	}
+	case SectionFamily::Paragraph:
+		/* A block of prose: full lines and a short last one. */
+		hline(0.05, 0.0, 1.0);
+		hline(0.35, 0.0, 1.0);
+		hline(0.65, 0.0, 1.0);
+		hline(0.95, 0.0, 0.55);
+		break;
+	case SectionFamily::QrCode: {
+		/* Three finder squares and a scatter of modules. */
+		painter.setBrush(Qt::NoBrush);
+		const qreal f = w * 0.36;
+		QPen thin = pen;
+		thin.setWidthF(pen.widthF() * 0.8);
+		painter.setPen(thin);
+		for (const QPointF &corner :
+		     {box.topLeft(), QPointF(box.right() - f, box.top()), QPointF(box.left(), box.bottom() - f)})
+			painter.drawRect(QRectF(corner, QSizeF(f, f)));
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(mark);
+		const qreal m = w * 0.14;
+		for (const QPointF &cell : {QPointF(0.62, 0.62), QPointF(0.86, 0.62), QPointF(0.62, 0.86),
+					    QPointF(0.86, 0.86), QPointF(0.45, 0.45)})
+			painter.drawRect(
+				QRectF(box.left() + w * cell.x() - m / 2, box.top() + h * cell.y() - m / 2, m, m));
+		break;
+	}
 	}
 
 	painter.restore();
@@ -322,7 +366,29 @@ void paintTypeThumbnail(QPainter &painter, const QRectF &rect, SectionType type)
 		painter.drawRoundedRect(QRectF(cx - w * 0.14, cy - h * 0.18, w * 0.28, h * 0.36), 2, 2);
 		break;
 	case SectionFamily::List:
-		if (sectionUsesLogos(type)) {
+		if (sectionUsesCards(type)) {
+			/* A picture with its caption under it. */
+			painter.setBrush(QColor(245, 199, 122));
+			painter.drawRoundedRect(QRectF(cx - w * 0.08, rect.top() + h * 0.12, w * 0.16, h * 0.42), 1.5,
+						1.5);
+			bar(cy + h * 0.2, w * 0.24, 2.2, ink);
+			bar(cy + h * 0.33, w * 0.16, 1.4, soft);
+		} else if (sectionUsesIcons(type)) {
+			/* A small mark leading each line. */
+			for (int i = -1; i <= 1; ++i) {
+				const qreal y = cy + i * h * 0.24;
+				painter.setBrush(QColor(245, 199, 122));
+				painter.drawRoundedRect(QRectF(cx - w * 0.17, y - 3, 6, 6), 1.2, 1.2);
+				painter.setBrush(soft);
+				painter.drawRoundedRect(QRectF(cx - w * 0.17 + 9, y - 1, w * 0.24, 2), 1, 1);
+			}
+		} else if (sectionStacksLines(type)) {
+			/* A stack of four lines, each smaller than the last. */
+			bar(cy - h * 0.27, w * 0.34, 2.4, ink);
+			bar(cy - h * 0.09, w * 0.28, 1.6, soft);
+			bar(cy + h * 0.07, w * 0.28, 1.6, soft);
+			bar(cy + h * 0.23, w * 0.22, 1.2, soft);
+		} else if (sectionUsesLogos(type)) {
 			/* A run of images, one under the next. */
 			painter.setBrush(QColor(245, 199, 122));
 			for (int i = -1; i <= 1; i += 2)
@@ -343,6 +409,29 @@ void paintTypeThumbnail(QPainter &painter, const QRectF &rect, SectionType type)
 	case SectionFamily::Columns:
 		for (int col = -1; col <= 1; ++col) {
 			for (int i = -1; i <= 1; ++i) {
+				if (sectionUsesCards(type)) {
+					/* A row of cards: picture over caption. */
+					if (i != -1)
+						continue;
+					painter.setBrush(QColor(245, 199, 122));
+					painter.drawRoundedRect(QRectF(cx + col * w * 0.22 - w * 0.07,
+								       rect.top() + h * 0.12, w * 0.14, h * 0.42),
+								1.5, 1.5);
+					painter.setBrush(soft);
+					painter.drawRoundedRect(QRectF(cx + col * w * 0.22 - w * 0.07, cy + h * 0.2,
+								       w * 0.14, 2),
+								1, 1);
+					continue;
+				}
+				if (sectionUsesIcons(type)) {
+					const qreal x = cx + col * w * 0.28 - w * 0.1;
+					painter.setBrush(QColor(245, 199, 122));
+					painter.drawRect(QRectF(x, cy + i * h * 0.24 - 2, 4, 4));
+					painter.setBrush(soft);
+					painter.drawRoundedRect(QRectF(x + 6, cy + i * h * 0.24 - 1, w * 0.12, 2), 1,
+								1);
+					continue;
+				}
 				if (sectionUsesLogos(type)) {
 					/* A wall of sponsor marks. */
 					if (i == 0)
@@ -400,6 +489,33 @@ void paintTypeThumbnail(QPainter &painter, const QRectF &rect, SectionType type)
 		painter.setPen(Qt::NoPen);
 		bar(cy, w * 0.26, 2.5, ink);
 		break;
+	case SectionFamily::Paragraph:
+		for (int i = 0; i < 4; ++i) {
+			const qreal y = rect.top() + h * (0.24 + i * 0.17);
+			const qreal width = i == 3 ? w * 0.3 : w * 0.56;
+			painter.setBrush(soft);
+			painter.drawRoundedRect(QRectF(cx - w * 0.28, y - 1, width, 2), 1, 1);
+		}
+		break;
+	case SectionFamily::QrCode: {
+		/* A small code on its plate, drawn from a fixed pattern. */
+		const qreal side = h * 0.78;
+		const QRectF plate(cx - side / 2, cy - side / 2, side, side);
+		painter.setBrush(QColor(236, 238, 244));
+		painter.drawRect(plate);
+		static const char *rows[] = {"1110101", "1010011", "1110101", "0001010",
+					     "1101110", "0110101", "1011011"};
+		const qreal m = side * 0.8 / 7.0;
+		painter.setBrush(QColor(21, 23, 29));
+		for (int y = 0; y < 7; ++y) {
+			for (int x = 0; x < 7; ++x) {
+				if (rows[y][x] == '1')
+					painter.drawRect(QRectF(plate.left() + side * 0.1 + x * m,
+								plate.top() + side * 0.1 + y * m, m, m));
+			}
+		}
+		break;
+	}
 	case SectionFamily::Action: {
 		QPen dashed(QColor(80, 230, 230), 1.2);
 		dashed.setStyle(Qt::DashLine);

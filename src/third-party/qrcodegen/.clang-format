@@ -1,0 +1,3 @@
+# Vendored as published by Project Nayuki; kept byte for byte so it can be compared with upstream.
+DisableFormat: true
+SortIncludes: Never

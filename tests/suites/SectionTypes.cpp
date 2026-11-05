@@ -87,6 +87,14 @@ CT_SUITE(section_types, "The type table, its ids and its predicates")
 		{SectionType::MultiTextList, "multi_text_list"},
 		{SectionType::MultiTitleSubtitleList, "multi_title_subtitle_list"},
 		{SectionType::MultiLogoList, "multi_logo_list"},
+		{SectionType::StackedList, "stacked_list"},
+		{SectionType::MultiStackedList, "multi_stacked_list"},
+		{SectionType::CardList, "card_list"},
+		{SectionType::MultiCardList, "multi_card_list"},
+		{SectionType::IconList, "icon_list"},
+		{SectionType::MultiIconList, "multi_icon_list"},
+		{SectionType::Paragraph, "paragraph"},
+		{SectionType::QrCode, "qr_code"},
 		{SectionType::SectionDivider, "section_divider"},
 		{SectionType::Spacer, "spacer"},
 		{SectionType::StickyBlock, "sticky_block"},
@@ -175,8 +183,11 @@ CT_SUITE(section_defaults, "What a freshly added section of each type carries")
 		else
 			check(section.entries.isEmpty(), "a non-list type starts with no entries");
 
-		/* The placement and bridge a section added now is handed. */
-		if (sectionUsesLogos(type) && sectionUsesText(type)) {
+		/*
+		 * The placement and bridge a heading with a logo beside it is handed. A list whose entries
+		 * carry a picture and text -- cards, icons -- is not a logo row and has neither to place.
+		 */
+		if (sectionUsesLogos(type) && sectionUsesText(type) && !sectionUsesEntries(type)) {
 			check(section.logoPlacement == LogoPlacement::Hug,
 			      "a logo row added now hugs, which is the placement that honors logoGap");
 			check(section.bridgeType == BridgeType::Dots, "a logo row added now is handed drawn art");

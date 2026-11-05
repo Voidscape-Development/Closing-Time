@@ -61,6 +61,36 @@ enum class SectionType {
 	MultiTextList,
 	MultiTitleSubtitleList,
 	MultiLogoList,
+	/*
+	 * A list whose entries are a run of up to four lines, each in a style of its own -- a song
+	 * title over who wrote it, who performed it and whose courtesy it is used by. The line under
+	 * the title/subtitle pair that the two-line lists stop at. See `sectionStackLines`.
+	 */
+	StackedList,
+	MultiStackedList,
+	/*
+	 * A list of cards: a picture with a title and a subtitle under it, the three of them one
+	 * item. A headshot over a name and a role, a sponsor's mark over its tier. The caption
+	 * belongs to its picture, which two sections -- one of logos, one of names -- cannot say.
+	 */
+	CardList,
+	MultiCardList,
+	/*
+	 * A list of lines each led by a small picture sized to the text rather than to a height of
+	 * its own: a platform's mark beside a handle, a flag beside a country.
+	 */
+	IconList,
+	MultiIconList,
+	/*
+	 * Running prose: a dedication, a thank-you, the licensing lines at the foot of a roll. Breaks
+	 * into paragraphs at blank lines and can be set justified. See `Section::justifyText`.
+	 */
+	Paragraph,
+	/*
+	 * A QR code drawn from the text it encodes, with an optional caption under it. Drawn as
+	 * squares rather than decoded from a picture, so it is sharp at any size. See `Section::qrText`.
+	 */
+	QrCode,
 	SectionDivider,
 	Spacer,
 	/*
@@ -119,8 +149,38 @@ bool sectionUsesSecondaryText(SectionType type);
  */
 QVector<BackgroundSlot> backgroundSlotsFor(SectionType type);
 
-/* What a list holds, which with a column count is the whole of what tells the six list types apart. */
-enum class SectionListContent { Text, Pairs, Logos };
+/*
+ * What a list holds, which with a column count is the whole of what tells the list types apart:
+ * single lines, title/subtitle pairs, logos, stacks of up to four lines, cards (a picture over a
+ * pair), and lines each led by an icon.
+ */
+enum class SectionListContent { Text, Pairs, Logos, Stacks, Cards, Icons };
+
+/* True for the two Stacked list types, whose entries are up to four lines rather than a pair. */
+bool sectionStacksLines(SectionType type);
+/* True for the two Card list types, whose entries are a picture with a pair of lines under it. */
+bool sectionUsesCards(SectionType type);
+/* True for the two Icon list types, whose entries are a line of text led by a small picture. */
+bool sectionUsesIcons(SectionType type);
+
+/* How many lines one entry of a Stacked list can hold. */
+constexpr int kStackLines = 4;
+
+/*
+ * How much of a QR code can be lost and still be read: roughly 7, 15, 25 and 30 percent. More
+ * recovery costs room, so the same text needs more, smaller squares at a higher level.
+ */
+enum class QrErrorCorrection { Low, Medium, Quartile, High };
+
+const char *qrErrorCorrectionId(QrErrorCorrection level);
+QrErrorCorrection qrErrorCorrectionFromId(const char *id, QrErrorCorrection fallback = QrErrorCorrection::Medium);
+
+/*
+ * The most bytes of UTF-8 a QR code can carry at `level`: the capacity of the largest symbol
+ * (version 40) in byte mode. Text past this is cut there when the code is drawn, rather than
+ * the code failing to draw at all.
+ */
+int qrCapacityBytes(QrErrorCorrection level);
 
 /*
  * A section type taken apart into the handful of plain answers it stands for.
@@ -561,6 +621,11 @@ struct LogoRef {
  *   MultiTitleSubtitleList -> the same pair, placed into columns in the section's fill order
  *   LogoList               -> logo
  *   MultiLogoList          -> logo, placed into columns in the section's fill order
+ *   StackedList            -> up to four lines: text, secondaryText, subtitle, secondarySubtitle,
+ *                             top to bottom, each in a style of its own; MultiStackedList in columns
+ *   CardList               -> logo, with text (title) and secondaryText (subtitle) under it;
+ *                             MultiCardList in columns
+ *   IconList               -> logo (the icon, sized to the text) and text; MultiIconList in columns
  */
 struct Entry {
 	QString text;
@@ -1003,6 +1068,13 @@ struct Section {
 	 */
 	TextStyle rowSubtitleStyle;
 	TextStyle rowSecondarySubtitleStyle;
+	/*
+	 * A Stacked list has four lines to style rather than two, and spends these two on its third
+	 * and fourth: `style`, `secondaryStyle`, `rowSubtitleStyle`, `rowSecondarySubtitleStyle`,
+	 * top to bottom. The same four styles in the same order the four texts of an entry are kept
+	 * in, so switching a bridged list with subtitles to a stacked one keeps every line in the
+	 * style it was drawn in.
+	 */
 
 	/*
 	 * Names of the document style presets this section follows, or empty to use the
@@ -1091,6 +1163,49 @@ struct Section {
 	HAlign sectionAlign = HAlign::Center;
 	/* Spacer sections only: how tall the blank run is, in pixels. */
 	int spacerHeight = 120;
+
+	/*
+	 * Paragraph sections only.
+	 *
+	 * The text is `text`, broken into paragraphs wherever it holds a blank line; a single line
+	 * break is a break inside a paragraph, which is how an address or a verse is set. Paragraphs
+	 * are held `paragraphGap` apart, which is what makes them read as paragraphs rather than as
+	 * one long run with a short line in it.
+	 *
+	 * `justifyText` stretches every line but each paragraph's last to the full width of the
+	 * column, which is how a block of legal text is set. The last line still follows the style's
+	 * alignment, so a justified block can end flush left or centered.
+	 */
+	int paragraphGap = 16;
+	bool justifyText = false;
+
+	/*
+	 * QR Code sections only.
+	 *
+	 * `qrText` is what the code encodes -- a link, usually -- and `text` is the optional caption
+	 * set under it in the section's style, `logoGap` below it. The code is drawn `qrSize` pixels
+	 * square at most: each square is a whole number of pixels so the edges stay crisp, which can
+	 * leave it a few pixels smaller than asked for.
+	 *
+	 * It is drawn on a plate of `qrBackground` that runs `qrQuietZone` squares out past the code
+	 * on every side. A reader needs that margin of plain light around the code to find it; four
+	 * squares is what the standard asks for, and a plate of nothing at all leaves the code to
+	 * whatever the roll is over. Dark on light is what every reader reads; light on dark is
+	 * read by most phones but not all.
+	 */
+	QString qrText;
+	int qrSize = 240;
+	int qrQuietZone = 4;
+	QrErrorCorrection qrErrorCorrection = QrErrorCorrection::Medium;
+	QColor qrForeground = QColor(0, 0, 0);
+	QColor qrBackground = QColor(255, 255, 255);
+
+	/*
+	 * Icon list sections only: how tall each icon is drawn, as a multiple of the height of the
+	 * text's capital letters. At 1.0 an icon stands exactly as tall as a capital beside it; it is
+	 * centered on the capitals either way, so a larger icon grows above and below the line evenly.
+	 */
+	double iconScale = 1.4;
 
 	/*
 	 * Sticky Ending Block sections only.

@@ -1845,6 +1845,18 @@ same reason: reporting it would send the user after a font nothing uses.
 
 ### Addressed since the first cut
 
+- Five more kinds of section: a stacked list (up to four lines per entry, in four styles), image
+  cards (a picture over a title/subtitle pair, with a row of pictures sharing a band so captions
+  line up), an icon list (a picture sized to the capitals of its line), a paragraph (blank-line
+  paragraphs, optionally justified) and a QR code (encoded by the vendored `qrcodegen`, drawn as
+  whole-pixel squares on a plate with a quiet zone). The three lists come in one-column and
+  multi-column forms and share one grid in the renderer, so a list in one column is a grid of one
+  column; they are offered as further answers to the list editor's "each entry is" question
+  rather than as new base types. A stack spends the bridged row's two subtitle styles on its third
+  and fourth lines, so the entry's four texts and the section's four styles stay paired the same
+  way in every type. A code's text is cut to the byte-mode capacity of a version 40 symbol before
+  it is encoded, which is what guarantees the encoder never refuses it -- the code is always drawn.
+
 - The renderer was rebuilt around a picture per section rather than one picture of the whole roll
   (see `docs/design/layered-renderer.md`). Editing one section redraws one section; a long roll holds
   only the part of itself near the frame, on the GPU and in memory; a rebuild keeps every picture it

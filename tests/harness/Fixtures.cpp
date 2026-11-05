@@ -559,6 +559,31 @@ const QVector<Scene> &scenes()
 			}
 		}
 
+		/* --- prose, codes, stacks, cards and icons ------------------------------------ */
+
+		{
+			Section cue = Section::makeDefault(SectionType::MultiStackedList);
+			Section cards = Section::makeDefault(SectionType::MultiCardList);
+			withLogo(cards, 140);
+			cards.entries[1].logo.maxHeight = 90;
+			Section icons = Section::makeDefault(SectionType::IconList);
+			withLogo(icons);
+			icons.style.align = HAlign::Left;
+			icons.sectionWidth = 0.3;
+			icons.entries.append(icons.entries.first());
+			icons.entries.last().text = QStringLiteral("youtube.com/@closingtime");
+			Section prose = Section::makeDefault(SectionType::Paragraph);
+			prose.justifyText = true;
+			prose.style.align = HAlign::Left;
+			Section code = Section::makeDefault(SectionType::QrCode);
+
+			add(QStringLiteral("new-types"),
+			    QStringLiteral(
+				    "A stacked multi-list of music cues, a grid of cards with pictures of two heights, "
+				    "an icon list, a justified paragraph and a QR code with a caption"),
+			    documentWith({cue, cards, icons, prose, code}));
+		}
+
 		/* --- everything -------------------------------------------------------------- */
 
 		add(QStringLiteral("every-section-type"),

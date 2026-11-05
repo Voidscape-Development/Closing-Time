@@ -177,8 +177,9 @@ QString bridgeTypeText(BridgeType type)
 const QVector<SectionType> &baseSectionTypes()
 {
 	static const QVector<SectionType> types = {
-		SectionType::Title,  SectionType::Header,         SectionType::TextList,    SectionType::Bridged,
-		SectionType::Spacer, SectionType::SectionDivider, SectionType::StickyBlock, SectionType::Action,
+		SectionType::Title,       SectionType::Header, SectionType::TextList, SectionType::Bridged,
+		SectionType::Paragraph,   SectionType::QrCode, SectionType::Spacer,   SectionType::SectionDivider,
+		SectionType::StickyBlock, SectionType::Action,
 	};
 	return types;
 }
@@ -833,6 +834,10 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	typeListContent->addItem(moduleText("Designer.ListContent.Text"), static_cast<int>(SectionListContent::Text));
 	typeListContent->addItem(moduleText("Designer.ListContent.Pairs"), static_cast<int>(SectionListContent::Pairs));
 	typeListContent->addItem(moduleText("Designer.ListContent.Logos"), static_cast<int>(SectionListContent::Logos));
+	typeListContent->addItem(moduleText("Designer.ListContent.Stacks"),
+				 static_cast<int>(SectionListContent::Stacks));
+	typeListContent->addItem(moduleText("Designer.ListContent.Cards"), static_cast<int>(SectionListContent::Cards));
+	typeListContent->addItem(moduleText("Designer.ListContent.Icons"), static_cast<int>(SectionListContent::Icons));
 	typeListContent->hide();
 	listContentSegments = new SegmentedControl(variantRow);
 	listContentSegments->setToolTip(moduleText("Designer.ListContent.Tip"));
@@ -888,6 +893,11 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	subtitleEdit = new QPlainTextEdit(this);
 	subtitleEdit->setMaximumHeight(80);
 	addRow(moduleText("Designer.Subtitle"), subtitleEdit);
+
+	qrTextEdit = new QLineEdit(this);
+	qrTextEdit->setPlaceholderText(QStringLiteral("https://"));
+	qrTextEdit->setToolTip(moduleText("Designer.QrText.Tip"));
+	addRow(moduleText("Designer.QrText"), qrTextEdit);
 
 	addLogoSlot = new QPushButton(moduleText("Designer.AddLogoSlot"), this);
 	addLogoSlot->setObjectName(QStringLiteral("designerEmptySlot"));
@@ -1158,6 +1168,56 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	spacerHeight->setRange(0, 20000);
 	spacerHeight->setSuffix(QStringLiteral(" px"));
 	addRow(moduleText("Designer.SpacerHeight"), spacerHeight);
+
+	paragraphGap = new QSpinBox(this);
+	paragraphGap->setRange(0, 4096);
+	paragraphGap->setSuffix(QStringLiteral(" px"));
+	paragraphGap->setToolTip(moduleText("Designer.ParagraphGap.Tip"));
+	addRow(moduleText("Designer.ParagraphGap"), paragraphGap);
+
+	justifyText = new QCheckBox(moduleText("Designer.JustifyText"), this);
+	justifyText->setToolTip(moduleText("Designer.JustifyText.Tip"));
+	addRow(QString(), justifyText);
+
+	qrSize = new QSpinBox(this);
+	qrSize->setRange(21, 8192);
+	qrSize->setSuffix(QStringLiteral(" px"));
+	qrSize->setToolTip(moduleText("Designer.QrSize.Tip"));
+	addRow(moduleText("Designer.QrSize"), qrSize);
+
+	qrQuietZone = new QSpinBox(this);
+	qrQuietZone->setRange(0, 16);
+	qrQuietZone->setToolTip(moduleText("Designer.QrQuietZone.Tip"));
+	addRow(moduleText("Designer.QrQuietZone"), qrQuietZone);
+
+	qrErrorCorrection = new QComboBox(this);
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.Low"),
+				   static_cast<int>(QrErrorCorrection::Low));
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.Medium"),
+				   static_cast<int>(QrErrorCorrection::Medium));
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.Quartile"),
+				   static_cast<int>(QrErrorCorrection::Quartile));
+	qrErrorCorrection->addItem(moduleText("Designer.QrErrorCorrection.High"),
+				   static_cast<int>(QrErrorCorrection::High));
+	qrErrorCorrection->setToolTip(moduleText("Designer.QrErrorCorrection.Tip"));
+	addRow(moduleText("Designer.QrErrorCorrection"), qrErrorCorrection);
+
+	qrForeground = new ColorButton(this);
+	qrForeground->setDialogTitle(moduleText("Designer.QrForeground"));
+	addRow(moduleText("Designer.QrForeground"), qrForeground);
+
+	qrBackground = new ColorButton(this);
+	qrBackground->setDialogTitle(moduleText("Designer.QrBackground"));
+	qrBackground->setToolTip(moduleText("Designer.QrBackground.Tip"));
+	addRow(moduleText("Designer.QrBackground"), qrBackground);
+
+	iconScale = new QDoubleSpinBox(this);
+	iconScale->setRange(0.1, 10.0);
+	iconScale->setSingleStep(0.1);
+	iconScale->setDecimals(2);
+	iconScale->setSuffix(QStringLiteral("x"));
+	iconScale->setToolTip(moduleText("Designer.IconScale.Tip"));
+	addRow(moduleText("Designer.IconScale"), iconScale);
 
 	/*
 	 * Where down the frame an Action section fires: a share of the canvas height, like a sticky
@@ -1505,6 +1565,15 @@ SectionEditor::SectionEditor(QWidget *parent) : QWidget(parent)
 	connect(subtitleGap, &QSpinBox::valueChanged, this, notify);
 	connect(subtitleOrder, &QComboBox::currentIndexChanged, this, notify);
 	connect(spacerHeight, &QSpinBox::valueChanged, this, notify);
+	connect(paragraphGap, &QSpinBox::valueChanged, this, notify);
+	connect(justifyText, &QCheckBox::toggled, this, notify);
+	connect(qrTextEdit, &QLineEdit::textChanged, this, notify);
+	connect(qrSize, &QSpinBox::valueChanged, this, notify);
+	connect(qrQuietZone, &QSpinBox::valueChanged, this, notify);
+	connect(qrErrorCorrection, &QComboBox::currentIndexChanged, this, notify);
+	connect(qrForeground, &ColorButton::colorChanged, this, notify);
+	connect(qrBackground, &ColorButton::colorChanged, this, notify);
+	connect(iconScale, &QDoubleSpinBox::valueChanged, this, notify);
 	connect(actionLine, &QSpinBox::valueChanged, this, notify);
 	connect(paddingTop, &QSpinBox::valueChanged, this, notify);
 	connect(paddingBottom, &QSpinBox::valueChanged, this, notify);
@@ -1648,6 +1717,15 @@ void SectionEditor::setSection(const Section &source)
 	subtitleGap->setValue(source.subtitleGap);
 	selectByData(subtitleOrder, source.subtitleFirst ? 1 : 0);
 	spacerHeight->setValue(source.spacerHeight);
+	paragraphGap->setValue(source.paragraphGap);
+	justifyText->setChecked(source.justifyText);
+	qrTextEdit->setText(source.qrText);
+	qrSize->setValue(source.qrSize);
+	qrQuietZone->setValue(source.qrQuietZone);
+	selectByData(qrErrorCorrection, static_cast<int>(source.qrErrorCorrection));
+	qrForeground->setColor(source.qrForeground);
+	qrBackground->setColor(source.qrBackground);
+	iconScale->setValue(source.iconScale);
 	actionLine->setValue(qRound(source.actionLine * 100.0));
 	actionList->setActions(source.actions);
 	selectByData(stickyEntrance, static_cast<int>(source.stickyEntrance));
@@ -1749,6 +1827,15 @@ Section SectionEditor::section() const
 	result.subtitleGap = subtitleGap->value();
 	result.subtitleFirst = subtitleOrder->currentData().toInt() == 1;
 	result.spacerHeight = spacerHeight->value();
+	result.paragraphGap = paragraphGap->value();
+	result.justifyText = justifyText->isChecked();
+	result.qrText = qrTextEdit->text();
+	result.qrSize = qrSize->value();
+	result.qrQuietZone = qrQuietZone->value();
+	result.qrErrorCorrection = static_cast<QrErrorCorrection>(qrErrorCorrection->currentData().toInt());
+	result.qrForeground = qrForeground->color();
+	result.qrBackground = qrBackground->color();
+	result.iconScale = iconScale->value();
 	result.actionLine = actionLine->value() / 100.0;
 	result.actions = actionList->actions();
 	result.stickyEntrance = static_cast<StickyEntrance>(stickyEntrance->currentData().toInt());
@@ -1853,6 +1940,19 @@ void SectionEditor::addRow(const QString &label, QWidget *field)
 	capFieldWidth(field);
 	form->addRow(label, field);
 	rowOwner.insert(field, form);
+}
+
+void SectionEditor::setRowLabel(QWidget *field, const QString &label)
+{
+	if (QWidget *shownAs = rowAlias.value(field))
+		field = shownAs;
+
+	QFormLayout *owner = rowOwner.value(field);
+	if (!owner)
+		return;
+
+	if (auto *text = qobject_cast<QLabel *>(owner->labelForField(field)))
+		text->setText(label);
 }
 
 void SectionEditor::setRowVisible(QWidget *field, bool visible)
@@ -2059,7 +2159,17 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool sectionLogo = hasLogos && !hasEntries;
 	const bool logoBesideText = sectionLogo && hasText;
 
+	const bool paragraph = type == SectionType::Paragraph;
+	const bool qrCode = type == SectionType::QrCode;
+	const bool stacks = sectionStacksLines(type);
+	const bool cards = sectionUsesCards(type);
+	const bool icons = sectionUsesIcons(type);
+
 	setRowVisible(textEdit, singleLineText);
+	/* Prose wants room to be read in; a heading or a caption is a line or two. */
+	textEdit->setMaximumHeight(paragraph ? 260 : 80);
+	setRowLabel(textEdit, moduleText(qrCode ? "Designer.QrCaption" : "Designer.Text"));
+	setRowVisible(qrTextEdit, qrCode);
 	/*
 	 * A heading's own subtitle. The list types stack one too, but theirs is the entry table's
 	 * second column, so the field belongs to the single-heading shapes alone.
@@ -2075,8 +2185,24 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 */
 	setRowVisible(logoLoop->parentWidget(), false);
 	setRowVisible(logoAnimatedShadow, false);
-	setRowVisible(logoSide, logoBesideText);
-	setRowVisible(logoGap, logoBesideText);
+	setRowVisible(logoSide, logoBesideText || icons);
+	/*
+	 * The gap between a picture and its words, whichever picture it is: a logo beside a heading, a
+	 * card's picture over its caption, an icon before its line, a code over its caption.
+	 */
+	setRowVisible(logoGap, logoBesideText || cards || icons || qrCode);
+	setRowLabel(logoGap, moduleText(cards    ? "Designer.CardGap"
+					: icons  ? "Designer.IconGap"
+					: qrCode ? "Designer.QrCaptionGap"
+						 : "Designer.LogoGap"));
+	setRowVisible(paragraphGap, paragraph);
+	setRowVisible(justifyText, paragraph);
+	setRowVisible(qrSize, qrCode);
+	setRowVisible(qrQuietZone, qrCode);
+	setRowVisible(qrErrorCorrection, qrCode);
+	setRowVisible(qrForeground, qrCode);
+	setRowVisible(qrBackground, qrCode);
+	setRowVisible(iconScale, icons);
 	const bool bridged = type == SectionType::Bridged;
 	/*
 	 * The fill the row will really be laid out with, not the one the combo happens to hold: an
@@ -2135,8 +2261,12 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * the subtitles off and on again returns the styles the user set rather than the defaults.
 	 */
 	const bool rowSubtitlesOn = bridged && rowSubtitles->isChecked();
-	rowSubtitleStyleGroup->setVisible(rowSubtitlesOn);
-	rowSecondarySubtitleStyleGroup->setVisible(rowSubtitlesOn);
+	/* A stack's third and fourth lines are drawn in the same two styles; see Section::rowSubtitleStyle. */
+	rowSubtitleStyleGroup->setVisible(rowSubtitlesOn || stacks);
+	rowSecondarySubtitleStyleGroup->setVisible(rowSubtitlesOn || stacks);
+	rowSubtitleStyleGroup->setTitle(moduleText(stacks ? "Designer.Line3Style" : "Designer.RowSubtitleStyle"));
+	rowSecondarySubtitleStyleGroup->setTitle(
+		moduleText(stacks ? "Designer.Line4Style" : "Designer.RowSecondarySubtitleStyle"));
 	const bool divider = type == SectionType::SectionDivider;
 	/*
 	 * A user's own SVG anywhere in the divider, which is what decides whether drawing files in the
@@ -2175,7 +2305,9 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	const bool hasSubtitles = sectionUsesSubtitles(type);
 	const bool stacksSubtitles = hasSubtitles || (bridged && rowSubtitles->isChecked());
 	setRowVisible(subtitleGap, stacksSubtitles);
-	setRowVisible(subtitleOrder, stacksSubtitles);
+	setRowLabel(subtitleGap, moduleText(stacks ? "Designer.LineGap" : "Designer.SubtitleGap"));
+	/* A stack's lines are drawn in the order they are typed; there is no pair to flip. */
+	setRowVisible(subtitleOrder, stacksSubtitles && !stacks);
 	setRowVisible(spacerHeight, type == SectionType::Spacer);
 
 	/*
@@ -2231,8 +2363,9 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * after the one being edited rather than after the Bridged section it was written for.
 	 */
 	secondaryGroup->setVisible(sectionUsesSecondaryText(type));
-	secondaryGroup->setTitle(hasSubtitles ? moduleText("Designer.SubtitleStyle")
-					      : moduleText("Designer.SecondaryStyle"));
+	secondaryGroup->setTitle(stacks         ? moduleText("Designer.Line2Style")
+				 : hasSubtitles ? moduleText("Designer.SubtitleStyle")
+						: moduleText("Designer.SecondaryStyle"));
 	/*
 	 * Both shapes that draw a bridge have one to ink separately -- except a custom file left in
 	 * the colors it was authored with, which is painted straight to the strip with nothing here
@@ -2326,6 +2459,25 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 		headers = {moduleText("Designer.Column.Logo"), moduleText("Designer.Column.Height")};
 		break;
 
+	case SectionType::StackedList:
+	case SectionType::MultiStackedList:
+		headers = {moduleText("Designer.Column.Line").arg(1), moduleText("Designer.Column.Line").arg(2),
+			   moduleText("Designer.Column.Line").arg(3), moduleText("Designer.Column.Line").arg(4)};
+		break;
+
+	case SectionType::CardList:
+	case SectionType::MultiCardList:
+		/* The picture first, as in a logo list, and the pair that captions it after. */
+		headers = {moduleText("Designer.Column.Picture"), moduleText("Designer.Column.Height"),
+			   moduleText("Designer.Column.EntryTitle"), moduleText("Designer.Column.Subtitle")};
+		break;
+
+	case SectionType::IconList:
+	case SectionType::MultiIconList:
+		/* No height: an icon is sized by the text it leads. */
+		headers = {moduleText("Designer.Column.Icon"), moduleText("Designer.Column.Text")};
+		break;
+
 	default:
 		headers = {moduleText("Designer.Column.Text")};
 		break;
@@ -2358,7 +2510,7 @@ void SectionEditor::rebuildEntryTable(SectionType type, bool rowSubtitles)
 	header->setSectionResizeMode(QHeaderView::Interactive);
 	header->setSectionResizeMode(logoEntries ? 0 : indentColumn - 1, QHeaderView::Stretch);
 
-	if (logoEntries)
+	if (logoEntries && !sectionUsesIcons(type))
 		entryTable->setColumnWidth(1, kEntryHeightColumnWidth);
 
 	entryTable->setColumnWidth(indentColumn, kEntryIndentColumnWidth);
@@ -2383,8 +2535,25 @@ void SectionEditor::writeEntriesToTable(const Section &source)
 		entryTable->setItem(row, entryTable->columnCount() - 1,
 				    new QTableWidgetItem(QString::number(entry.indent)));
 
+		if (logoMode && sectionUsesIcons(source.type)) {
+			entryTable->setItem(row, 1, new QTableWidgetItem(entry.text));
+			continue;
+		}
+
 		if (logoMode) {
 			entryTable->setItem(row, 1, new QTableWidgetItem(QString::number(entry.logo.maxHeight)));
+			if (sectionUsesCards(source.type)) {
+				entryTable->setItem(row, 2, new QTableWidgetItem(entry.text));
+				entryTable->setItem(row, 3, new QTableWidgetItem(entry.secondaryText));
+			}
+			continue;
+		}
+
+		/* A stack's four lines, in the order they are drawn. */
+		if (sectionStacksLines(source.type)) {
+			entryTable->setItem(row, 1, new QTableWidgetItem(entry.secondaryText));
+			entryTable->setItem(row, 2, new QTableWidgetItem(entry.subtitle));
+			entryTable->setItem(row, 3, new QTableWidgetItem(entry.secondarySubtitle));
 			continue;
 		}
 
@@ -2426,10 +2595,23 @@ void SectionEditor::readEntriesFromTable(Section *target) const
 
 		entry.indent = cell(entryTable->columnCount() - 1).toInt();
 
-		if (logoMode) {
+		if (logoMode && sectionUsesIcons(target->type)) {
+			/* The height an icon is drawn at comes from the text, so the stored one is left alone. */
+			entry.logo.path = cell(0);
+			entry.text = cell(1);
+		} else if (logoMode) {
 			entry.logo.path = cell(0);
 			const int height = cell(1).toInt();
 			entry.logo.maxHeight = height > 0 ? height : 96;
+			if (sectionUsesCards(target->type)) {
+				entry.text = cell(2);
+				entry.secondaryText = cell(3);
+			}
+		} else if (sectionStacksLines(target->type)) {
+			entry.text = cell(0);
+			entry.secondaryText = cell(1);
+			entry.subtitle = cell(2);
+			entry.secondarySubtitle = cell(3);
 		} else if (subtitleColumns) {
 			entry.text = cell(0);
 			entry.subtitle = cell(1);
@@ -2623,7 +2805,8 @@ void SectionEditor::browseForEntryLogo()
 	else
 		entryTable->setItem(row, 0, new QTableWidgetItem(path));
 
-	if (!entryTable->item(row, 1))
+	/* An icon list's second column is its text, which a picked file has no height to put in. */
+	if (!entryTable->item(row, 1) && !sectionUsesIcons(type))
 		entryTable->setItem(row, 1, new QTableWidgetItem(QStringLiteral("96")));
 
 	refreshLogoPlayback();
@@ -2694,7 +2877,11 @@ bool layoutDiffers(const Section &a, const Section &b)
 	       a.stickyEntrance != b.stickyEntrance || a.stickyFadeIn != b.stickyFadeIn ||
 	       a.stickyAnchor != b.stickyAnchor || pct(a.stickyCanvasPosition) != pct(b.stickyCanvasPosition) ||
 	       px(a.stickyOffset) != px(b.stickyOffset) || a.stickyHold != b.stickyHold ||
-	       a.stickyHoldForever != b.stickyHoldForever || a.stickyRelease != b.stickyRelease;
+	       a.stickyHoldForever != b.stickyHoldForever || a.stickyRelease != b.stickyRelease ||
+	       a.paragraphGap != b.paragraphGap || a.justifyText != b.justifyText || a.qrSize != b.qrSize ||
+	       a.qrQuietZone != b.qrQuietZone || a.qrErrorCorrection != b.qrErrorCorrection ||
+	       a.qrForeground != b.qrForeground || a.qrBackground != b.qrBackground ||
+	       pct(a.iconScale) != pct(b.iconScale);
 }
 
 bool styleDiffers(const Section &a, const Section &b)

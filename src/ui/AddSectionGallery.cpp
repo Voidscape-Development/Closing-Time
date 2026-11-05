@@ -68,7 +68,9 @@ const QVector<GalleryCategory> &galleryCategories()
 		{"Designer.Gallery.Headings", {SectionType::Title, SectionType::Header, SectionType::LogoTitle}},
 		{"Designer.Gallery.Lists",
 		 {SectionType::TextList, SectionType::Bridged, SectionType::MultiTextList,
-		  SectionType::TitleSubtitleList, SectionType::LogoList, SectionType::MultiLogoList}},
+		  SectionType::TitleSubtitleList, SectionType::LogoList, SectionType::MultiLogoList,
+		  SectionType::StackedList, SectionType::MultiCardList, SectionType::IconList}},
+		{"Designer.Gallery.TextAndCodes", {SectionType::Paragraph, SectionType::QrCode}},
 		{"Designer.Gallery.Other",
 		 {SectionType::SectionDivider, SectionType::Spacer, SectionType::StickyBlock, SectionType::Action}},
 	};
