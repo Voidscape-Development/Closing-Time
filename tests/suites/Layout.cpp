@@ -49,8 +49,8 @@ CT_SUITE(layout_every_type, "Measure/render agreement and containment, over ever
 	int sectionCount = 0;
 	int markerCount = 0;
 	visitSections(document.sections, [&sectionCount, &markerCount](const Section &section) {
-		/* An Action section is a marker rather than a box, and reports itself as one. */
-		if (section.visible && section.type == SectionType::Action)
+		/* An Action section or a Page Break is a marker rather than a box, and reports itself as one. */
+		if (section.visible && (section.type == SectionType::Action || section.type == SectionType::PageBreak))
 			++markerCount;
 		else if (section.visible)
 			++sectionCount;
@@ -82,8 +82,8 @@ CT_SUITE(layout_padding, "Padding and the section box, over every section type")
 		 * An Action section is the one type that has no box at all: it is a marker, and padding on
 		 * it would be room taken by a thing whose whole promise is that it takes none.
 		 */
-		if (type == SectionType::Action) {
-			checkEq(height, 0, "an action marker takes no height, padding or not");
+		if (type == SectionType::Action || type == SectionType::PageBreak) {
+			checkEq(height, 0, "a marker takes no height, padding or not");
 			checkEq(boxesOf(document, LayoutBox::Kind::Section).size(), 0, "and reports no section box");
 			continue;
 		}

@@ -266,6 +266,20 @@ lead-out padding, start behavior, looping, and the ending action.
 - Per-source hotkeys for **start/resume**, **pause**, and **restart**.
 - Optional looping, which wraps seamlessly.
 - Lead-in and lead-out padding so the roll eases on and fully clears the frame.
+- **Fit to a length**: give the roll a running time (say 1:30, to match the music) instead of a
+  speed, and the scroll speed is worked out so it finishes exactly then. Cards' holds and fades are
+  counted; the start delay comes before it; a loop is fitted one pass at a time. If the time can't be
+  met — the cards' own holds already take longer — the roll plays as close as it can and the
+  designer says so.
+- **Edge fade**: fade the roll out over a set number of pixels at the top and bottom of the frame
+  instead of cutting it off there. A sticky card fades with the roll while it travels and stays at
+  full strength once it is pinned.
+- **Pages**: play the roll as pages instead of scrolling it. The roll is cut into pages that fit the
+  frame (between a top and bottom margin), with a **Page Break** section to start a new page by hand;
+  each page holds for a set time and gives way to the next by a cut, a fade through empty, a
+  crossfade, or a slide up. Pages sit at the top, middle or bottom of the frame. Fit to a length works
+  here too, by setting the hold. Action sections fire as their page comes in, cards are shown in place
+  on their page, and looping goes back to page one. The designer marks where each page starts.
 - Driven over **obs-websocket** too, when it is installed: the vendor `closing-time` takes
   `Start`, `Pause`, `Resume`, `Restart` and `GetState` requests with a `sourceName`, and emits a
   `RollFinished` event — so a Stream Deck or a show-control system can run the roll and know when it

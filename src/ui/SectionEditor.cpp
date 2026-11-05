@@ -177,9 +177,9 @@ QString bridgeTypeText(BridgeType type)
 const QVector<SectionType> &baseSectionTypes()
 {
 	static const QVector<SectionType> types = {
-		SectionType::Title,       SectionType::Header, SectionType::TextList, SectionType::Bridged,
-		SectionType::Paragraph,   SectionType::QrCode, SectionType::Spacer,   SectionType::SectionDivider,
-		SectionType::StickyBlock, SectionType::Action,
+		SectionType::Title,       SectionType::Header, SectionType::TextList,  SectionType::Bridged,
+		SectionType::Paragraph,   SectionType::QrCode, SectionType::Spacer,    SectionType::SectionDivider,
+		SectionType::StickyBlock, SectionType::Action, SectionType::PageBreak,
 	};
 	return types;
 }
@@ -2524,9 +2524,9 @@ void SectionEditor::applyTypeVisibility(SectionType type)
 	 * An Action section is a marker with no size at all, so nothing about a box -- its width, its
 	 * margins, its padding -- has anything to act on.
 	 */
-	const bool marker = type == SectionType::Action;
-	setRowVisible(actionLine, marker);
-	actionsGroup->setVisible(marker);
+	const bool marker = type == SectionType::Action || type == SectionType::PageBreak;
+	setRowVisible(actionLine, type == SectionType::Action);
+	actionsGroup->setVisible(type == SectionType::Action);
 
 	const bool placeable = type != SectionType::StickyBlock && !marker;
 	/* A spacer draws nothing, so there is nothing of it to nudge sideways. */

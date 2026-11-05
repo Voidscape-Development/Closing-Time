@@ -1981,11 +1981,12 @@ int layoutSection(QPainter *painter, const Section &section, const Document &doc
 	 * An Action section is a marker and nothing else: no height, no padding, no panel, no picture.
 	 * Reported before anything below can measure it, so that it cannot take up room by accident.
 	 */
-	if (section.type == SectionType::Action) {
+	if (section.type == SectionType::Action || section.type == SectionType::PageBreak) {
+		/* A page break is a marker too: drawn by the overlay as a line, and read by the pages timeline. */
 		if (boxes && boxes->boxes)
 			boxes->boxes->append(
 				LayoutBox{LayoutBox::Kind::Action, boxes->section, QRectF(0, top, document.width, 0)});
-		if (cues)
+		if (cues && section.type == SectionType::Action)
 			cues->add(section, top);
 		return 0;
 	}
@@ -3548,8 +3549,12 @@ TimelineInputs RollLayout::timelineInputs() const
 	in.canvasHeight = std::max(1, document->height);
 	in.stripHeight = height;
 	in.leadOut = document->leadOut;
-	in.scrollSpeed = document->scrollSpeed;
-	in.loop = document->loop;
+	applyPlayback(&in, *document);
+
+	in.spans.reserve(spans.size());
+	for (const RollSpan &span : spans)
+		in.spans.append(
+			TimelineSpan{static_cast<double>(span.top), static_cast<double>(span.height), span.pageBreak});
 
 	in.blocks.reserve(blocks.size());
 	for (const StickyBlockPlacement &placement : blocks) {
@@ -3655,6 +3660,14 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 		return layout;
 	}
 
+	/* What a roll played as pages is cut from: every section's extent, and where the breaks are. */
+	for (const PlacedSection &entry : placed) {
+		if (entry.section->type == SectionType::PageBreak)
+			layout->spans.append(RollSpan{entry.top, 0, true});
+		else if (entry.height > 0)
+			layout->spans.append(RollSpan{entry.top, entry.height, false});
+	}
+
 	const QByteArray context = documentFingerprint(document);
 	layout->context = context;
 
@@ -3720,7 +3733,8 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 		 * Action section draws nothing anywhere, and a picture of nothing is still a picture to
 		 * rasterize, cache and upload.
 		 */
-		if (entry.section->type == SectionType::StickyBlock || entry.section->type == SectionType::Action)
+		if (entry.section->type == SectionType::StickyBlock || entry.section->type == SectionType::Action ||
+		    entry.section->type == SectionType::PageBreak)
 			continue;
 
 		const int margin = pictureMargin(document, *entry.section);

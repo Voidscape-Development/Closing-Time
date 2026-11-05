@@ -126,6 +126,8 @@ SectionFamily sectionFamily(SectionType type)
 		return SectionFamily::Sticky;
 	case SectionType::Action:
 		return SectionFamily::Action;
+	case SectionType::PageBreak:
+		return SectionFamily::PageBreak;
 	default:
 		return SectionFamily::Heading;
 	}
@@ -155,6 +157,8 @@ QColor familyTileColor(SectionFamily family)
 		return QColor(70, 96, 70);
 	case SectionFamily::QrCode:
 		return QColor(56, 60, 70);
+	case SectionFamily::PageBreak:
+		return QColor(140, 92, 30);
 	}
 	return QColor(84, 90, 104);
 }
@@ -182,6 +186,8 @@ QColor familyMarkColor(SectionFamily family)
 		return QColor(214, 240, 210);
 	case SectionFamily::QrCode:
 		return QColor(240, 242, 248);
+	case SectionFamily::PageBreak:
+		return QColor(255, 214, 160);
 	}
 	return Qt::white;
 }
@@ -296,6 +302,20 @@ void paintTypeBadge(QPainter &painter, const QRectF &rect, SectionType type)
 		hline(0.65, 0.0, 1.0);
 		hline(0.95, 0.0, 0.55);
 		break;
+	case SectionFamily::PageBreak: {
+		/* Two pages, one over the other, with a dashed break between them. */
+		painter.setBrush(Qt::NoBrush);
+		QPen thin = pen;
+		thin.setWidthF(pen.widthF() * 0.8);
+		painter.setPen(thin);
+		painter.drawRect(QRectF(box.left() + w * 0.15, box.top(), w * 0.7, h * 0.36));
+		painter.drawRect(QRectF(box.left() + w * 0.15, box.bottom() - h * 0.36, w * 0.7, h * 0.36));
+		QPen dashed = thin;
+		dashed.setStyle(Qt::DashLine);
+		painter.setPen(dashed);
+		hline(0.5, 0.0, 1.0);
+		break;
+	}
 	case SectionFamily::QrCode: {
 		/* Three finder squares and a scatter of modules. */
 		painter.setBrush(Qt::NoBrush);
@@ -489,6 +509,18 @@ void paintTypeThumbnail(QPainter &painter, const QRectF &rect, SectionType type)
 		painter.setPen(Qt::NoPen);
 		bar(cy, w * 0.26, 2.5, ink);
 		break;
+	case SectionFamily::PageBreak: {
+		/* The end of one page and the start of the next, cut between them. */
+		painter.setBrush(soft);
+		painter.drawRoundedRect(QRectF(cx - w * 0.2, rect.top() + h * 0.18, w * 0.4, 2), 1, 1);
+		painter.drawRoundedRect(QRectF(cx - w * 0.2, rect.bottom() - h * 0.18 - 2, w * 0.4, 2), 1, 1);
+		QPen cut(QColor(255, 180, 90), 1.2);
+		cut.setStyle(Qt::DashLine);
+		painter.setPen(cut);
+		painter.drawLine(QPointF(rect.left() + w * 0.1, cy), QPointF(rect.right() - w * 0.1, cy));
+		painter.setPen(Qt::NoPen);
+		break;
+	}
 	case SectionFamily::Paragraph:
 		for (int i = 0; i < 4; ++i) {
 			const qreal y = rect.top() + h * (0.24 + i * 0.17);

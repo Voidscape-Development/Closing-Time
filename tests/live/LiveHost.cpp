@@ -70,6 +70,15 @@ int XCloseDisplay(Display *);
 #include <thread>
 #include <vector>
 
+/*
+ * The preview widget looks its hints up with obs_module_text, which a module gets from the locale
+ * macros and a host does not have. The key itself is a fine stand-in for a string nobody reads here.
+ */
+extern "C" const char *obs_module_text(const char *key)
+{
+	return key;
+}
+
 static int failures = 0;
 static int checks = 0;
 static void check(bool ok, const char *what)
@@ -559,6 +568,135 @@ int main(int argc, char **argv)
 		std::printf("     %d bright pixels, %d disagree\n", bright, disagree);
 		check(bright > 500 && disagree * 50 < bright,
 		      "the GPU puts every picture where QPainter does, to within the edges' blending");
+	}
+
+	/*
+	 * The edge fade, drawn by the shader. Same parked frame, with the roll faded over a third of the
+	 * frame at each edge: a row of white type in the fade comes out at the fade's strength -- which
+	 * the GPU applies in linear light, so on screen it is that strength encoded to sRGB -- and a row
+	 * in the middle comes out as it did.
+	 */
+	{
+		document.edgeFadeTop = H / 3;
+		document.edgeFadeBottom = H / 3;
+		OBSDataAutoRelease edited = obs_data_create();
+		document.save(edited);
+		obs_source_update(source, edited);
+		sleepMs(300);
+		const QImage faded = renderSource(source, W, H);
+		saveArtifact("parked-gpu-faded", faded);
+
+		ComposeView view;
+		view.fadeTop = document.edgeFadeTop;
+		view.fadeBottom = document.edgeFadeBottom;
+		view.fadeEdgeTop = 0.0;
+		view.fadeEdgeBottom = H;
+
+		const auto rowPeak = [](const QImage &image, int y) {
+			int peak = 0;
+			for (int x = 0; x < image.width(); ++x)
+				peak = std::max(peak, qRed(image.pixel(x, y)));
+			return peak;
+		};
+		const auto encode = [](double linear) {
+			return linear <= 0.0031308 ? linear * 12.92 : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055;
+		};
+
+		int compared = 0;
+		int wrong = 0;
+		int middleWrong = 0;
+		for (int y = 0; y < H; ++y) {
+			if (rowPeak(parkedA, y) < 250)
+				continue;
+			const double fade = edgeFadeAt(view, y + 0.5);
+			const int expected = qRound(255.0 * encode(fade));
+			const int got = rowPeak(faded, y);
+			++compared;
+			if (std::abs(got - expected) > 16)
+				++wrong;
+			if (fade >= 1.0 && got != rowPeak(parkedA, y))
+				++middleWrong;
+		}
+		std::printf("     %d rows of solid type compared, %d off the fade, %d changed outside it\n", compared,
+			    wrong, middleWrong);
+		check(compared > 20 && wrong * 10 <= compared, "the GPU fades the roll at the edges by edgeFadeAt");
+		check(middleWrong == 0, "and leaves it untouched between the fades");
+
+		document.edgeFadeTop = 0;
+		document.edgeFadeBottom = 0;
+		OBSDataAutoRelease restored = obs_data_create();
+		document.save(restored);
+		obs_source_update(source, restored);
+		sleepMs(300);
+	}
+
+	/*
+	 * Played as pages: the same parked roll shows one page, where the designer's compositor puts it,
+	 * and nothing laid out again for it -- the mode is a playback setting.
+	 */
+	{
+		document.playbackMode = PlaybackMode::Pages;
+		document.pageTransition = PageTransition::Cut;
+		OBSDataAutoRelease edited = obs_data_create();
+		document.save(edited);
+		obs_source_update(source, edited);
+		sleepMs(400);
+		const QImage paged = renderSource(source, W, H);
+		saveArtifact("parked-gpu-pages", paged);
+
+		LogoCache stills;
+		AnimatedLogoCache moving;
+		const RollRenderer renderer(&stills, &moving);
+		const RollLayoutPtr layout = renderer.layout(document);
+		const RollTimeline timeline(layout->timelineInputs());
+		const RollFrame frame = timeline.evaluateScrubbed((H + layout->height) * 0.40);
+		const DrawList list = composeFrame(*layout, frame, ComposeView::canvas(frame, H));
+
+		QImage expected(W, H, QImage::Format_ARGB32_Premultiplied);
+		expected.fill(Qt::black);
+		{
+			QPainter painter(&expected);
+			paintDrawList(painter, list, [&](const DrawSource &item) {
+				return item.kind == DrawSource::Kind::Chunk
+					       ? renderer.rasterize(*layout, item.layer, item.chunk)
+					       : logoImage(*layout, item);
+			});
+		}
+
+		/* Bright within a pixel, as in the scrolling comparison: linear light lands an edge brighter. */
+		const auto brightNear = [](const QImage &image, int x, int y) {
+			for (int dy = -1; dy <= 1; ++dy)
+				for (int dx = -1; dx <= 1; ++dx) {
+					const int px = x + dx;
+					const int py = y + dy;
+					if (px >= 0 && py >= 0 && px < image.width() && py < image.height() &&
+					    qRed(image.pixel(px, py)) > 160)
+						return true;
+				}
+			return false;
+		};
+
+		int bright = 0;
+		int disagree = 0;
+		for (int y = 0; y < H; ++y) {
+			for (int x = 0; x < W; ++x) {
+				const bool gpu = qRed(paged.pixel(x, y)) > 160;
+				const bool reference = qRed(expected.pixel(x, y)) > 160;
+				bright += reference;
+				if ((gpu && !brightNear(expected, x, y)) || (reference && !brightNear(paged, x, y)))
+					++disagree;
+			}
+		}
+		std::printf("     %d pages; %d bright pixels, %d disagree\n", static_cast<int>(timeline.pages().size()),
+			    bright, disagree);
+		check(frame.pages.size() == 1 && bright > 500, "a roll played as pages shows one page when parked");
+		check(disagree * 50 < bright, "and the GPU draws it where the designer does");
+
+		document.playbackMode = PlaybackMode::Scroll;
+		OBSDataAutoRelease restored = obs_data_create();
+		document.save(restored);
+		obs_source_update(source, restored);
+		sleepMs(300);
 	}
 
 	std::printf("\n-- a long roll, fast\n");

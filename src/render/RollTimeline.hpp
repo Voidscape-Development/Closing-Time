@@ -85,6 +85,13 @@ struct TimelineCue {
 	double line = 0.0;
 };
 
+/* One top-level section's extent in the strip, or a Page Break: what pages are cut from. */
+struct TimelineSpan {
+	double top = 0.0;
+	double height = 0.0;
+	bool pageBreak = false;
+};
+
 struct TimelineInputs {
 	int canvasHeight = 1080;
 	int stripHeight = 0;
@@ -94,6 +101,36 @@ struct TimelineInputs {
 	QVector<TimelineBlock> blocks;
 	QVector<TimelineLogo> logos;
 	QVector<TimelineCue> cues;
+
+	PlaybackMode mode = PlaybackMode::Scroll;
+	/* Play the roll in this many seconds rather than at `scrollSpeed` or `pageHold`; 0 is off. */
+	double fitSeconds = 0.0;
+
+	/* Played as pages. See Document::pageHold and the settings beside it. */
+	QVector<TimelineSpan> spans;
+	double pageHold = 4.0;
+	PageTransition pageTransition = PageTransition::Fade;
+	double pageTransitionTime = 0.6;
+	/* Where a page that does not fill the frame sits in what the margins leave: 0 top, 1 bottom. */
+	double pageAnchor = 0.5;
+	int pageMargin = 48;
+};
+
+/*
+ * Copies the document's playback settings -- speed, looping, the mode, the fit, the page settings --
+ * onto timeline inputs built from a layout. They are playback settings: changing one lays nothing
+ * out again, so they are taken from the document as it is now rather than as it was laid out.
+ */
+void applyPlayback(TimelineInputs *inputs, const Document &document);
+
+/* One page of a roll played as pages, as it is drawn at one moment. */
+struct PageFrame {
+	/* The page's extent in the strip. Everything laid out in it, and only that, is drawn. */
+	double top = 0.0;
+	double bottom = 0.0;
+	/* Where the strip's top edge lands in canvas space for this page, so its content lands where it should. */
+	double stripTop = 0.0;
+	double alpha = 1.0;
 };
 
 /* One sticky block at one moment. */
@@ -106,6 +143,12 @@ struct BlockFrame {
 	double alpha = 1.0;
 	/* Set once the block has been let go and is climbing off. */
 	bool released = false;
+	/*
+	 * Set while the block stands apart from the roll: pinned, or fading up where it will pin. A block
+	 * on its way up with the roll or climbing off after it is part of the roll's movement, and is
+	 * drawn the way the roll is -- edge fade and all.
+	 */
+	bool held = false;
 };
 
 /* Everything that moves, at one moment. */
@@ -119,6 +162,13 @@ struct RollFrame {
 	bool finished = false;
 	/* Which pass of a looping roll this moment is in; 0 for a roll that does not loop. */
 	int pass = 0;
+
+	/*
+	 * Set for a roll played as pages, whose frame is the pages on show rather than a strip at an
+	 * offset: `offset` is then meaningless, and sticky blocks are drawn in their slots on their page.
+	 */
+	bool paged = false;
+	QVector<PageFrame> pages;
 };
 
 /*
@@ -155,6 +205,32 @@ public:
 
 	/* The frame at roll time `t`. */
 	RollFrame evaluate(double t) const;
+
+	bool paged() const { return in.mode == PlaybackMode::Pages; }
+
+	/* The scroll speed really played at: the document's, or the one a fit worked out. */
+	double speedUsed() const { return speed; }
+	/* How long each page really holds: the document's, or what a fit worked out. */
+	double pageHoldUsed() const { return hold; }
+	/* False when a fit was asked for and could not be met; the roll then plays as near to it as it can. */
+	bool fitMet() const { return fitReached; }
+
+	/* One page's extent and schedule, for the designer and the harness. */
+	struct Page {
+		double top = 0.0;
+		double bottom = 0.0;
+		/* Where the page's top edge rests on the frame while it holds. */
+		double rest = 0.0;
+		double enter = 0.0;
+		double holdStart = 0.0;
+		double holdEnd = 0.0;
+		double exit = 0.0;
+		/* Slide only: how far the page travels coming in, and going out. */
+		double enterDistance = 0.0;
+		double exitDistance = 0.0;
+	};
+
+	const QVector<Page> &pages() const { return pageList; }
 
 	/*
 	 * The frame for a roll parked at `offset` under manual scroll.
@@ -207,8 +283,16 @@ public:
 	 */
 	CueSweep sweep(const QVector<double> &times, double from, double to) const;
 
+	/* The longest a fitted roll is allowed to scroll, in pixels a second. */
+	static constexpr double kMaxFitSpeed = 5000.0;
+	static constexpr double kMinFitSpeed = 1.0;
+
 private:
 	void simulate();
+	void fitSpeed();
+	void buildPages();
+	PageFrame pageAt(int index, double t) const;
+	int pageHolding(double stripY) const;
 	double stripOffsetAt(double t) const;
 	double blockTopAt(int index, double t) const;
 	BlockFrame blockAt(int index, double t) const;
@@ -217,6 +301,9 @@ private:
 
 	TimelineInputs in;
 	double speed = 0.0;
+	double hold = 0.0;
+	bool fitReached = true;
+	QVector<Page> pageList;
 	double travel = kNever;
 	double finish = kNever;
 	QVector<BlockSchedule> schedule;

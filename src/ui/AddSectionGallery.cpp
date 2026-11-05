@@ -72,7 +72,8 @@ const QVector<GalleryCategory> &galleryCategories()
 		  SectionType::StackedList, SectionType::MultiCardList, SectionType::IconList}},
 		{"Designer.Gallery.TextAndCodes", {SectionType::Paragraph, SectionType::QrCode}},
 		{"Designer.Gallery.Other",
-		 {SectionType::SectionDivider, SectionType::Spacer, SectionType::StickyBlock, SectionType::Action}},
+		 {SectionType::SectionDivider, SectionType::Spacer, SectionType::StickyBlock, SectionType::Action,
+		  SectionType::PageBreak}},
 	};
 	return categories;
 }

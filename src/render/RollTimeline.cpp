@@ -45,17 +45,63 @@ bool clearedFrame(const TimelineBlock &block, double top)
 
 } // namespace
 
+void applyPlayback(TimelineInputs *inputs, const Document &document)
+{
+	inputs->scrollSpeed = document.scrollSpeed;
+	inputs->loop = document.loop;
+	inputs->mode = document.playbackMode;
+	inputs->fitSeconds = document.fitDuration ? document.fitSeconds : 0.0;
+	inputs->pageHold = document.pageHold;
+	inputs->pageTransition = document.pageTransition;
+	inputs->pageTransitionTime = document.pageTransitionTime;
+	inputs->pageAnchor = stickyAnchorFraction(document.pageAnchor);
+	inputs->pageMargin = document.pageMargin;
+}
+
+namespace {
+
+/* Eases a transition in and out, so a slide starts and stops rather than lurching. */
+double ease(double p)
+{
+	p = std::clamp(p, 0.0, 1.0);
+	return p * p * (3.0 - 2.0 * p);
+}
+
+/*
+ * How long a roll at these inputs takes: until it is over, or -- for one that never is, a loop or a
+ * roll held open by a card that holds for ever -- one pass of it. What a fit is measured against.
+ */
+double fittableLength(const RollTimeline &timeline)
+{
+	const double finish = timeline.finishTime();
+	return std::isfinite(finish) ? finish : timeline.travelTime();
+}
+
+} // namespace
+
 RollTimeline::RollTimeline(const TimelineInputs &inputs) : in(inputs)
 {
 	in.canvasHeight = std::max(1, in.canvasHeight);
 	in.stripHeight = std::max(0, in.stripHeight);
 	in.leadOut = std::max(0, in.leadOut);
+	in.pageHold = std::max(0.0, in.pageHold);
+	in.pageTransitionTime = std::max(0.0, in.pageTransitionTime);
+	in.pageAnchor = std::clamp(in.pageAnchor, 0.0, 1.0);
+	in.pageMargin = std::max(0, in.pageMargin);
 
 	speed = in.scrollSpeed > 0.0 ? in.scrollSpeed : 0.0;
-	travel = speed > 0.0 ? (in.canvasHeight + in.stripHeight) / speed : kNever;
+	hold = in.pageHold;
 
 	schedule.resize(in.blocks.size());
-	simulate();
+
+	if (paged()) {
+		buildPages();
+	} else {
+		if (in.fitSeconds > 0.0)
+			fitSpeed();
+		travel = speed > 0.0 ? (in.canvasHeight + in.stripHeight) / speed : kNever;
+		simulate();
+	}
 
 	logoStarts.resize(in.logos.size());
 	for (int i = 0; i < in.logos.size(); ++i)
@@ -64,6 +110,195 @@ RollTimeline::RollTimeline(const TimelineInputs &inputs) : in(inputs)
 	cueTime.resize(in.cues.size());
 	for (int i = 0; i < in.cues.size(); ++i)
 		cueTime[i] = cueCrossing(i);
+}
+
+/*
+ * The scroll speed that plays the roll in `fitSeconds`.
+ *
+ * Found by bisection rather than worked out, because a roll is not a distance over a speed: a card's
+ * hold and its fade take the same time at any speed, a block waiting for the roll comes up when the
+ * roll has gone, and a release decides which of those ends it. What is true at every speed is that a
+ * faster roll is never longer, which is all bisection needs. Each step builds a timeline with no fit,
+ * which is a handful of events, so forty of them cost nothing worth measuring.
+ */
+void RollTimeline::fitSpeed()
+{
+	TimelineInputs probe = in;
+	probe.fitSeconds = 0.0;
+
+	const auto lengthAt = [&probe](double candidate) {
+		probe.scrollSpeed = candidate;
+		return fittableLength(RollTimeline(probe));
+	};
+
+	const double target = in.fitSeconds;
+	if (lengthAt(kMaxFitSpeed) > target) {
+		/* Even the fastest roll is too long: the cards' own holds take more than the time given. */
+		speed = kMaxFitSpeed;
+		fitReached = false;
+		return;
+	}
+	if (lengthAt(kMinFitSpeed) < target) {
+		/* A roll so short that even a crawl is over too soon. */
+		speed = kMinFitSpeed;
+		fitReached = false;
+		return;
+	}
+
+	/* On the logarithm of the speed, since the length goes roughly as its inverse. */
+	double low = std::log(kMinFitSpeed);
+	double high = std::log(kMaxFitSpeed);
+	for (int step = 0; step < 48; ++step) {
+		const double middle = (low + high) / 2.0;
+		if (lengthAt(std::exp(middle)) > target)
+			low = middle;
+		else
+			high = middle;
+	}
+	speed = std::exp(high);
+}
+
+/*
+ * Cuts the strip into pages and schedules them.
+ *
+ * A page is a run of whole sections that fits the frame between its margins. A new one starts at a
+ * Page Break, and when the next section would not fit; a section taller than the frame is a page of
+ * its own and is cut by the frame's edges, since there is nowhere else to put it. Nothing is laid out
+ * again for any of this -- a page is a range of the strip the layout already made.
+ *
+ * Each page comes in, holds and goes out. Under Fade a page goes all the way out before the next one
+ * comes in; under Crossfade and Slide the two happen together, so the frame is never empty between
+ * pages. A Slide moves both pages the same distance at once, far enough that the one leaving clears
+ * the top and the one arriving starts from below the bottom edge, so the two never overlap -- it is a
+ * scroll that stops at every page.
+ */
+void RollTimeline::buildPages()
+{
+	const double canvas = in.canvasHeight;
+	const double margin = std::min<double>(in.pageMargin, canvas / 2.0 - 1.0);
+	const double room = std::max(1.0, canvas - 2.0 * std::max(0.0, margin));
+
+	pageList.clear();
+	Page current;
+	bool open = false;
+	const auto close = [&] {
+		if (open)
+			pageList.append(current);
+		open = false;
+	};
+
+	for (const TimelineSpan &span : in.spans) {
+		if (span.pageBreak) {
+			close();
+			continue;
+		}
+
+		const double bottom = span.top + span.height;
+		if (open && bottom - current.top > room)
+			close();
+
+		if (!open) {
+			current = Page();
+			current.top = span.top;
+			open = true;
+		}
+		current.bottom = bottom;
+	}
+	close();
+
+	const int count = pageList.size();
+	const double fade = in.pageTransition == PageTransition::Cut ? 0.0 : in.pageTransitionTime;
+	const bool overlapping = in.pageTransition == PageTransition::Crossfade ||
+				 in.pageTransition == PageTransition::Slide;
+
+	/*
+	 * A fitted roll is fitted by its hold: the transitions are a look, and stretching them to fill
+	 * time would turn a crossfade into a slow dissolve nobody asked for.
+	 */
+	if (in.fitSeconds > 0.0 && count > 0) {
+		const double fitted = overlapping ? (in.fitSeconds - fade) / count - fade
+						  : in.fitSeconds / count - 2.0 * fade;
+		hold = std::max(0.0, fitted);
+		fitReached = fitted >= 0.0;
+	}
+
+	for (int i = 0; i < count; ++i) {
+		Page &page = pageList[i];
+		const double height = page.bottom - page.top;
+		page.rest = std::max(0.0, margin) + (room - height) * in.pageAnchor;
+
+		page.enter = overlapping ? i * (hold + fade) : i * (hold + 2.0 * fade);
+		page.holdStart = page.enter + fade;
+		page.holdEnd = page.holdStart + hold;
+		page.exit = page.holdEnd + fade;
+	}
+
+	/* The slide distances: shared by each pair, so the two pages move as one strip. */
+	for (int i = 0; i < count; ++i) {
+		Page &page = pageList[i];
+		if (i == 0)
+			page.enterDistance = canvas - page.rest;
+		if (i + 1 < count) {
+			Page &next = pageList[i + 1];
+			const double clearTop = page.rest + (page.bottom - page.top);
+			const double fromBelow = std::max(canvas, clearTop + std::max(0.0, margin)) - next.rest;
+			const double distance = std::max(clearTop, fromBelow);
+			page.exitDistance = distance;
+			next.enterDistance = distance;
+		} else {
+			page.exitDistance = page.rest + (page.bottom - page.top);
+		}
+	}
+
+	const double total = count > 0 ? pageList.last().exit : 0.0;
+	travel = total;
+	finish = in.loop ? kNever : total;
+
+	/* Nothing in a paged roll pins: a card is shown in its slot, on its page. */
+	for (BlockSchedule &times : schedule)
+		times = BlockSchedule();
+
+	logoStarts.resize(in.logos.size());
+	cueTime.resize(in.cues.size());
+}
+
+/* The page that shows strip row `stripY`: the one it is on, or the next one after it. -1 for none. */
+int RollTimeline::pageHolding(double stripY) const
+{
+	for (int i = 0; i < pageList.size(); ++i) {
+		if (stripY < pageList.at(i).bottom)
+			return i;
+	}
+	return -1;
+}
+
+PageFrame RollTimeline::pageAt(int index, double t) const
+{
+	const Page &page = pageList.at(index);
+	PageFrame frame;
+	frame.top = page.top;
+	frame.bottom = page.bottom;
+
+	double y = page.rest;
+	const double fade = page.holdStart - page.enter;
+	const bool slide = in.pageTransition == PageTransition::Slide;
+
+	if (t < page.holdStart && fade > 0.0) {
+		const double p = (t - page.enter) / fade;
+		if (slide)
+			y = page.rest + page.enterDistance * (1.0 - ease(p));
+		else
+			frame.alpha = std::clamp(p, 0.0, 1.0);
+	} else if (t >= page.holdEnd && fade > 0.0) {
+		const double p = (t - page.holdEnd) / fade;
+		if (slide)
+			y = page.rest - page.exitDistance * ease(p);
+		else
+			frame.alpha = std::clamp(1.0 - p, 0.0, 1.0);
+	}
+
+	frame.stripTop = y - page.top;
+	return frame;
 }
 
 double RollTimeline::stripOffsetAt(double t) const
@@ -338,6 +573,17 @@ double RollTimeline::logoStart(int index) const
 {
 	const TimelineLogo &logo = in.logos.at(index);
 
+	/* Played as pages, a logo set to start on entering starts as its page comes in. */
+	if (paged()) {
+		if (!logo.startOnEnter)
+			return 0.0;
+		double y = logo.top;
+		if (logo.block >= 0 && logo.block < in.blocks.size())
+			y += in.blocks.at(logo.block).slotTop;
+		const int page = pageHolding(y);
+		return page >= 0 ? pageList.at(page).enter : kNever;
+	}
+
 	if (logo.block >= 0 && logo.block < in.blocks.size()) {
 		const TimelineBlock &block = in.blocks.at(logo.block);
 		const BlockSchedule &times = schedule.at(logo.block);
@@ -378,6 +624,20 @@ double RollTimeline::logoStart(int index) const
 double RollTimeline::cueCrossing(int index) const
 {
 	const TimelineCue &cue = in.cues.at(index);
+
+	/*
+	 * Played as pages, a marker fires as its page starts to come in -- a marker between two pages
+	 * belongs to the one after it, which is where it was dropped to come before. Its line has nothing
+	 * to measure against: a page does not travel past it.
+	 */
+	if (paged()) {
+		double y = cue.top;
+		if (cue.block >= 0 && cue.block < in.blocks.size())
+			y += in.blocks.at(cue.block).slotTop;
+		const int page = pageHolding(y);
+		return page >= 0 ? pageList.at(page).enter : kNever;
+	}
+
 	if (speed <= 0.0)
 		return kNever;
 
@@ -422,6 +682,7 @@ BlockFrame RollTimeline::blockAt(int index, double t) const
 	frame.showing = true;
 	frame.top = blockTopAt(index, t);
 	frame.released = t >= times.release;
+	frame.held = !frame.released && (stickyEntranceWaitsForRoll(block.entrance) || t >= times.pin);
 
 	if (stickyEntranceWaitsForRoll(block.entrance) && t < times.pin && block.fadeIn > 0.0)
 		frame.alpha = std::clamp((t - times.enter) / block.fadeIn, 0.0, 1.0);
@@ -433,6 +694,30 @@ RollFrame RollTimeline::evaluate(double t) const
 {
 	RollFrame frame;
 	t = std::max(0.0, t);
+
+	if (paged()) {
+		frame.paged = true;
+		if (in.loop && travel > 0.0 && std::isfinite(travel)) {
+			frame.pass = static_cast<int>(std::floor(t / travel));
+			t -= frame.pass * travel;
+		}
+		frame.finished = !in.loop && t >= finish;
+
+		for (int i = 0; i < pageList.size(); ++i) {
+			const Page &page = pageList.at(i);
+			if (t >= page.enter && t < page.exit)
+				frame.pages.append(pageAt(i, t));
+		}
+
+		frame.logoElapsedMs.reserve(in.logos.size());
+		for (int i = 0; i < in.logos.size(); ++i) {
+			const double until = std::min(t, finish);
+			const double elapsed = std::max(0.0, until - logoStarts.at(i));
+			const double rate = std::clamp(in.logos.at(i).speed, kMinLogoSpeed, kMaxLogoSpeed);
+			frame.logoElapsedMs.append(std::isfinite(elapsed) ? elapsed * 1000.0 * rate : 0.0);
+		}
+		return frame;
+	}
 
 	/* A loop is the same pass over and over: every block and every animation starts again with it. */
 	if (in.loop && travel > 0.0 && travel != kNever) {
@@ -466,6 +751,20 @@ RollFrame RollTimeline::evaluate(double t) const
 
 RollFrame RollTimeline::evaluateScrubbed(double offset) const
 {
+	/*
+	 * Played as pages there is no position, only a moment: the share of the travel the scrub is at
+	 * is taken as the same share of the pages' running time, and never quite the end of it -- a scrub
+	 * to the far end shows the last page rather than the empty frame after it.
+	 */
+	if (paged()) {
+		const double share =
+			std::clamp(offset / std::max(1.0, double(in.canvasHeight + in.stripHeight)), 0.0, 1.0);
+		const double total = travel;
+		RollFrame frame = evaluate(std::min(share * total, std::max(0.0, total - 1e-6)));
+		frame.finished = false;
+		return frame;
+	}
+
 	RollFrame frame;
 	const int canvasHeight = in.canvasHeight;
 	frame.offset = std::clamp(offset, 0.0, static_cast<double>(canvasHeight + in.stripHeight));
@@ -484,6 +783,7 @@ RollFrame RollTimeline::evaluateScrubbed(double offset) const
 		BlockFrame &out = frame.blocks[i];
 		out.showing = true;
 		out.top = std::max(block.pinnedTop, stripTop + block.slotTop);
+		out.held = stripTop + block.slotTop <= block.pinnedTop;
 	}
 
 	/*
@@ -507,6 +807,7 @@ RollFrame RollTimeline::evaluateScrubbed(double offset) const
 		BlockFrame &out = frame.blocks[i];
 		out.showing = true;
 		out.top = block.pinnedTop;
+		out.held = true;
 	}
 
 	const double t = speed > 0.0 ? frame.offset / speed : 0.0;
@@ -567,7 +868,8 @@ CueSweep RollTimeline::sweep(const QVector<double> &times, double from, double t
 
 double RollTimeline::rebase(double t, const RollTimeline &next) const
 {
-	if (speed <= 0.0 || next.speed <= 0.0)
+	/* Pages have no position to keep; a change to them goes on from the same moment. */
+	if (paged() || next.paged() || speed <= 0.0 || next.speed <= 0.0)
 		return t;
 
 	if (in.loop && travel > 0.0 && travel != kNever)

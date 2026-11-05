@@ -385,8 +385,9 @@ CT_SUITE(background_slots_for_type, "Which panels a type has anything to sit beh
 	 * Action section, which has no height for a panel to be the size of.
 	 */
 	checkEq(backgroundSlotsFor(SectionType::Action).size(), 0, "an action marker offers no panel at all");
+	checkEq(backgroundSlotsFor(SectionType::PageBreak).size(), 0, "nor does a page break, which is a marker too");
 	for (const SectionType type : allSectionTypes()) {
-		if (type == SectionType::Action)
+		if (type == SectionType::Action || type == SectionType::PageBreak)
 			continue;
 		check(backgroundSlotsFor(type).contains(BackgroundSlot::Section),
 		      qPrintable(

@@ -71,6 +71,13 @@ struct DrawItem {
 	QRectF sourceRect;
 	/* Opacity, applied on top of the picture's own alpha. */
 	double alpha = 1.0;
+	/*
+	 * Faded out toward the view's top and bottom edges when the view asks for an edge fade: set for
+	 * everything in the roll, and for a sticky card while it moves with the roll -- coming up or
+	 * climbing off -- but not while it is held, when the roll runs behind it rather than it being part
+	 * of the roll.
+	 */
+	bool edgeFade = false;
 };
 
 using DrawList = QVector<DrawItem>;
@@ -100,9 +107,27 @@ struct ComposeView {
 	 */
 	double canvasHeight = 0.0;
 
+	/*
+	 * How far in from the top and bottom of the view the roll fades to nothing, in view pixels, and
+	 * where the view's edges are. Zero is a hard edge. Only drawn by whoever executes the list -- see
+	 * edgeFadeAt -- since a fade is a property of each pixel, not of each picture.
+	 */
+	double fadeTop = 0.0;
+	double fadeBottom = 0.0;
+	double fadeEdgeTop = 0.0;
+	double fadeEdgeBottom = 0.0;
+
+	bool fades() const { return fadeTop > 0.0 || fadeBottom > 0.0; }
+
 	/* The canvas at a moment: the strip where the timeline has it, cut at the canvas's edges. */
 	static ComposeView canvas(const RollFrame &frame, int canvasHeight);
 };
+
+/*
+ * How strongly the roll is drawn at view row `y`: 0 at the view's edges, rising to 1 over the fade's
+ * height, eased so the fade has no visible start. The GPU shader computes exactly this per pixel.
+ */
+double edgeFadeAt(const ComposeView &view, double y);
 
 /*
  * The draws that make up one view of the roll, back to front: every section's chunks in document
@@ -134,6 +159,14 @@ using DrawImageLookup = std::function<QImage(const DrawSource &)>;
  * skipped rather than failing the frame.
  */
 void paintDrawList(QPainter &painter, const DrawList &list, const DrawImageLookup &image, QPointF origin = {});
+
+/*
+ * The same, with the view's edge fade applied to every draw that takes one: those are painted into a
+ * buffer the size of `area` (in view pixels, before `origin`) and faded there, the rest straight on.
+ * Order is kept -- a card drawn after the roll is still drawn over it.
+ */
+void paintDrawListFaded(QPainter &painter, const DrawList &list, const DrawImageLookup &image, const ComposeView &view,
+			const QRect &area, QPointF origin = {});
 
 /* The image an animated-logo draw refers to, straight out of the layout. */
 QImage logoImage(const RollLayout &layout, const DrawSource &source);

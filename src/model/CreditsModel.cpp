@@ -109,6 +109,8 @@ const SectionTypeInfo kSectionTypes[] = {
 	{SectionType::StickyBlock, "sticky_block", "Sticky Ending Block", false, false, false, false, false},
 	/* A marker with no content at all: it is the actions it runs. */
 	{SectionType::Action, "action", "Action", false, false, false, false, false},
+	/* Another marker, read only by a roll played as pages. */
+	{SectionType::PageBreak, "page_break", "Page Break", false, false, false, false, false},
 };
 
 const SectionTypeInfo &sectionTypeInfo(SectionType type)
@@ -473,7 +475,7 @@ QVector<BackgroundSlot> backgroundSlotsFor(SectionType type)
 		return used;
 
 	/* An Action section has no height, so there is nothing for any panel to be the size of. */
-	if (type == SectionType::Action)
+	if (type == SectionType::Action || type == SectionType::PageBreak)
 		return {};
 
 	if (type == SectionType::SectionDivider)
@@ -634,6 +636,49 @@ SectionType composeSectionType(const SectionTypeSwitches &switches)
 	}
 
 	return switches.base;
+}
+
+const char *playbackModeId(PlaybackMode mode)
+{
+	return mode == PlaybackMode::Pages ? "pages" : "scroll";
+}
+
+PlaybackMode playbackModeFromId(const char *id, PlaybackMode fallback)
+{
+	if (!id)
+		return fallback;
+	if (strcmp(id, "pages") == 0)
+		return PlaybackMode::Pages;
+	if (strcmp(id, "scroll") == 0)
+		return PlaybackMode::Scroll;
+	return fallback;
+}
+
+const char *pageTransitionId(PageTransition transition)
+{
+	switch (transition) {
+	case PageTransition::Cut:
+		return "cut";
+	case PageTransition::Crossfade:
+		return "crossfade";
+	case PageTransition::Slide:
+		return "slide";
+	case PageTransition::Fade:
+	default:
+		return "fade";
+	}
+}
+
+PageTransition pageTransitionFromId(const char *id, PageTransition fallback)
+{
+	if (!id)
+		return fallback;
+	for (PageTransition transition :
+	     {PageTransition::Cut, PageTransition::Fade, PageTransition::Crossfade, PageTransition::Slide}) {
+		if (strcmp(id, pageTransitionId(transition)) == 0)
+			return transition;
+	}
+	return fallback;
 }
 
 const char *stickyAnchorId(StickyAnchor anchor)
@@ -1882,6 +1927,11 @@ Section Section::makeDefault(SectionType type)
 		section.paddingBottom = 0;
 		break;
 
+	case SectionType::PageBreak:
+		section.paddingTop = 0;
+		section.paddingBottom = 0;
+		break;
+
 	case SectionType::Action:
 		/*
 		 * No padding, though nothing would read it: the type is a marker, and a section that saved
@@ -2040,6 +2090,9 @@ QString Section::displayLabel() const
 			return QStringLiteral("%1: %2").arg(name, actions.front().summary());
 		return QStringLiteral("%1: %2 +%3").arg(name, actions.front().summary()).arg(actions.size() - 1);
 	}
+
+	case SectionType::PageBreak:
+		return QString::fromUtf8(sectionTypeName(type));
 
 	case SectionType::StickyBlock:
 		/*
@@ -2637,6 +2690,22 @@ Document Document::contentOnly() const
 	content.manualScroll = false;
 	content.scrollPosition = 0.0;
 	content.endingAction = EndingActionConfig();
+	/*
+	 * The playback mode, the fit, the edge fade and the page settings all decide when and where
+	 * pictures are shown, never what is in them: pages are cut from the strip as it is laid out, and
+	 * a fade is applied as the frame is drawn.
+	 */
+	const Document plain;
+	content.playbackMode = plain.playbackMode;
+	content.fitDuration = plain.fitDuration;
+	content.fitSeconds = plain.fitSeconds;
+	content.edgeFadeTop = plain.edgeFadeTop;
+	content.edgeFadeBottom = plain.edgeFadeBottom;
+	content.pageHold = plain.pageHold;
+	content.pageTransition = plain.pageTransition;
+	content.pageTransitionTime = plain.pageTransitionTime;
+	content.pageAnchor = plain.pageAnchor;
+	content.pageMargin = plain.pageMargin;
 
 	return content;
 }
@@ -2660,6 +2729,16 @@ void Document::save(obs_data_t *data) const
 	obs_data_set_double(data, "start_delay", startDelay);
 	obs_data_set_bool(data, "manual_scroll", manualScroll);
 	obs_data_set_double(data, "scroll_position", scrollPosition);
+	obs_data_set_string(data, "playback_mode", playbackModeId(playbackMode));
+	obs_data_set_bool(data, "fit_duration", fitDuration);
+	obs_data_set_double(data, "fit_seconds", fitSeconds);
+	obs_data_set_int(data, "edge_fade_top", edgeFadeTop);
+	obs_data_set_int(data, "edge_fade_bottom", edgeFadeBottom);
+	obs_data_set_double(data, "page_hold", pageHold);
+	obs_data_set_string(data, "page_transition", pageTransitionId(pageTransition));
+	obs_data_set_double(data, "page_transition_time", pageTransitionTime);
+	obs_data_set_string(data, "page_anchor", stickyAnchorId(pageAnchor));
+	obs_data_set_int(data, "page_margin", pageMargin);
 
 	endingAction.save(data);
 
@@ -2745,6 +2824,34 @@ void Document::load(obs_data_t *data, bool *migrated)
 		leadOut = 0;
 	if (startDelay < 0.0)
 		startDelay = 0.0;
+
+	/*
+	 * Every key below is absent from a roll written before it existed, which scrolled at its speed
+	 * with hard edges. Each is read the careful way, so a stored zero -- no fade, a cut with no time
+	 * to it, pages with no margin -- is kept rather than taken for the default.
+	 */
+	const auto number = [data](const char *key, double fallback) {
+		return obs_data_has_user_value(data, key) || obs_data_has_default_value(data, key)
+			       ? obs_data_get_double(data, key)
+			       : fallback;
+	};
+	const auto whole = [data](const char *key, int fallback) {
+		return obs_data_has_user_value(data, key) || obs_data_has_default_value(data, key)
+			       ? static_cast<int>(obs_data_get_int(data, key))
+			       : fallback;
+	};
+
+	playbackMode = playbackModeFromId(obs_data_get_string(data, "playback_mode"), PlaybackMode::Scroll);
+	fitDuration = obs_data_get_bool(data, "fit_duration");
+	/* Under a second is not a credit roll, and a day is a typo. */
+	fitSeconds = std::clamp(number("fit_seconds", 60.0), 1.0, 86400.0);
+	edgeFadeTop = std::clamp(whole("edge_fade_top", 0), 0, 4096);
+	edgeFadeBottom = std::clamp(whole("edge_fade_bottom", 0), 0, 4096);
+	pageHold = std::clamp(number("page_hold", 4.0), 0.0, 3600.0);
+	pageTransition = pageTransitionFromId(obs_data_get_string(data, "page_transition"), PageTransition::Fade);
+	pageTransitionTime = std::clamp(number("page_transition_time", 0.6), 0.0, 60.0);
+	pageAnchor = stickyAnchorFromId(obs_data_get_string(data, "page_anchor"), StickyAnchor::Center);
+	pageMargin = std::clamp(whole("page_margin", 48), 0, 4096);
 
 	endingAction.load(data);
 
@@ -2857,6 +2964,16 @@ void Document::defaults(obs_data_t *data)
 	obs_data_set_default_double(data, "start_delay", 0.0);
 	obs_data_set_default_bool(data, "manual_scroll", false);
 	obs_data_set_default_double(data, "scroll_position", 0.0);
+	obs_data_set_default_string(data, "playback_mode", "scroll");
+	obs_data_set_default_bool(data, "fit_duration", false);
+	obs_data_set_default_double(data, "fit_seconds", 60.0);
+	obs_data_set_default_int(data, "edge_fade_top", 0);
+	obs_data_set_default_int(data, "edge_fade_bottom", 0);
+	obs_data_set_default_double(data, "page_hold", 4.0);
+	obs_data_set_default_string(data, "page_transition", "fade");
+	obs_data_set_default_double(data, "page_transition_time", 0.6);
+	obs_data_set_default_string(data, "page_anchor", "center");
+	obs_data_set_default_int(data, "page_margin", 48);
 	obs_data_set_default_bool(data, "bundle_fonts", true);
 
 	EndingActionConfig::defaults(data);

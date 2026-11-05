@@ -103,6 +103,12 @@ enum class SectionType {
 	 * draws nothing; see `Section::actions`.
 	 */
 	Action,
+	/*
+	 * Where one page ends and the next begins, when the roll is played as pages rather than
+	 * scrolled (see `PlaybackMode`). Takes no room and draws nothing, and means nothing to a roll
+	 * that scrolls -- so a roll can be built once and played either way.
+	 */
+	PageBreak,
 };
 
 const char *sectionTypeId(SectionType type);
@@ -312,6 +318,36 @@ bool stickyReleaseEndsAtHold(StickyRelease release);
  * release either ends the roll at a moment of its own or leaves the ending to the rest of it.
  */
 bool stickyReleaseEndsAtExit(StickyRelease release);
+
+/*
+ * How the roll is played.
+ *
+ *   Scroll - the strip travels up the frame, as a credit roll does.
+ *   Pages  - the roll is cut into pages that each fill the frame, and each is shown, held and
+ *            replaced by the next. A page ends where the frame is full or at a Page Break section,
+ *            whichever comes first; see `Document::pageHold` and the settings beside it.
+ *
+ * The layout is the same either way. Pages are cut from the strip as it is laid out, so a roll is
+ * built once and played either way, and switching between the two lays nothing out again.
+ */
+enum class PlaybackMode { Scroll, Pages };
+
+const char *playbackModeId(PlaybackMode mode);
+PlaybackMode playbackModeFromId(const char *id, PlaybackMode fallback = PlaybackMode::Scroll);
+
+/*
+ * How one page gives way to the next.
+ *
+ *   Cut       - the next page is simply there.
+ *   Fade      - each page fades out to an empty frame and the next fades in from it.
+ *   Crossfade - the next page fades in over the last as it fades out.
+ *   Slide     - the pages travel up the frame, the next pushing the last off the top: a scroll that
+ *               stops at every page.
+ */
+enum class PageTransition { Cut, Fade, Crossfade, Slide };
+
+const char *pageTransitionId(PageTransition transition);
+PageTransition pageTransitionFromId(const char *id, PageTransition fallback = PageTransition::Fade);
 
 enum class HAlign { Left, Center, Right };
 
@@ -1436,6 +1472,43 @@ struct Document {
 
 	/* Scroll rate in pixels per second of the credits strip traveling upward. */
 	double scrollSpeed = 90.0;
+
+	/* Scrolled, or played as pages. See PlaybackMode. */
+	PlaybackMode playbackMode = PlaybackMode::Scroll;
+
+	/*
+	 * Play the roll in `fitSeconds` rather than at a speed: the scroll speed -- or, played as pages,
+	 * how long each page holds -- is worked out so the roll finishes exactly then. Credits are cut to
+	 * a piece of music far more often than to a number of pixels a second.
+	 *
+	 * What is fitted is the roll itself, from the moment it starts moving to the moment it is over:
+	 * the start delay comes before it, and a card's hold and fade are counted in it, since they are
+	 * part of how long the roll takes. A roll that never ends is fitted to one pass -- the strip's
+	 * travel for a loop or for a roll held open by a card that holds for ever. When the time cannot
+	 * be met -- the cards' own holds already take longer -- the roll plays as fast as it can.
+	 */
+	bool fitDuration = false;
+	double fitSeconds = 60.0;
+
+	/*
+	 * Fade the roll out over this many pixels at the top of the frame and in over this many at the
+	 * bottom, rather than cutting it off at the edges. Zero is a hard edge. Drawing only: nothing is
+	 * laid out or rasterized again for it. A sticky card fades with the roll while it travels with it,
+	 * and is left at full strength while it is held, since the roll then runs behind it.
+	 */
+	int edgeFadeTop = 0;
+	int edgeFadeBottom = 0;
+
+	/*
+	 * Played as pages: how long each page holds, how it gives way to the next and how long that
+	 * takes, where on the frame a page that does not fill it sits, and how much of the frame is kept
+	 * clear at the top and bottom -- which is also what decides how much fits on a page.
+	 */
+	double pageHold = 4.0;
+	PageTransition pageTransition = PageTransition::Fade;
+	double pageTransitionTime = 0.6;
+	StickyAnchor pageAnchor = StickyAnchor::Center;
+	int pageMargin = 48;
 
 	/*
 	 * Park the roll at `scrollPosition` instead of advancing it, so a position in the middle of

@@ -1651,7 +1651,8 @@ void DesignerDialog::fillRowItem(QListWidgetItem *item, const SectionPath &path,
 	item->setData(kTypeRole, static_cast<int>(section.type));
 	item->setData(kVisibleRole, section.visible);
 	item->setData(kDepthRole, path.parent >= 0 ? 1 : 0);
-	item->setData(kMarkerRole, section.type == SectionType::Spacer || section.type == SectionType::Action);
+	item->setData(kMarkerRole, section.type == SectionType::Spacer || section.type == SectionType::Action ||
+					   section.type == SectionType::PageBreak);
 	item->setData(kLabelRole, section.label);
 
 	/*
@@ -2548,6 +2549,24 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 		running = moduleText("Designer.Duration").arg(formatClock(timeline.finishTime()));
 	else
 		running = moduleText("Designer.DurationForever");
+
+	/*
+	 * A fitted roll says what the fit came to -- the speed it worked out, or each page's hold --
+	 * and says so plainly when the time asked for cannot be met, since the roll then runs long or
+	 * short of the music it was fitted to.
+	 */
+	if (rendered.fitDuration) {
+		const QString answer = timeline.paged()
+					       ? moduleText("Designer.FitHold").arg(timeline.pageHoldUsed(), 0, 'f', 1)
+					       : moduleText("Designer.FitSpeed").arg(qRound(timeline.speedUsed()));
+		running +=
+			QStringLiteral("  ·  ") +
+			(timeline.fitMet()
+				 ? answer
+				 : moduleText("Designer.FitMissed").arg(formatClock(rendered.fitSeconds)).arg(answer));
+	}
+	if (timeline.paged())
+		running += QStringLiteral("  ·  ") + moduleText("Designer.PageCount").arg(timeline.pages().size());
 
 	durationPill->setText(
 		QStringLiteral("%1  ·  %2")

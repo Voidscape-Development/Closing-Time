@@ -1845,6 +1845,19 @@ same reason: reporting it would send the user after a font nothing uses.
 
 ### Addressed since the first cut
 
+- Three playback features, all of them playback settings rather than content -- `contentOnly` blanks
+  them, so changing one lays nothing out again and the source rebuilds only its timeline.
+  *Fit to a length* bisects the scroll speed against the timeline itself (a faster roll is never
+  longer, which is all bisection needs, and holds and fades are fixed time a formula would get wrong);
+  played as pages it solves for the hold instead. *Edge fade* is a per-draw flag on the draw list and
+  a per-pixel ramp: the GPU shader computes it from each pixel's canvas row, and the designer paints
+  fading runs into a buffer and masks it with the same `edgeFadeAt`; a sticky card fades only while
+  it moves with the roll (`BlockFrame::held`). *Pages* are cut by the timeline from the layout's
+  section extents (`RollLayout::spans`) and Page Break markers, so the layout and every picture are
+  shared with the scrolling roll; the timeline schedules each page's entrance, hold and exit and
+  `composeFrame` draws each page's own layers at the page's position and opacity. The live harness
+  checks the GPU against the designer for both, row by row for the fade.
+
 - Five more kinds of section: a stacked list (up to four lines per entry, in four styles), image
   cards (a picture over a title/subtitle pair, with a row of pictures sharing a band so captions
   line up), an icon list (a picture sized to the capitals of its line), a paragraph (blank-line

@@ -61,7 +61,8 @@ enum class SectionFamily {
 	Sticky,
 	Action,
 	Paragraph,
-	QrCode
+	QrCode,
+	PageBreak,
 };
 
 SectionFamily sectionFamily(SectionType type);
