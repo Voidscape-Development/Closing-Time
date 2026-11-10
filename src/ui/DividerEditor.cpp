@@ -597,8 +597,7 @@ void DividerPalette::paintEvent(QPaintEvent *)
 		const Tile &tile = tiles.at(i);
 		const QRectF box = QRectF(tile.rect).adjusted(0.5, 0.5, -0.5, -0.5);
 		painter.setPen(palette().color(QPalette::Mid));
-		painter.setBrush(i == hovered ? subtleFill(palette())
-					      : palette().color(QPalette::Base));
+		painter.setBrush(i == hovered ? subtleFill(palette()) : palette().color(QPalette::Base));
 		painter.drawRoundedRect(box, 5, 5);
 		drawElement(&painter, tile.element, box.adjusted(5, 7, -5, -7), ink);
 	}

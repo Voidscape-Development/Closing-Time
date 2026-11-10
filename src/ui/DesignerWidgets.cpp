@@ -1256,7 +1256,9 @@ QColor subtleFill(const QPalette &palette, qreal strength)
 	const QColor base = palette.color(QPalette::Base);
 	const QColor text = palette.color(QPalette::Text);
 	const qreal t = std::clamp(strength, 0.0, 1.0);
-	const auto mix = [t](int from, int to) { return static_cast<int>(std::lround(from + (to - from) * t)); };
+	const auto mix = [t](int from, int to) {
+		return static_cast<int>(std::lround(from + (to - from) * t));
+	};
 	return QColor(mix(base.red(), text.red()), mix(base.green(), text.green()), mix(base.blue(), text.blue()));
 }
 
