@@ -197,7 +197,7 @@ public:
 			painter->drawRoundedRect(QRectF(row).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
 		} else if (hovered) {
 			painter->setPen(Qt::NoPen);
-			painter->setBrush(palette.color(QPalette::AlternateBase));
+			painter->setBrush(subtleFill(palette));
 			painter->drawRoundedRect(row, 5, 5);
 		}
 
@@ -710,7 +710,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	setAttribute(Qt::WA_DeleteOnClose);
 	resize(1280, 800);
 
-	setStyleSheet(designerStyleSheet());
+	setStyleSheet(designerStyleSheet(palette()));
 
 	auto *outer = new QVBoxLayout(this);
 	outer->setContentsMargins(8, 6, 8, 8);
@@ -1101,14 +1101,8 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 		filterEdit->selectAll();
 	});
 	addShortcut(QKeySequence::Save, this, Qt::WindowShortcut, [this] { applyChanges(); });
-	addShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), this, Qt::WindowShortcut, [this] {
-		applyChanges();
-		accept();
-	});
-	addShortcut(QKeySequence(Qt::CTRL | Qt::Key_Enter), this, Qt::WindowShortcut, [this] {
-		applyChanges();
-		accept();
-	});
+	addShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), this, Qt::WindowShortcut, [this] { applyAndClose(); });
+	addShortcut(QKeySequence(Qt::CTRL | Qt::Key_Enter), this, Qt::WindowShortcut, [this] { applyAndClose(); });
 	for (int tab = 0; tab < kEditorTabCount; ++tab) {
 		addShortcut(QKeySequence(Qt::CTRL | (Qt::Key_1 + tab)), this, Qt::WindowShortcut,
 			    [this, tab] { editor->showTab(static_cast<EditorTab>(tab)); });
@@ -1136,10 +1130,7 @@ DesignerDialog::DesignerDialog(obs_source_t *source, QWidget *parent) : QDialog(
 	connect(exportAction, &QAction::triggered, this, &DesignerDialog::exportJson);
 	connect(cancelButton, &QPushButton::clicked, this, &DesignerDialog::reject);
 	connect(applyButton, &QPushButton::clicked, this, &DesignerDialog::applyChanges);
-	connect(doneButton, &QPushButton::clicked, this, [this] {
-		applyChanges();
-		accept();
-	});
+	connect(doneButton, &QPushButton::clicked, this, &DesignerDialog::applyAndClose);
 
 	refreshTimer = new QTimer(this);
 	refreshTimer->setSingleShot(true);
@@ -1388,6 +1379,29 @@ void DesignerDialog::applyChanges()
 	writeToSource();
 }
 
+void DesignerDialog::applyAndClose()
+{
+	if (closing)
+		return;
+	closing = true;
+
+	/*
+	 * The window goes first and the save follows. Writing the roll back is the slow part of
+	 * closing -- the whole document, bundled font files included, is serialized and handed to the
+	 * source, which reads it all back in -- and done with the window still up it reads as Done
+	 * not having been heard. The section being edited is taken out of the form while the form
+	 * still exists, the window is hidden, and the write happens once the event loop has had the
+	 * chance to take it off the screen. Nothing is lost by the wait: the dialog is still alive
+	 * until `accept` and holds everything the write needs.
+	 */
+	commitCurrentSection();
+	hide();
+	QTimer::singleShot(0, this, [this] {
+		applyChanges();
+		QDialog::accept();
+	});
+}
+
 bool DesignerDialog::isDirty()
 {
 	commitCurrentSection();
@@ -1443,6 +1457,11 @@ void DesignerDialog::reject()
 	box.setEscapeButton(keep);
 	box.exec();
 
+	/*
+	 * Saved here and now rather than through applyAndClose: this can be the window's own close
+	 * button asking, and once a close has gone through, the dialog is deleted on the next turn of
+	 * the event loop -- a save deferred to that turn could be dropped with it.
+	 */
 	if (box.clickedButton() == save) {
 		applyChanges();
 		QDialog::accept();

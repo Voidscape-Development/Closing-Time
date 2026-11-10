@@ -59,6 +59,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "model/StyleLibrary.hpp"
 #include "render/AnimatedLogo.hpp"
 #include "render/RollRenderer.hpp"
+#include "ui/DesignerWidgets.hpp"
 #include "ui/StyleControls.hpp"
 #include "ui/ToolButtons.hpp"
 
@@ -596,7 +597,7 @@ void DividerPalette::paintEvent(QPaintEvent *)
 		const Tile &tile = tiles.at(i);
 		const QRectF box = QRectF(tile.rect).adjusted(0.5, 0.5, -0.5, -0.5);
 		painter.setPen(palette().color(QPalette::Mid));
-		painter.setBrush(i == hovered ? palette().color(QPalette::AlternateBase)
+		painter.setBrush(i == hovered ? subtleFill(palette())
 					      : palette().color(QPalette::Base));
 		painter.drawRoundedRect(box, 5, 5);
 		drawElement(&painter, tile.element, box.adjusted(5, 7, -5, -7), ink);
@@ -841,7 +842,7 @@ void DividerTrack::paintEvent(QPaintEvent *)
 	/* The lane drawn as a groove the chips sit in. */
 	const QRectF groove = QRectF(rect()).adjusted(1, 9, -1, -1);
 	painter.setPen(palette().color(QPalette::Mid));
-	painter.setBrush(palette().color(QPalette::AlternateBase));
+	painter.setBrush(subtleFill(palette(), 0.05));
 	painter.drawRoundedRect(groove, 7, 7);
 
 	if (elements.isEmpty()) {
