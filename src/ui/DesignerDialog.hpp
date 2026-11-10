@@ -260,6 +260,8 @@ private:
 	void markSaved();
 	/* Writes the roll to the source: commit, flush the library, write, mark saved. */
 	void applyChanges();
+	/* Done: applies and closes, taking the window off the screen before the save rather than after. */
+	void applyAndClose();
 
 	/* Plays the roll in the preview at its own speed, from wherever the scrubber is. */
 	void setPlaying(bool playing);
@@ -416,6 +418,8 @@ private:
 	/* The roll as it was last applied, which "unsaved changes" is measured against. */
 	DocumentSnapshot savedState;
 	bool dirty = false;
+	/* Set by applyAndClose, so a second Done (or Ctrl+Enter) while the save is pending is ignored. */
+	bool closing = false;
 
 	QVector<DocumentSnapshot> undoStack;
 	QVector<DocumentSnapshot> redoStack;

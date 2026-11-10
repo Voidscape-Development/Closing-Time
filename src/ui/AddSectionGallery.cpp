@@ -53,9 +53,9 @@ QString typeText(const char *prefix, SectionType type, const QString &fallback)
 	return text == key ? fallback : text;
 }
 
-constexpr int kTileColumns = 3;
-constexpr int kTileWidth = 168;
-constexpr int kThumbHeight = 38;
+constexpr int kTileColumns = 5;
+constexpr int kTileWidth = 156;
+constexpr int kThumbHeight = 32;
 
 struct GalleryCategory {
 	const char *titleKey;
@@ -131,7 +131,7 @@ void GalleryTile::paintEvent(QPaintEvent *)
 	QColor border = focused ? palette().color(QPalette::Highlight) : palette().color(QPalette::Mid);
 	QColor fill = palette().color(QPalette::Base);
 	if (hovered && !focused)
-		fill = palette().color(QPalette::AlternateBase);
+		fill = subtleFill(palette());
 
 	painter.setPen(QPen(border, focused ? 1.6 : 1.0));
 	painter.setBrush(fill);

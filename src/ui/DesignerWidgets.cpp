@@ -1251,19 +1251,34 @@ QString formatClock(double seconds)
 
 /* --- stylesheet ------------------------------------------------------------------------------- */
 
-QString designerStyleSheet()
+QColor subtleFill(const QPalette &palette, qreal strength)
 {
-	return QStringLiteral(R"(
+	const QColor base = palette.color(QPalette::Base);
+	const QColor text = palette.color(QPalette::Text);
+	const qreal t = std::clamp(strength, 0.0, 1.0);
+	const auto mix = [t](int from, int to) {
+		return static_cast<int>(std::lround(from + (to - from) * t));
+	};
+	return QColor(mix(base.red(), text.red()), mix(base.green(), text.green()), mix(base.blue(), text.blue()));
+}
+
+QString designerStyleSheet(const QPalette &palette)
+{
+	const QString hover = subtleFill(palette, 0.10).name();
+	const QString selected = subtleFill(palette, 0.18).name();
+
+	QString sheet = QStringLiteral(R"(
 QToolButton#designerChip {
 	border: 1px solid palette(mid);
 	border-radius: 11px;
 	padding: 3px 11px;
 	background: transparent;
 }
-QToolButton#designerChip:hover { background: palette(alternate-base); }
+QToolButton#designerChip:hover { background: @HOVER@; color: palette(text); }
 QToolButton#designerChip:checked {
 	border-color: palette(highlight);
 	background: rgba(90, 130, 240, 40);
+	color: palette(text);
 }
 QFrame#designerSegmented {
 	border: 1px solid palette(mid);
@@ -1276,10 +1291,11 @@ QToolButton#designerSegment {
 	padding: 3px 12px;
 	background: transparent;
 }
-QToolButton#designerSegment:hover { background: palette(alternate-base); }
+QToolButton#designerSegment:hover { background: @HOVER@; color: palette(text); }
 QToolButton#designerSegment:checked {
-	background: palette(button);
+	background: @SELECTED@;
 	border-color: palette(mid);
+	color: palette(text);
 }
 QLabel#designerPill {
 	border: 1px solid palette(mid);
@@ -1348,7 +1364,7 @@ QToolButton#designerAddSection {
 	background: rgba(90, 130, 240, 45);
 	font-weight: 600;
 }
-QToolButton#designerAddSection:hover { background: rgba(90, 130, 240, 70); }
+QToolButton#designerAddSection:hover { background: rgba(90, 130, 240, 70); color: palette(text); }
 QFrame#designerToast {
 	background: rgb(47, 51, 62);
 	border: 1px solid rgb(69, 74, 88);
@@ -1364,13 +1380,18 @@ QTabBar#designerEditorTabBar::tab {
 	padding: 4px 14px;
 	margin: 0px 2px 6px 0px;
 	background: transparent;
+	color: palette(text);
 }
-QTabBar#designerEditorTabBar::tab:hover:!selected { background: palette(alternate-base); }
+QTabBar#designerEditorTabBar::tab:hover:!selected { background: @HOVER@; color: palette(text); }
 QTabBar#designerEditorTabBar::tab:selected {
-	background: palette(button);
+	background: @SELECTED@;
 	border-color: palette(mid);
+	color: palette(text);
 }
 )");
+	sheet.replace(QStringLiteral("@HOVER@"), hover);
+	sheet.replace(QStringLiteral("@SELECTED@"), selected);
+	return sheet;
 }
 
 } // namespace closingtime

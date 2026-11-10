@@ -20,7 +20,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QAbstractButton>
 #include <QFrame>
+#include <QColor>
 #include <QIcon>
+#include <QPalette>
 #include <QPixmap>
 #include <QPointer>
 #include <QVariant>
@@ -301,10 +303,21 @@ private:
 QString formatClock(double seconds);
 
 /*
- * The designer's own stylesheet: chips, segmented controls, the toolbar's status pills and the
- * editor's tab strip. Built from palette roles rather than fixed colours so it sits inside whichever
- * OBS theme is running.
+ * The fill behind something the pointer is over: the field colour nudged toward the text colour,
+ * so it reads as "a little lighter" on a dark theme and "a little darker" on a light one. Not
+ * `AlternateBase`, which some OBS themes leave at Qt's near-white default -- a hover drawn in it
+ * turns a dark theme's button white under its own white text. `strength` is how far toward the
+ * text colour, 0 to 1; the selected state of a tab or segment uses a stronger one than a hover.
  */
-QString designerStyleSheet();
+QColor subtleFill(const QPalette &palette, qreal strength = 0.10);
+
+/*
+ * The designer's own stylesheet: chips, segmented controls, the toolbar's status pills and the
+ * editor's tab strip. Built from `palette`'s roles rather than fixed colours so it sits inside
+ * whichever OBS theme is running; hovers and selections are tints worked out from it with
+ * `subtleFill`, and every one of them names its text colour, so no theme can leave a label the
+ * same colour as what it sits on.
+ */
+QString designerStyleSheet(const QPalette &palette);
 
 } // namespace closingtime
