@@ -3184,7 +3184,7 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 				     QVector<AnimatedLogoPlacement> *animated = nullptr,
 				     QVector<StickyBlockPlacement> *sticky = nullptr,
 				     const std::function<bool()> *cancelled = nullptr, bool *abandoned = nullptr,
-				     QVector<ActionCuePlacement> *cues = nullptr)
+				     QVector<ActionCuePlacement> *cues = nullptr, bool *truncated = nullptr)
 {
 	QVector<PlacedSection> placed;
 	placed.reserve(document.sections.size());
@@ -3221,6 +3221,8 @@ QVector<PlacedSection> placeSections(const Document &document, const LogoSource 
 		if (y > kMaxStripHeight) {
 			obs_log(LOG_WARNING, "credit strip exceeded %d px; remaining sections were dropped",
 				kMaxStripHeight);
+			if (truncated)
+				*truncated = true;
 			break;
 		}
 	}
@@ -3464,9 +3466,11 @@ QImage LogoCache::get(const QString &path, int maxHeight)
 	const qint64 fileSize = info.size();
 	const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
 
-	const auto it = cache.constFind(key);
-	if (it != cache.constEnd() && it->fileSize == fileSize && it->modifiedMs == modifiedMs)
+	const auto it = cache.find(key);
+	if (it != cache.end() && it->fileSize == fileSize && it->modifiedMs == modifiedMs) {
+		it->lastUsed = generation;
 		return it->image;
+	}
 
 	QImageReader reader(path);
 	reader.setAutoTransform(true);
@@ -3481,13 +3485,24 @@ QImage LogoCache::get(const QString &path, int maxHeight)
 		image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 	}
 
-	cache.insert(key, CacheEntry{image, fileSize, modifiedMs});
+	cache.insert(key, CacheEntry{image, fileSize, modifiedMs, generation});
 	return image;
 }
 
 void LogoCache::clear()
 {
 	cache.clear();
+}
+
+void LogoCache::endGeneration()
+{
+	for (auto it = cache.begin(); it != cache.end();) {
+		if (it->lastUsed + 1 < generation)
+			it = cache.erase(it);
+		else
+			++it;
+	}
+	++generation;
 }
 
 void LogoCache::invalidate(const QString &path)
@@ -3648,7 +3663,7 @@ RollLayoutPtr RollRenderer::layout(const Document &input, bool boxes, const std:
 	const QVector<PlacedSection> placed = placeSections(document, art, &bridges, &dividers, &total,
 							    boxes ? &layout->boxes : nullptr, &layout->animatedLogos,
 							    &layout->blocks, cancelled ? &cancelled : nullptr,
-							    &abandoned, &layout->cues);
+							    &abandoned, &layout->cues, &layout->truncated);
 	if (abandoned)
 		return nullptr;
 

@@ -241,12 +241,24 @@ struct CreditsSourceData {
 	 */
 	gs_effect_t *effect = nullptr;
 	bool effectTried = false;
+	/* The shader's parameters, looked up by name once rather than six times a frame. */
+	gs_eparam_t *imageParam = nullptr;
+	gs_eparam_t *alphaParam = nullptr;
+	gs_eparam_t *fadeTopParam = nullptr;
+	gs_eparam_t *fadeBottomParam = nullptr;
+	gs_eparam_t *canvasHeightParam = nullptr;
+	gs_eparam_t *fadeOnParam = nullptr;
 
 	std::mutex stateMutex;
 	Phase phase = Phase::Idle;
 	/* Seconds of roll time: zero when the roll starts moving, standing still while it is paused. */
 	double rollTime = 0.0;
 	double delayRemaining = 0.0;
+	/*
+	 * The document's start delay, copied here by update(): a hotkey or a proc handler arms the roll
+	 * from a thread of its own, and the document is the graphics thread's to rewrite under it.
+	 */
+	double startDelay = 0.0;
 	bool paused = false;
 	/* Set once the roll has finished and said so; reset when it is armed again. */
 	bool finished = false;
@@ -395,6 +407,12 @@ void runRebuild(CreditsSourceData *data, const Document &document, const QString
 	 * `rebuildAgain` for the next tick to queue, rather than queued from here: queueing copies the
 	 * document, and the document belongs to the graphics thread.
 	 */
+	/* A finished layout has asked for every logo the roll uses now; what it did not ask for can go. */
+	if (layout) {
+		data->logos->endGeneration();
+		data->animations->endGeneration();
+	}
+
 	std::lock_guard<std::mutex> lock(data->handoffMutex);
 	if (layout) {
 		data->pendingLayout = std::move(layout);
@@ -680,6 +698,39 @@ void evict(CreditsSourceData *data)
 	}
 }
 
+/*
+ * The same, for a source nothing is drawing.
+ *
+ * video_render is where pictures are let go of, and a source in a scene nobody is in is ticked every
+ * frame and never rendered -- which is how a credit roll spends nearly all of a broadcast. Without
+ * this it would hold on to whatever it had the last time it was drawn, the lookahead of a roll that
+ * has since been reset included, until it is next shown. What its canvas shows now is still marked
+ * wanted every tick by planPictures, so that much stays and the frame it is next shown in has it.
+ *
+ * Graphics thread only; enters the graphics context itself, and only when there is something to
+ * release, so on every tick but the odd one it is a walk over a short table.
+ */
+void evictUnrendered(CreditsSourceData *data)
+{
+	const uint64_t now = obs_get_video_frame_time();
+	if (now - data->lastRendered <= kTextureGraceNs)
+		return;
+
+	const bool stale =
+		std::any_of(data->textures.cbegin(), data->textures.cend(),
+			    [now](const ChunkTexture &chunk) { return now - chunk.lastWanted > kTextureGraceNs; }) ||
+		std::any_of(data->ready.cbegin(), data->ready.cend(),
+			    [now](const CreditsSourceData::ReadyChunk &chunk) {
+				    return now - chunk.lastWanted > kTextureGraceNs;
+			    });
+	if (!stale)
+		return;
+
+	obs_enter_graphics();
+	evict(data);
+	obs_leave_graphics();
+}
+
 /* Graphics thread only; requires an active graphics context. */
 void releaseLogoTextures(CreditsSourceData *data)
 {
@@ -860,9 +911,8 @@ void armRollLocked(CreditsSourceData *data, double startDelay)
 
 void armRoll(CreditsSourceData *data)
 {
-	const double startDelay = data->document.startDelay;
 	std::lock_guard<std::mutex> lock(data->stateMutex);
-	armRollLocked(data, startDelay);
+	armRollLocked(data, data->startDelay);
 }
 
 void resetRoll(CreditsSourceData *data)
@@ -1137,8 +1187,9 @@ void update(void *raw, obs_data_t *settings)
 	 * and dragging the scrub slider does not re-arm the roll once per frame.
 	 */
 	std::lock_guard<std::mutex> lock(data->stateMutex);
+	data->startDelay = data->document.startDelay;
 	if (data->phase != Phase::Idle && contentChanged)
-		armRollLocked(data, data->document.startDelay);
+		armRollLocked(data, data->startDelay);
 }
 
 void *create(obs_data_t *settings, obs_source_t *source)
@@ -1164,7 +1215,7 @@ void *create(obs_data_t *settings, obs_source_t *source)
 			auto *self = static_cast<CreditsSourceData *>(param);
 			std::lock_guard<std::mutex> lock(self->stateMutex);
 			if (self->phase == Phase::Idle || self->finished)
-				armRollLocked(self, self->document.startDelay);
+				armRollLocked(self, self->startDelay);
 			else
 				self->paused = false;
 		},
@@ -1213,7 +1264,7 @@ void *create(obs_data_t *settings, obs_source_t *source)
 			auto *self = static_cast<CreditsSourceData *>(param);
 			std::unique_lock<std::mutex> lock(self->stateMutex);
 			if (self->phase == Phase::Idle || self->finished)
-				armRollLocked(self, self->document.startDelay);
+				armRollLocked(self, self->startDelay);
 			else
 				self->paused = false;
 		},
@@ -1378,8 +1429,17 @@ void videoTick(void *raw, float seconds)
 	if (!data->document.manualScroll)
 		advance(data, tickSeconds(seconds));
 
+	/*
+	 * Collected here as well as in video_render, because only a source something is showing is
+	 * rendered and every source is ticked: a picture drawn for a roll nobody is looking at has to
+	 * be taken off the pipeline's hands by somebody, or the plan below asks for it again every frame.
+	 */
+	receiveChunks(data);
+
 	/* After the clock has moved, so the plan is for the frame about to be drawn. */
 	planPictures(data);
+
+	evictUnrendered(data);
 }
 
 /* ------------------------------------------------------------------------- drawing */
@@ -1487,9 +1547,17 @@ gs_effect_t *rollEffect(CreditsSourceData *data)
 
 	char *errors = nullptr;
 	data->effect = gs_effect_create(kRollEffectSource, "closing-time-roll.effect", &errors);
-	if (!data->effect)
+	if (!data->effect) {
 		obs_log(LOG_ERROR, "could not compile the credit roll shader: %s",
 			errors ? errors : "no error reported");
+	} else {
+		data->imageParam = gs_effect_get_param_by_name(data->effect, "image");
+		data->alphaParam = gs_effect_get_param_by_name(data->effect, "alpha");
+		data->fadeTopParam = gs_effect_get_param_by_name(data->effect, "fade_top");
+		data->fadeBottomParam = gs_effect_get_param_by_name(data->effect, "fade_bottom");
+		data->canvasHeightParam = gs_effect_get_param_by_name(data->effect, "canvas_height");
+		data->fadeOnParam = gs_effect_get_param_by_name(data->effect, "fade_on");
+	}
 
 	bfree(errors);
 	return data->effect;
@@ -1653,16 +1721,25 @@ void videoRender(void *raw, gs_effect_t *)
 			uploadLogo(data, item.source);
 	}
 
-	if (!effect)
+	/*
+	 * The shader's own parameters were looked up when it compiled. The base effect is drawn from
+	 * only when it did not, and has an image and nothing else: no opacity and no fade.
+	 */
+	gs_eparam_t *imageParam = data->imageParam;
+	gs_eparam_t *const alphaParam = effect ? data->alphaParam : nullptr;
+	gs_eparam_t *const fadeOnParam = effect ? data->fadeOnParam : nullptr;
+	if (!effect) {
 		effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-	gs_eparam_t *imageParam = gs_effect_get_param_by_name(effect, "image");
-	gs_eparam_t *alphaParam = gs_effect_get_param_by_name(effect, "alpha");
-	/* All four are null with the base effect, which is drawn from only when the shader failed to compile. */
-	gs_eparam_t *fadeTopParam = gs_effect_get_param_by_name(effect, "fade_top");
-	gs_eparam_t *fadeBottomParam = gs_effect_get_param_by_name(effect, "fade_bottom");
-	gs_eparam_t *canvasHeightParam = gs_effect_get_param_by_name(effect, "canvas_height");
-	gs_eparam_t *fadeOnParam = gs_effect_get_param_by_name(effect, "fade_on");
+		imageParam = gs_effect_get_param_by_name(effect, "image");
+	}
 	const bool fades = data->document.edgeFadeTop > 0 || data->document.edgeFadeBottom > 0;
+
+	/* The same for every draw in the frame, so set once rather than once a picture. */
+	if (fadeOnParam) {
+		gs_effect_set_float(data->fadeTopParam, static_cast<float>(data->document.edgeFadeTop));
+		gs_effect_set_float(data->fadeBottomParam, static_cast<float>(data->document.edgeFadeBottom));
+		gs_effect_set_float(data->canvasHeightParam, static_cast<float>(canvasHeight));
+	}
 
 	/*
 	 * Premultiplied, because the pictures are -- see RollRenderer::rasterize. It is also what OBS
@@ -1693,12 +1770,8 @@ void videoRender(void *raw, gs_effect_t *)
 			gs_effect_set_texture(imageParam, texture);
 			if (alphaParam)
 				gs_effect_set_float(alphaParam, static_cast<float>(item.alpha));
-			if (fadeOnParam) {
+			if (fadeOnParam)
 				gs_effect_set_float(fadeOnParam, fades && item.edgeFade ? 1.0f : 0.0f);
-				gs_effect_set_float(fadeTopParam, static_cast<float>(data->document.edgeFadeTop));
-				gs_effect_set_float(fadeBottomParam, static_cast<float>(data->document.edgeFadeBottom));
-				gs_effect_set_float(canvasHeightParam, static_cast<float>(canvasHeight));
-			}
 			drawQuad(texture, target, source);
 		}
 	}

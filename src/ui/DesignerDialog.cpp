@@ -2526,6 +2526,16 @@ void DesignerDialog::refreshPreview()
 			rendered, true, [target, generation] { return target->generation.load() != generation; },
 			previous.get());
 
+		/*
+		 * A finished layout has asked for every logo the roll uses now, so what it did not ask
+		 * for can go -- which in this window is every height a logo was dragged through on the
+		 * way to the one it was left at.
+		 */
+		if (layout) {
+			cache->endGeneration();
+			animationCache->endGeneration();
+		}
+
 		QMetaObject::invokeMethod(
 			qApp,
 			[rendered, layout = std::move(layout), target] {
@@ -2635,6 +2645,10 @@ void DesignerDialog::applyPreview(const Document &rendered, const RollLayoutPtr 
 					   });
 	if (truncated)
 		warnings.append(moduleText("Designer.LogoTruncated").arg(kMaxLogoDurationMs / 1000));
+
+	/* The one issue here that loses content outright, and the log is the only other place it is said. */
+	if (layout->truncated)
+		warnings.append(moduleText("Designer.RollTooTall").arg(QLocale().toString(layout->height)));
 
 	warningChip->setVisible(!warnings.isEmpty());
 	warningChip->setText(warnings.size() == 1 ? moduleText("Designer.Issue")

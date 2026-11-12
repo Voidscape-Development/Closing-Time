@@ -63,14 +63,34 @@ public:
 	/* Drops entries whose backing file changed on disk since it was decoded. */
 	void invalidate(const QString &path);
 
+	/*
+	 * Called once a roll has been laid out from start to finish: lets go of every picture nothing
+	 * has asked for in a while.
+	 *
+	 * An entry is a decode at one height, and nothing else ever removed one -- so a logo's height
+	 * dragged from fifty pixels to five hundred left four hundred and fifty decodes of it behind,
+	 * for as long as the source or the designer window lived. A finished layout has asked for every
+	 * logo the roll now uses, which makes it the moment to tell what is still in use from what is
+	 * not. An entry is kept through two layouts that do not ask for it and dropped at the third,
+	 * rather than at the first, because a panel's image is only asked for when its section is
+	 * painted, which a layout alone does not do.
+	 */
+	void endGeneration();
+
+	/* How many decodes are held, for the harness. */
+	int size() const { return static_cast<int>(cache.size()); }
+
 private:
 	struct CacheEntry {
 		QImage image;
 		qint64 fileSize = 0;
 		qint64 modifiedMs = 0;
+		/* The generation it was last asked for in; see endGeneration. */
+		quint64 lastUsed = 0;
 	};
 
 	QHash<QString, CacheEntry> cache;
+	quint64 generation = 1;
 };
 
 /*
@@ -446,6 +466,12 @@ struct RollLayout {
 	int width = 0;
 	/* The strip's height: every section and both leads. */
 	int height = 0;
+	/*
+	 * Set when the roll came to more than the tallest strip there is and was cut off there: what
+	 * is past the cut is not in the roll at all. The designer says so, because the alternative is
+	 * finding out on air that the last of the credits never came up.
+	 */
+	bool truncated = false;
 
 	/* Sections in document order, then blocks in block order -- the order they are composited in. */
 	QVector<RollLayer> layers;

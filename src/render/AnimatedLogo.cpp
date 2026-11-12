@@ -204,9 +204,11 @@ LogoAnimationPtr AnimatedLogoCache::get(const QString &path, int maxHeight)
 	const qint64 fileSize = info.size();
 	const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
 
-	const auto it = cache.constFind(key);
-	if (it != cache.constEnd() && it->fileSize == fileSize && it->modifiedMs == modifiedMs)
+	const auto it = cache.find(key);
+	if (it != cache.end() && it->fileSize == fileSize && it->modifiedMs == modifiedMs) {
+		it->lastUsed = generation;
 		return it->animation;
+	}
 
 	/*
 	 * Anything QImageReader cannot step through -- a still, a video, a file that is not a
@@ -215,13 +217,24 @@ LogoAnimationPtr AnimatedLogoCache::get(const QString &path, int maxHeight)
 	 */
 	const LogoAnimationPtr animation = decodeWithQt(path, height);
 
-	cache.insert(key, CacheEntry{animation, fileSize, modifiedMs});
+	cache.insert(key, CacheEntry{animation, fileSize, modifiedMs, generation});
 	return animation;
 }
 
 void AnimatedLogoCache::clear()
 {
 	cache.clear();
+}
+
+void AnimatedLogoCache::endGeneration()
+{
+	for (auto it = cache.begin(); it != cache.end();) {
+		if (it->lastUsed + 1 < generation)
+			it = cache.erase(it);
+		else
+			++it;
+	}
+	++generation;
 }
 
 void AnimatedLogoCache::invalidate(const QString &path)

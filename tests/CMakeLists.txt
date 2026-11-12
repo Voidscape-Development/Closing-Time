@@ -30,6 +30,7 @@ target_sources(
     suites/StickyBlocks.cpp
     suites/StyleLibrary.cpp
     suites/RenderQueue.cpp
+    suites/Resources.cpp
     suites/SectionTypes.cpp
     suites/SubtitleHeadings.cpp
     suites/Timeline.cpp

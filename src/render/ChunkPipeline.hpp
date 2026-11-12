@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QImage>
 #include <QPair>
+#include <QSet>
 #include <QVector>
 
 #include <deque>
@@ -71,7 +72,7 @@ public:
 	/*
 	 * Replaces what is wanted. Sorted here, most urgent first; a chunk asked for twice keeps the
 	 * more urgent of the two. The chunk being drawn at this moment is left out, since it is on its
-	 * way already. Safe from any thread.
+	 * way already, and so is one drawn and not yet taken with takeArrived. Safe from any thread.
 	 */
 	void want(std::vector<ChunkRequest> requests);
 
@@ -105,6 +106,8 @@ private:
 	/* The chunk being drawn at this moment, which a new list leaves out. */
 	quint64 drawing = 0;
 	QVector<QPair<quint64, QImage>> done;
+	/* The keys in `done`, which a new list leaves out too: drawn already, and waiting to be taken. */
+	QSet<quint64> doneKeys;
 };
 
 } // namespace closingtime

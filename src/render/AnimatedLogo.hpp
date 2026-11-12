@@ -132,14 +132,29 @@ public:
 	/* Drops entries whose backing file changed on disk since it was decoded. */
 	void invalidate(const QString &path);
 
+	/*
+	 * Called once a roll has been laid out from start to finish: lets go of every animation nothing
+	 * has asked for in a while. See LogoCache::endGeneration -- the same
+	 * housekeeping, and it matters more here, where one entry is every frame of an animation at one
+	 * height and can be a quarter of a gigabyte. A layout still on screen keeps the animations it
+	 * was laid out with whatever this does, since it holds them itself.
+	 */
+	void endGeneration();
+
+	/* How many answers are held, for the harness. */
+	int size() const { return static_cast<int>(cache.size()); }
+
 private:
 	struct CacheEntry {
 		LogoAnimationPtr animation;
 		qint64 fileSize = 0;
 		qint64 modifiedMs = 0;
+		/* The generation it was last asked for in; see endGeneration. */
+		quint64 lastUsed = 0;
 	};
 
 	QHash<QString, CacheEntry> cache;
+	quint64 generation = 1;
 };
 
 } // namespace closingtime
