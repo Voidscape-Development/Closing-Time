@@ -45,10 +45,16 @@ void ChunkPipeline::want(std::vector<ChunkRequest> requests)
 	std::lock_guard<std::mutex> lock(mutex);
 	wanted.clear();
 
-	/* Sorted first, so the first time a key is met is its most urgent asking. */
+	/*
+	 * Sorted first, so the first time a key is met is its most urgent asking. A chunk that is drawn
+	 * and waiting to be collected is left out like the one being drawn: a consumer that asks faster
+	 * than it collects -- a source that is ticked every frame but drawn only while something shows
+	 * it -- would otherwise have the same chunk drawn for it again on every asking, and every one of
+	 * those answers kept until it next came to collect.
+	 */
 	QSet<quint64> seen;
 	for (ChunkRequest &request : requests) {
-		if (request.key == drawing || seen.contains(request.key))
+		if (request.key == drawing || doneKeys.contains(request.key) || seen.contains(request.key))
 			continue;
 		seen.insert(request.key);
 		wanted.push_back(std::move(request));
@@ -65,6 +71,7 @@ QVector<QPair<quint64, QImage>> ChunkPipeline::takeArrived()
 	std::lock_guard<std::mutex> lock(mutex);
 	QVector<QPair<quint64, QImage>> taken;
 	taken.swap(done);
+	doneKeys.clear();
 	return taken;
 }
 
@@ -110,7 +117,11 @@ void ChunkPipeline::drainOne()
 
 	{
 		std::lock_guard<std::mutex> lock(mutex);
-		done.append({next.key, std::move(image)});
+		/* Once per key: an answer nobody has collected yet is not improved on by a second copy. */
+		if (!doneKeys.contains(next.key)) {
+			doneKeys.insert(next.key);
+			done.append({next.key, std::move(image)});
+		}
 		drawing = 0;
 		/* Posted again under the lock, so a `want` that empties and refills the list cannot slip between. */
 		if (wanted.empty())

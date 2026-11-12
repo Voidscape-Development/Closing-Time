@@ -125,3 +125,52 @@ CT_SUITE(chunk_pipeline, "A consumer's chunks are drawn most urgent first, and o
 		check(!arrived.at(0).second.isNull() && !arrived.at(1).second.isNull(), "and both are pictures");
 	}
 }
+
+CT_SUITE(chunk_pipeline_uncollected, "A chunk asked for again before it is collected is not drawn again")
+{
+	Document document;
+	document.width = 640;
+	Section section = Section::makeDefault(SectionType::Title);
+	section.text = QStringLiteral("Alpha");
+	document.sections.append(section);
+
+	auto logos = std::make_shared<LogoCache>();
+	const RollLayoutPtr layout = RollRenderer(logos.get()).layout(document);
+	if (layout->layers.isEmpty()) {
+		fail(QStringLiteral("a layer to ask for"));
+		return;
+	}
+
+	const ChunkRequest request{chunkKey(layout->layers.at(0), 0, 1.0), layout, 0, 0, 1.0, 0.0};
+	const auto pipeline = ChunkPipeline::create(logos, nullptr, 64LL * 1024 * 1024, RenderPriority::Normal);
+
+	/* Runs after whatever the pipeline has queued, since both wait in the same lane. */
+	const auto settle = [] {
+		std::promise<void> ran;
+		postRenderJob([&ran] { ran.set_value(); });
+		return ran.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+	};
+
+	/*
+	 * What a source nobody is drawing does: it is ticked, and asks, sixty times a second, and
+	 * collects only when something renders it.
+	 */
+	bool settled = true;
+	for (int tick = 0; tick < 40 && settled; ++tick) {
+		pipeline->want({request});
+		settled = settle();
+	}
+	check(settled, "the render thread keeps up");
+
+	const QVector<QPair<quint64, QImage>> arrived = pipeline->takeArrived();
+	checkEq(static_cast<long long>(arrived.size()), 1, "forty askings, one picture waiting");
+	if (!arrived.isEmpty())
+		check(arrived.at(0).first == request.key && !arrived.at(0).second.isNull(),
+		      "and it is the one asked for");
+
+	/* Collected, it can be asked for and drawn again -- a consumer that dropped it gets it back. */
+	pipeline->want({request});
+	check(settle(), "the render thread keeps up");
+	checkEq(static_cast<long long>(pipeline->takeArrived().size()), 1,
+		"asked for again once collected, it comes again");
+}

@@ -996,6 +996,14 @@ says; anything ahead of need waits for a video frame whose one upload has not be
 frame, not per `video_render`, since a source in Studio Mode, on a projector and in the multiview is
 rendered several times a frame. A texture nobody has wanted for two seconds is released.
 
+Only a source something is showing is rendered, and every source is ticked -- a credit roll spends
+nearly all of a broadcast in a scene nobody is in. So finished pictures are collected in `video_tick`
+as well as in `video_render`, and a source that has not been rendered for two seconds lets go of
+what it no longer wants from the tick, entering the graphics context only when there is something to
+release. The pipeline also leaves out of a new list any chunk that is drawn and not yet collected:
+a consumer that asks faster than it collects would otherwise have the same chunk drawn again on
+every asking, and every answer kept.
+
 A rebuilt layout is **staged**: it replaces the one on screen in the first frame where everything it
 would show is resident, with a half-second backstop, so the frame it takes over in has nothing to
 upload. If a frame is ever drawn before a picture it needs has arrived, the source draws without it and
@@ -1056,7 +1064,12 @@ credit roll's logo is a bug, a wordmark or a short sting, and an animated WebP o
 that is. A video file dropped into a logo slot is therefore an unreadable picture like any
 other: `LogoCache` says so in the OBS log and the slot draws its placeholder box.
 
-**Shadows.** A logo's drop shadow is the same shadow in every frame for any artwork that keeps
+**Shadows.** A soft shadow is three box blurs each way, and it is most of what a shadowed section
+costs to rasterize. The passes go between the image and one scratch buffer, the pass down the
+columns is walked a row at a time, and the division is a multiplication by the span's reciprocal --
+all of it exact, and held to the first implementation bit for bit by the `blur_exact` suite.
+
+A logo's drop shadow is the same shadow in every frame for any artwork that keeps
 its silhouette, which is most of it, so by default the strip bakes the first frame's shadow
 behind the hole and the animation plays on top of it — one blur per rebuild, none per frame.
 Artwork that changes shape can opt into `animatedShadow`, and then the blur is run for every
@@ -1236,6 +1249,12 @@ is replaced rather than appended to.
 
 The caches -- logos, animations, rasterized chunks -- are only ever touched from render jobs, which
 run one at a time, so none of them needs a lock. The source and each designer window own their own.
+
+The chunk cache is bounded by bytes. The logo and animation caches are keyed by file and height and
+are bounded by use instead: each finished layout ends a generation (`endGeneration`), and a decode
+nothing has asked for through two of them is dropped at the third. Without that, every height a logo
+was dragged through stayed decoded -- for an animation, every frame of it at every height -- for as
+long as the source or the window lived.
 
 Decoded animation frames do cross threads -- from the render thread that decoded them to the graphics
 thread that uploads them -- as a `shared_ptr<const LogoAnimation>` carried in the layout. Const because
@@ -1838,7 +1857,11 @@ same reason: reporting it would send the user after a font nothing uses.
 9. **A panel's image is a still.** An animated file in a panel contributes its first frame. The
    strip is rasterized once and scrolled, and unlike a logo a panel has no quad of its own to be
    drawn over the top of it — the hole-and-overlay trick has nothing to hang a background on.
-10. **A library rename is followed but never forced.** A document that already has a preset of
+10. **A roll stops at 200,000 pixels.** `kMaxStripHeight` is a guard against a runaway import, and it
+   is about 37 minutes at the default speed -- but a roll that reaches it is cut off there, and what
+   is past the cut is not drawn. The layout is marked `truncated`, the designer raises it as an
+   issue, and the log says so; nothing splits the roll for you.
+11. **A library rename is followed but never forced.** A document that already has a preset of
    its own under the new name keeps its link under the old one — merging two presets is not a
    rename — and migrates by itself if the clash is ever resolved. The manager says so when it
    happens.
