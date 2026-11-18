@@ -1,0 +1,18 @@
+{
+    "display_name": "Closing Time",
+    "id": "669f88d0-6015-4aa1-9e34-d4ec6c092a2e",
+    "version": "0.1.0",
+    "authors": [
+        "Voidscape Development"
+    ],
+    "name": "closing-time",
+    "description": "An OBS Studio plugin for the graphics a broadcast puts at the end of the thing it is showing.",
+    "long_description": "An OBS Studio plugin for the graphics a broadcast puts at the end of the thing it is showing.",
+    "urls": {
+        "repository": "https://github.com/Voidscape-Development/Closing-Time",
+        "website": "https://github.com/Voidscape-Development/Closing-Time",
+        "support": "https://github.com/Voidscape-Development/Closing-Time/issues"
+    },
+    "has_banner": false,
+    "has_icon": false
+}
