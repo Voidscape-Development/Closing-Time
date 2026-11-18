@@ -8,7 +8,7 @@ project(${_name} VERSION ${_version})
 # the frontend API and Qt are hard requirements rather than the template's opt-in features.
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
 option(ENABLE_QT "Use Qt functionality" ON)
-option(ENABLE_BUILD_LEGACY "Enable legacy build" ON)
+option(ENABLE_BUILD_LEGACY "Enable legacy build" OFF)
 
 include(compilerconfig)
 include(defaults)
